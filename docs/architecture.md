@@ -125,8 +125,10 @@ OpenClaw require("node:sqlite")
 The amalgamation archive is fetched directly from SQLite, verified by byte
 length, SHA-256, and the upstream-published SHA3-256, then compiled with
 extension loading and double-quoted string literals disabled. No host SQLite
-library is accepted. The native QuickJS build proves the reached OpenClaw
-surface; the browser build must additionally prove WAL database bytes survive
+library is accepted. SQLite's serialized thread-safe mode remains enabled
+because OpenClaw may use Worker-backed paths. The native QuickJS build proves
+the reached OpenClaw surface; the browser build must additionally prove WAL
+database bytes survive
 one Edge.js process and can be reopened read-only by another process sharing
 the same mounted directory.
 
