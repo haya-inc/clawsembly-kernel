@@ -73,6 +73,10 @@ For a granted path, the personality:
 - maps the host path to a non-user-controlled nested Wasm filename;
 - imports existing bytes into the official SQLite Wasm POSIX VFS;
 - applies exclusive locking before OpenClaw requests WAL;
+- multiplexes overlapping writable `DatabaseSync` wrappers for the same path
+  onto one reference-counted in-process connection, allowing OpenClaw's
+  long-lived state handle and short-lived startup-checkpoint handles to coexist
+  without pretending the mounted browser VFS has cross-process WAL locks;
 - tracks every prepared statement and finalizes it on `DatabaseSync.close()`
   before closing the SQLite connection, so a retained `StatementSync` cannot
   keep the single-owner WAL lock alive across OpenClaw's sequential database
@@ -81,6 +85,12 @@ For a granted path, the personality:
 - checkpoints WAL before serialization;
 - atomically replaces the host file with mode `0600`;
 - refuses native extension loading.
+
+Each logical wrapper still has independent `isOpen`, `close()`, and retained
+statement state. Closing a checkpoint wrapper cannot invalidate the long-lived
+wrapper; the exclusive underlying connection closes only when its final wrapper
+is released. Native Edge.js builds keep normal SQLite locking and independent
+connections.
 
 ## Not yet proven
 

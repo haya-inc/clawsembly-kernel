@@ -73,6 +73,7 @@ type BrowserEvidence = {
         foreignKeys: number;
         journalMode: string;
         lockingMode: string;
+        overlappingConnections: boolean;
         phase: string;
         statementFinalized: boolean;
         version: string;
@@ -195,6 +196,7 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
           journalMode: "wal",
           count: 1,
           extensionLoadingRejected: true,
+          overlappingConnections: true,
           statementFinalized: true
         },
         result: {

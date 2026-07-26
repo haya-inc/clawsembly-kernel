@@ -26,6 +26,7 @@ type SqliteMarker = {
   foreignKeys: number;
   journalMode: string;
   lockingMode: string;
+  overlappingConnections?: boolean;
   phase: "read" | "write";
   statementFinalized: boolean;
   version: string;
@@ -232,6 +233,17 @@ async function runProbe(): Promise<void> {
       "db.exec('SAVEPOINT nested');",
       "db.prepare('INSERT INTO turns(body) VALUES (?)').run('rolled-back');",
       "db.exec('ROLLBACK TO nested; RELEASE nested; COMMIT');",
+      "const overlapping=new DatabaseSync(",
+      "'/state/openclaw-state.db',{timeout:1000});",
+      "overlapping.exec('BEGIN IMMEDIATE');",
+      "const overlappingCount=overlapping.prepare(",
+      "'SELECT count(*) AS count FROM turns').get().count;",
+      "overlapping.exec('COMMIT');",
+      "overlapping.close();",
+      "const longLivedCount=db.prepare(",
+      "'SELECT count(*) AS count FROM turns').get().count;",
+      "const overlappingConnections=",
+      "overlappingCount===1&&longLivedCount===1;",
       "db.enableLoadExtension(false);",
       "let extensionLoadingRejected=false;",
       "try{db.enableLoadExtension(true)}catch(error){",
@@ -249,7 +261,7 @@ async function runProbe(): Promise<void> {
       "console.log(prefix+JSON.stringify({",
       "phase:'write',version,foreignKeys,lockingMode,journalMode,count,",
       "checkpointed:checkpoint.checkpointed,extensionLoadingRejected,",
-      "statementFinalized",
+      "overlappingConnections,statementFinalized",
       "}));"
     ].join("");
     const sqliteWriteInstance = await runWasix(moduleWithBytes, {
@@ -320,6 +332,7 @@ async function runProbe(): Promise<void> {
       || sqliteWriteMarker.count !== 1
       || sqliteReadMarker.count !== 1
       || !sqliteWriteMarker.extensionLoadingRejected
+      || !sqliteWriteMarker.overlappingConnections
       || !sqliteWriteMarker.statementFinalized
       || !sqliteReadMarker.statementFinalized
     ) {

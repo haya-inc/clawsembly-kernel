@@ -13,7 +13,7 @@
     },
     {
       "path": "patches/edgejs/0002-add-openclaw-node-sqlite.patch",
-      "sha256": "02334c419ffe3c3de353bc378e62d07ed7aa0ee8c4d782e1be004a7bfc4f2281"
+      "sha256": "293ca1e4d4290a517d4adcffde3e65a5cc5c93e04e26d49cb0ec521942694327"
     },
     {
       "path": "patches/edgejs/0003-complete-synchronous-wasix-tcp-connect.patch",

@@ -54,10 +54,10 @@ index d8c045b940c73145956ff31d9c913ea10b2ddd5d..7179d987933a9c86cc2de320f13c0407
 +| ▶️ | High | [013_openclaw_node_sqlite_binding.md](node-compat/edgejs/013_openclaw_node_sqlite_binding.md) | OpenClaw `node:sqlite` binding |
 diff --git i/plans/quickjs-wasm/development/troubleshooting/node-compat/edgejs/013_openclaw_node_sqlite_binding.md w/plans/quickjs-wasm/development/troubleshooting/node-compat/edgejs/013_openclaw_node_sqlite_binding.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..3a64c27c59251568ec518043bf0491a83bdaa136
+index 0000000000000000000000000000000000000000..c03a687c9eb8d7624c5ff31d99cc7aeaea0041a3
 --- /dev/null
 +++ w/plans/quickjs-wasm/development/troubleshooting/node-compat/edgejs/013_openclaw_node_sqlite_binding.md
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,95 @@
 +# Edge.js: OpenClaw `node:sqlite` binding
 +
 +| | | Remarks |
@@ -139,6 +139,12 @@ index 0000000000000000000000000000000000000000..3a64c27c59251568ec518043bf0491a8
 +  cross-process shared-memory locking, while exclusive mode permits WAL for
 +  the kernel's single-owner database capability. Native builds retain Node's
 +  normal locking mode.
++- WASIX multiplexes overlapping `DatabaseSync` wrappers for the same writable
++  file onto one in-process SQLite connection. This preserves the single-owner
++  WAL constraint while supporting OpenClaw's long-lived state connection and
++  short-lived startup-checkpoint connection. Each wrapper retains independent
++  open/close and statement-finalization state; the underlying connection closes
++  only after the final wrapper releases it.
 +- The normal runtime still reports Node 24.13.2. Only the diagnostic build may
 +  cross the OpenClaw Node floor until the broader compatibility profile passes.
 +
@@ -209,10 +215,10 @@ index 2f0cb4652a95df3916aad65fe10cb7319069c392..481e1fdc9e10c21038a7934cf1dad1df
 +#endif
 diff --git i/src/internal_binding/binding_sqlite.cc w/src/internal_binding/binding_sqlite.cc
 new file mode 100644
-index 0000000000000000000000000000000000000000..c79285c956ec1e790c80fa2fbf788f45d1395a98
+index 0000000000000000000000000000000000000000..2729b471053c7ea2e4ba2cee66991e07ef51260a
 --- /dev/null
 +++ w/src/internal_binding/binding_sqlite.cc
-@@ -0,0 +1,1035 @@
+@@ -0,0 +1,1097 @@
 +#include "internal_binding/binding_initializers.h"
 +
 +#if defined(EDGE_HAS_SQLITE)
@@ -222,6 +228,7 @@ index 0000000000000000000000000000000000000000..c79285c956ec1e790c80fa2fbf788f45
 +#include <cstring>
 +#include <limits>
 +#include <string>
++#include <unordered_map>
 +#include <unordered_set>
 +#include <vector>
 +
@@ -239,9 +246,22 @@ index 0000000000000000000000000000000000000000..c79285c956ec1e790c80fa2fbf788f45
 +
 +struct StatementHandle;
 +
++#if defined(EDGE_SQLITE_EXCLUSIVE_LOCKING)
++struct SharedDatabase {
++  sqlite3* database = nullptr;
++  std::string key;
++  size_t references = 0;
++};
++
++std::unordered_map<std::string, SharedDatabase*> shared_databases;
++#endif
++
 +struct DatabaseHandle {
 +  BindingState* binding = nullptr;
 +  sqlite3* database = nullptr;
++#if defined(EDGE_SQLITE_EXCLUSIVE_LOCKING)
++  SharedDatabase* shared_database = nullptr;
++#endif
 +  std::unordered_set<StatementHandle*> statements;
 +};
 +
@@ -386,14 +406,30 @@ index 0000000000000000000000000000000000000000..c79285c956ec1e790c80fa2fbf788f45
 +  }
 +}
 +
++int CloseDatabaseHandle(DatabaseHandle* handle) {
++  if (handle == nullptr || handle->database == nullptr) return SQLITE_OK;
++  sqlite3* database = handle->database;
++  handle->database = nullptr;
++#if defined(EDGE_SQLITE_EXCLUSIVE_LOCKING)
++  if (handle->shared_database != nullptr) {
++    SharedDatabase* shared = handle->shared_database;
++    handle->shared_database = nullptr;
++    if (shared->references > 0) --shared->references;
++    if (shared->references > 0) return SQLITE_OK;
++    shared_databases.erase(shared->key);
++    const int result = sqlite3_close_v2(database);
++    delete shared;
++    return result;
++  }
++#endif
++  return sqlite3_close_v2(database);
++}
++
 +void DatabaseFinalize(napi_env env, void* data, void*) {
 +  auto* handle = static_cast<DatabaseHandle*>(data);
 +  if (handle == nullptr) return;
 +  FinalizeDatabaseStatements(env, handle);
-+  if (handle->database != nullptr) {
-+    sqlite3_close_v2(handle->database);
-+    handle->database = nullptr;
-+  }
++  CloseDatabaseHandle(handle);
 +  delete handle;
 +}
 +
@@ -940,63 +976,95 @@ index 0000000000000000000000000000000000000000..c79285c956ec1e790c80fa2fbf788f45
 +  const std::string filename = ValueToUtf8(env, argv[0]);
 +  auto* handle = new DatabaseHandle();
 +  handle->binding = static_cast<BindingState*>(callback_data);
++  bool reused_database = false;
++#if defined(EDGE_SQLITE_EXCLUSIVE_LOCKING)
++  const bool shareable_database =
++      filename != ":memory:" &&
++      filename.find("mode=memory") == std::string::npos;
++  const std::string shared_key =
++      std::string(read_only ? "ro:" : "rw:") + filename;
++  if (shareable_database) {
++    const auto existing = shared_databases.find(shared_key);
++    if (existing != shared_databases.end()) {
++      handle->database = existing->second->database;
++      handle->shared_database = existing->second;
++      ++handle->shared_database->references;
++      reused_database = true;
++    }
++  }
++#endif
 +  const int flags =
 +      (read_only ? SQLITE_OPEN_READONLY
 +                 : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE) |
 +      SQLITE_OPEN_URI;
-+  const int result =
-+      sqlite3_open_v2(filename.c_str(), &handle->database, flags, nullptr);
-+  if (result != SQLITE_OK) {
-+    ThrowSqliteError(env, handle->database, result, "Could not open database");
-+    if (handle->database != nullptr) sqlite3_close_v2(handle->database);
-+    delete handle;
-+    return nullptr;
++  if (!reused_database) {
++    const int result =
++        sqlite3_open_v2(filename.c_str(), &handle->database, flags, nullptr);
++    if (result != SQLITE_OK) {
++      ThrowSqliteError(env, handle->database, result, "Could not open database");
++      if (handle->database != nullptr) sqlite3_close_v2(handle->database);
++      delete handle;
++      return nullptr;
++    }
 +  }
-+  sqlite3_extended_result_codes(handle->database, 1);
-+  if (timeout > 0) sqlite3_busy_timeout(handle->database, timeout);
++  if (!reused_database) {
++    sqlite3_extended_result_codes(handle->database, 1);
++    if (timeout > 0) sqlite3_busy_timeout(handle->database, timeout);
 +#if defined(EDGE_SQLITE_EXCLUSIVE_LOCKING)
-+  {
-+    char* error = nullptr;
-+    const int locking_mode_result = sqlite3_exec(
-+        handle->database, "PRAGMA locking_mode = EXCLUSIVE",
-+        nullptr, nullptr, &error);
-+    if (locking_mode_result != SQLITE_OK) {
-+      std::string message =
-+          "Could not enable SQLite exclusive locking mode";
-+      if (error != nullptr) {
-+        message.append(": ");
-+        message.append(error);
-+        sqlite3_free(error);
++    {
++      char* error = nullptr;
++      const int locking_mode_result = sqlite3_exec(
++          handle->database, "PRAGMA locking_mode = EXCLUSIVE",
++          nullptr, nullptr, &error);
++      if (locking_mode_result != SQLITE_OK) {
++        std::string message =
++            "Could not enable SQLite exclusive locking mode";
++        if (error != nullptr) {
++          message.append(": ");
++          message.append(error);
++          sqlite3_free(error);
++        }
++        napi_throw_error(env, "ERR_SQLITE_ERROR", message.c_str());
++        DatabaseFinalize(env, handle, nullptr);
++        return nullptr;
 +      }
-+      napi_throw_error(env, "ERR_SQLITE_ERROR", message.c_str());
++    }
++#endif
++    if (sqlite3_db_config(handle->database, SQLITE_DBCONFIG_DEFENSIVE,
++                          defensive ? 1 : 0, nullptr) != SQLITE_OK) {
++      ThrowSqliteError(env, handle->database, sqlite3_errcode(handle->database),
++                       "Could not configure SQLite defensive mode");
 +      DatabaseFinalize(env, handle, nullptr);
 +      return nullptr;
 +    }
++    if (enable_foreign_keys) {
++      char* error = nullptr;
++      const int foreign_keys_result = sqlite3_exec(
++          handle->database, "PRAGMA foreign_keys = ON",
++          nullptr, nullptr, &error);
++      if (foreign_keys_result != SQLITE_OK) {
++        std::string message = "Could not enable SQLite foreign keys";
++        if (error != nullptr) {
++          message.append(": ");
++          message.append(error);
++          sqlite3_free(error);
++        }
++        napi_throw_error(env, "ERR_SQLITE_ERROR", message.c_str());
++        DatabaseFinalize(env, handle, nullptr);
++        return nullptr;
++      }
++    }
++  }
++#if defined(EDGE_SQLITE_EXCLUSIVE_LOCKING)
++  if (shareable_database && !reused_database) {
++    auto* shared = new SharedDatabase();
++    shared->database = handle->database;
++    shared->key = shared_key;
++    shared->references = 1;
++    handle->shared_database = shared;
++    shared_databases.emplace(shared_key, shared);
 +  }
 +#endif
-+  if (sqlite3_db_config(handle->database, SQLITE_DBCONFIG_DEFENSIVE,
-+                        defensive ? 1 : 0, nullptr) != SQLITE_OK) {
-+    ThrowSqliteError(env, handle->database, sqlite3_errcode(handle->database),
-+                     "Could not configure SQLite defensive mode");
-+    DatabaseFinalize(env, handle, nullptr);
-+    return nullptr;
-+  }
-+  if (enable_foreign_keys) {
-+    char* error = nullptr;
-+    const int foreign_keys_result = sqlite3_exec(
-+        handle->database, "PRAGMA foreign_keys = ON", nullptr, nullptr, &error);
-+    if (foreign_keys_result != SQLITE_OK) {
-+      std::string message = "Could not enable SQLite foreign keys";
-+      if (error != nullptr) {
-+        message.append(": ");
-+        message.append(error);
-+        sqlite3_free(error);
-+      }
-+      napi_throw_error(env, "ERR_SQLITE_ERROR", message.c_str());
-+      DatabaseFinalize(env, handle, nullptr);
-+      return nullptr;
-+    }
-+  }
 +  if (napi_wrap(env, self, handle, DatabaseFinalize, nullptr, nullptr) !=
 +      napi_ok) {
 +    DatabaseFinalize(env, handle, nullptr);
@@ -1031,13 +1099,13 @@ index 0000000000000000000000000000000000000000..c79285c956ec1e790c80fa2fbf788f45
 +    return nullptr;
 +  }
 +  FinalizeDatabaseStatements(env, handle);
-+  const int result = sqlite3_close_v2(handle->database);
++  sqlite3* database = handle->database;
++  const int result = CloseDatabaseHandle(handle);
 +  if (result != SQLITE_OK) {
-+    ThrowSqliteError(env, handle->database, result,
++    ThrowSqliteError(env, database, result,
 +                     "Could not close database");
 +    return nullptr;
 +  }
-+  handle->database = nullptr;
 +  return Undefined(env);
 +}
 +
@@ -1250,10 +1318,10 @@ index 0000000000000000000000000000000000000000..c79285c956ec1e790c80fa2fbf788f45
 +#endif  // defined(EDGE_HAS_SQLITE)
 diff --git i/tests/js/openclaw-sqlite-contract.js w/tests/js/openclaw-sqlite-contract.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..05b3828b9f708f0694fa79a86c1837ee2db47cc6
+index 0000000000000000000000000000000000000000..6de7307369cd0cdafad5369aa90e2eef8e27cd8b
 --- /dev/null
 +++ w/tests/js/openclaw-sqlite-contract.js
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,182 @@
 +'use strict';
 +
 +const fs = require('node:fs');
@@ -1331,6 +1399,19 @@ index 0000000000000000000000000000000000000000..05b3828b9f708f0694fa79a86c1837ee
 +  rows[0].payload instanceof Uint8Array &&
 +    Array.from(rows[0].payload).join(',') === '1,2,3',
 +  'blob round trip'
++);
++
++const overlapping = new DatabaseSync(databasePath, { timeout: 1000 });
++overlapping.exec('BEGIN IMMEDIATE');
++check(
++  overlapping.prepare('SELECT count(*) AS count FROM parents').get().count === 2,
++  'overlapping database should observe the long-lived connection state'
++);
++overlapping.exec('COMMIT');
++overlapping.close();
++check(
++  database.prepare('SELECT count(*) AS count FROM parents').get().count === 2,
++  'closing the overlapping database must preserve the long-lived connection'
 +);
 +
 +const iterated = Array.from(
@@ -1417,6 +1498,7 @@ index 0000000000000000000000000000000000000000..05b3828b9f708f0694fa79a86c1837ee
 +  sqliteVersion: '3.53.4',
 +  wal: true,
 +  persistence: true,
++  overlappingConnections: true,
 +  statementFinalization: true,
 +  readOnly: true,
 +  extensionLoading: false,
