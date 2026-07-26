@@ -104,22 +104,34 @@ Experimental. Current execution milestones:
   compiles the official SQLite 3.53.4 amalgamation directly into the QuickJS
   WASIX runtime, disables extension loading, and passes the OpenClaw-reached
   synchronous API, transaction, savepoint, WAL, checkpoint, read-only, and
-  persistence contract in a native QuickJS build.
+  persistence contract in a native QuickJS build. Chromium also proves the
+  compiled binding with automatic exclusive locking, WAL, and a fresh-process
+  read in
+  [GitHub Actions run 30201564289](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30201564289).
+- A diagnostic-only Edge.js artifact, whose two embedded Node version labels
+  are auditably changed from 24.13.2 to 24.15.0 without changing OpenClaw,
+  advances the exact unmodified `dist/entry.js` through SQLite, configuration,
+  authentication, plugin bootstrap, and runtime configuration. It then fails
+  closed because WASIX resolves the requested loopback bind to `0.0.0.0`.
+  This is not a Node-compatibility or Gateway-readiness claim; it identifies
+  browser-local virtual loopback networking as the next concrete runtime
+  boundary.
 
 This does not yet claim complete OpenClaw startup. The pinned Edge.js runtime
 reports Node 24.13.2, below OpenClaw's Node 24.15.0 safety floor. The official
 launcher now stops synchronously at that version gate with exit code 1, empty
 stdout, the exact diagnostic, and no fall-through into `dist/entry.js`. The
 runtime will not be relabeled until a compatibility profile proves the
-required Node surfaces. SQLite WAL-reset safety is pinned to 3.53.4 and the
-browser CI now must prove that same compiled binding in Chromium before it can
-remove the first Gateway blocker. QuickJS's optional
+required Node surfaces. The relabeled artifact is retained only as a
+version-bound diagnostic instrument. SQLite WAL-reset safety is pinned to
+3.53.4 and its compiled browser binding is proven. QuickJS's optional
 JavaScript `WebAssembly` global is explicitly disabled until its native
 `wasm_c_api_v0` dependency is replaced by a browser-native OSS adapter. The
-next hard gate is the rebuilt Chromium artifact advancing the exact unmodified
-Gateway beyond `requireNodeSqlite()`, followed by Gateway readiness,
-capability-complete connectivity, durable OPFS ownership, and one real agent
-turn. See
+next hard gate is an OSS browser-local networking personality that preserves
+real loopback semantics and lets a second browser process connect to the
+Gateway. Required lifecycle scripts, a genuine Node compatibility profile,
+Gateway readiness, capability-complete external connectivity, durable OPFS
+ownership, and one real agent turn remain open. See
 [the artifact-derived SQLite contract](docs/openclaw-sqlite-contract.md) and
 [the Edge.js personality proof](docs/edgejs-node-sqlite-personality.md) for the
 implemented and deliberately unsupported boundaries.

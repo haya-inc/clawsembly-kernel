@@ -16,6 +16,12 @@ type WasixOutput = {
   stdout: string;
 };
 
+type StreamCapture = {
+  cancel: () => Promise<void>;
+  done: Promise<void>;
+  snapshot: () => string;
+};
+
 function requiredElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
   if (!element) throw new Error(`Missing required element: ${selector}`);
@@ -51,6 +57,19 @@ function firstDiagnosticLine(output: WasixOutput): string | undefined {
 
 function classifyBlocker(output: WasixOutput): string | undefined {
   if (
+    output.stderr.includes(
+      "gateway bind=loopback resolved to non-loopback host 0.0.0.0"
+    )
+  ) {
+    return "loopback-networking-resolved-to-wildcard";
+  }
+  if (
+    output.code === 125
+    && output.stderr.includes(gatewayHostTimeoutMarker)
+  ) {
+    return "gateway-host-diagnostic-deadline";
+  }
+  if (
     output.code === 124
     && output.stderr.includes(gatewayTimeoutMarker)
   ) {
@@ -72,6 +91,37 @@ function classifyBlocker(output: WasixOutput): string | undefined {
   return output.ok ? undefined : "unclassified-runtime-failure";
 }
 
+function captureStream(
+  stream: ReadableStream<Uint8Array>
+): StreamCapture {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let captured = "";
+  const done = (async () => {
+    try {
+      for (;;) {
+        const { done: streamDone, value } = await reader.read();
+        if (streamDone) break;
+        captured += decoder.decode(value, { stream: true });
+      }
+      captured += decoder.decode();
+    } finally {
+      reader.releaseLock();
+    }
+  })();
+  return {
+    cancel: async () => {
+      try {
+        await reader.cancel();
+      } catch {
+        // The runtime may close the pipe concurrently with the watchdog.
+      }
+    },
+    done,
+    snapshot: () => captured
+  };
+}
+
 const status = requiredElement<HTMLOutputElement>("#status");
 const result = requiredElement<HTMLPreElement>("#result");
 const searchParams = new URLSearchParams(location.search);
@@ -80,9 +130,20 @@ const imageUrl = searchParams.get("image") ?? "/openclaw.clawfs";
 const runtimeMode = searchParams.get("mode") === "gateway"
   ? "gateway"
   : "version";
-const gatewayDiagnosticTimeoutMs = 12_000;
+const requestedGatewayDiagnosticTimeoutMs = Number(
+  searchParams.get("timeoutMs")
+);
+const gatewayDiagnosticTimeoutMs =
+  Number.isSafeInteger(requestedGatewayDiagnosticTimeoutMs)
+    && requestedGatewayDiagnosticTimeoutMs >= 1_000
+    && requestedGatewayDiagnosticTimeoutMs <= 120_000
+    ? requestedGatewayDiagnosticTimeoutMs
+    : 12_000;
 const gatewayTimeoutMarker =
   `CLAWSEMBLY_GATEWAY_DIAGNOSTIC_TIMEOUT=${gatewayDiagnosticTimeoutMs}`;
+const gatewayHostTimeoutMs = gatewayDiagnosticTimeoutMs + 5_000;
+const gatewayHostTimeoutMarker =
+  `CLAWSEMBLY_GATEWAY_HOST_TIMEOUT=${gatewayHostTimeoutMs}`;
 
 async function runProbe(): Promise<void> {
   try {
@@ -136,13 +197,14 @@ async function runProbe(): Promise<void> {
       "--dev",
       "--allow-unconfigured",
       "--auth",
-      "none",
+      "token",
       "--bind",
       "loopback",
       "--port",
       "18789",
       "--tailscale",
       "off",
+      "--verbose",
       "--ws-log",
       "compact"
     ];
@@ -183,6 +245,14 @@ async function runProbe(): Promise<void> {
         HOME: "/openclaw/.clawsembly-home",
         NO_COLOR: "1",
         ...(runtimeMode === "gateway" ? { OPENCLAW_DEBUG: "1" } : {}),
+        ...(runtimeMode === "gateway"
+          ? {
+              OPENCLAW_GATEWAY_TOKEN:
+                "clawsembly-diagnostic-non-secret-token",
+              OPENCLAW_GATEWAY_STARTUP_TRACE: "1",
+              OPENCLAW_NO_RESPAWN: "1"
+            }
+          : {}),
         OPENCLAW_STATE_DIR: "/openclaw/.clawsembly-state",
         PATH: "/bin"
       },
@@ -190,26 +260,74 @@ async function runProbe(): Promise<void> {
         "/openclaw": openclaw
       }
     });
-    const output = await instance.wait() as WasixOutput;
+    const stdoutCapture = captureStream(instance.stdout);
+    const stderrCapture = captureStream(instance.stderr);
+    let hostTimeout: number | undefined;
+    const execution = await Promise.race([
+      instance.wait().then((output) => ({
+        kind: "exit" as const,
+        output: output as WasixOutput
+      })),
+      new Promise<{ kind: "host-timeout" }>((resolve) => {
+        hostTimeout = window.setTimeout(
+          () => resolve({ kind: "host-timeout" }),
+          gatewayHostTimeoutMs
+        );
+      })
+    ]);
+    if (hostTimeout !== undefined) window.clearTimeout(hostTimeout);
+    let output: WasixOutput;
+    if (execution.kind === "host-timeout") {
+      output = {
+        code: 125,
+        ok: false,
+        stdout: stdoutCapture.snapshot(),
+        stderr:
+          stderrCapture.snapshot()
+          + `${gatewayHostTimeoutMarker}\n`
+      };
+      await Promise.allSettled([
+        stdoutCapture.cancel(),
+        stderrCapture.cancel()
+      ]);
+    } else {
+      await Promise.all([stdoutCapture.done, stderrCapture.done]);
+      output = {
+        ...execution.output,
+        stdout: stdoutCapture.snapshot(),
+        stderr: stderrCapture.snapshot()
+      };
+    }
     const gatewayTimedOut =
       runtimeMode === "gateway"
-      && output.code === 124
-      && output.stderr.includes(gatewayTimeoutMarker);
+      && (
+        output.code === 124
+        && output.stderr.includes(gatewayTimeoutMarker)
+        || output.code === 125
+        && output.stderr.includes(gatewayHostTimeoutMarker)
+      );
+    const gatewayReturnedWithoutReadiness =
+      runtimeMode === "gateway"
+      && output.ok
+      && !gatewayTimedOut;
     const runtimeNodeVersion = /^CLAWSEMBLY_DIAGNOSTIC_NODE=(.+)$/mu
       .exec(output.stderr)?.[1];
     const evidence = {
       schemaVersion: 1,
       status: gatewayTimedOut
         ? "diagnostic-timeout"
-        : output.ok
-          ? "diagnostic-pass"
-          : "blocked",
+        : gatewayReturnedWithoutReadiness
+          ? "blocked"
+          : output.ok
+            ? "diagnostic-pass"
+            : "blocked",
       executionMode: runtimeMode === "gateway"
         ? "timer-bounded-unmodified-gateway-diagnostic"
         : "direct-unmodified-entry-diagnostic",
       notSuccessReason:
         "The official launcher Node-version gate was deliberately bypassed "
-        + "only to identify the next compatibility boundary.",
+        + "only to identify the next compatibility boundary; Gateway "
+        + "readiness requires a successful client connection.",
       crossOriginIsolated,
       executor: "@wasmer/sdk + Edge.js QuickJS/WASIX",
       image: {
@@ -235,7 +353,8 @@ async function runProbe(): Promise<void> {
         ...(runtimeMode === "gateway"
           ? {
               harness: "timer-bounded dynamic import with guest argv",
-              timeoutMs: gatewayDiagnosticTimeoutMs
+              timeoutMs: gatewayDiagnosticTimeoutMs,
+              hostTimeoutMs: gatewayHostTimeoutMs
             }
           : {})
       },
@@ -243,15 +362,19 @@ async function runProbe(): Promise<void> {
         ? { runtime: { node: runtimeNodeVersion } }
         : {}),
       result: output,
-      blocker: classifyBlocker(output),
+      blocker: gatewayReturnedWithoutReadiness
+        ? "gateway-returned-without-readiness-evidence"
+        : classifyBlocker(output),
       firstDiagnosticLine: firstDiagnosticLine(output)
     };
     status.dataset.state = "pass";
     status.textContent = gatewayTimedOut
       ? "MILESTONE · Gateway path remained live until the diagnostic deadline"
-      : output.ok
-        ? "MILESTONE · Unmodified dist/entry.js completed its diagnostic path"
-        : "MILESTONE · Next unmodified entry compatibility blocker captured";
+      : gatewayReturnedWithoutReadiness
+        ? "MILESTONE · Gateway returned without client-visible readiness"
+        : output.ok
+          ? "MILESTONE · Unmodified dist/entry.js completed its diagnostic path"
+          : "MILESTONE · Next unmodified entry compatibility blocker captured";
     result.textContent = JSON.stringify(evidence, null, 2);
   } catch (error) {
     status.dataset.state = "fail";

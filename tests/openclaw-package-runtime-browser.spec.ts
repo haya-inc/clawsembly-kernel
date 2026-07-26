@@ -53,6 +53,7 @@ type RuntimeEvidence = {
     args: string[];
     entry: string;
     harness?: string;
+    hostTimeoutMs?: number;
     program: string;
     timeoutMs?: number;
   };
@@ -86,6 +87,19 @@ const imageEvidencePath =
   process.env.CLAWSEMBLY_OPENCLAW_IMAGE_EVIDENCE;
 const nodeDiagnosticEvidencePath =
   process.env.CLAWSEMBLY_EDGE_NODE_DIAGNOSTIC_EVIDENCE;
+const gatewayDiagnosticTimeoutMs = Number(
+  process.env.CLAWSEMBLY_OPENCLAW_GATEWAY_DIAGNOSTIC_TIMEOUT_MS ?? "12000"
+);
+if (
+  !Number.isSafeInteger(gatewayDiagnosticTimeoutMs)
+  || gatewayDiagnosticTimeoutMs < 1_000
+  || gatewayDiagnosticTimeoutMs > 120_000
+) {
+  throw new Error(
+    "CLAWSEMBLY_OPENCLAW_GATEWAY_DIAGNOSTIC_TIMEOUT_MS must be "
+    + "an integer from 1000 through 120000"
+  );
+}
 const packageContract = JSON.parse(
   readFileSync(
     path.join(process.cwd(), "contracts/openclaw-package.generated.json"),
@@ -265,6 +279,7 @@ test("unmodified OpenClaw Gateway path advances beyond the SQLite boundary", asy
     + "?artifact=/edgejs.wasm"
     + "&image=/openclaw.clawfs"
     + "&mode=gateway"
+    + `&timeoutMs=${gatewayDiagnosticTimeoutMs}`
   );
   const status = page.locator("#status");
   const outcome = await Promise.race([
@@ -314,36 +329,62 @@ test("unmodified OpenClaw Gateway path advances beyond the SQLite boundary", asy
         "--dev",
         "--allow-unconfigured",
         "--auth",
-        "none",
+        "token",
         "--bind",
         "loopback",
         "--port",
         "18789",
         "--tailscale",
         "off",
+        "--verbose",
         "--ws-log",
         "compact"
       ],
       harness: "timer-bounded dynamic import with guest argv",
-      timeoutMs: 12_000
+      timeoutMs: gatewayDiagnosticTimeoutMs,
+      hostTimeoutMs: gatewayDiagnosticTimeoutMs + 5_000
     }
   });
   expect(["blocked", "diagnostic-timeout"]).toContain(evidence.status);
   expect(evidence.blocker).not.toBe("node-sqlite-unavailable-or-unsafe");
-  expect(evidence.result.ok).toBe(false);
   expect(Number.isInteger(evidence.result.code)).toBe(true);
   expect(evidence.result.stderr).not.toContain(
     "SQLite support is unavailable or unsafe in this Node runtime."
   );
   if (evidence.status === "diagnostic-timeout") {
-    expect(evidence).toMatchObject({
-      blocker: "gateway-diagnostic-deadline",
-      result: {
-        code: 124
-      }
+    expect(evidence.result.ok).toBe(false);
+    expect([
+      "gateway-diagnostic-deadline",
+      "gateway-host-diagnostic-deadline"
+    ]).toContain(evidence.blocker);
+    if (evidence.blocker === "gateway-diagnostic-deadline") {
+      expect(evidence.result.code).toBe(124);
+      expect(evidence.result.stderr).toContain(
+        "CLAWSEMBLY_GATEWAY_DIAGNOSTIC_TIMEOUT="
+      );
+    } else {
+      expect(evidence.result.code).toBe(125);
+      expect(evidence.result.stderr).toContain(
+        "CLAWSEMBLY_GATEWAY_HOST_TIMEOUT="
+      );
+    }
+  } else if (
+    evidence.blocker === "gateway-returned-without-readiness-evidence"
+  ) {
+    expect(evidence.result).toMatchObject({
+      code: 0,
+      ok: true
     });
-    expect(evidence.result.stderr).toContain(
-      "CLAWSEMBLY_GATEWAY_DIAGNOSTIC_TIMEOUT="
+  } else {
+    expect(evidence.result.ok).toBe(false);
+  }
+  if (
+    evidence.result.stderr.includes(
+      "gateway bind=loopback resolved to non-loopback host 0.0.0.0"
+    )
+  ) {
+    expect(evidence.blocker).toBe(
+      "loopback-networking-resolved-to-wildcard"
     );
   }
 

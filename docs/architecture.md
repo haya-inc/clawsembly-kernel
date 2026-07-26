@@ -174,6 +174,33 @@ mounted directories. The audited patch applies those options directly to the
 runner that calls `run_wasm`; this is a compatibility and capability fix, not a
 success-looking shim.
 
+### Browser-local virtual networking
+
+The diagnostic-only Node-floor artifact now advances the exact unmodified
+OpenClaw Gateway through configuration, token authentication, plugin
+bootstrap, and runtime configuration. Startup then fails closed with:
+
+```text
+gateway bind=loopback resolved to non-loopback host 0.0.0.0
+```
+
+The next runtime layer is therefore a browser-local virtual network namespace,
+not a remote machine and not a rewrite of OpenClaw. One runtime-scoped
+networking provider must:
+
+- give `127.0.0.1` and `::1` real loopback semantics;
+- let the Gateway process listen and a separate browser guest process connect;
+- keep listen, connect, DNS, and external egress as distinct revocable
+  capabilities;
+- map Node `net`, HTTP, and WebSocket behavior onto that namespace; and
+- produce readiness evidence only after a second process completes the real
+  Gateway health exchange.
+
+External model-provider traffic may later use a separately authorized
+self-hostable transport, but it cannot substitute for local Gateway loopback.
+The virtual network must fail unsupported routes explicitly and must never
+turn a requested loopback bind into a wildcard host bind.
+
 The Edge.js compiler sysroot is pinned to wasix-libc `v2025-12-10.1`, the last
 release using the `proc_exec3`/`proc_spawn2` ABI implemented by Wasmer JS
 0.10's WASIX 6.1 runtime. Newer sysroots require
