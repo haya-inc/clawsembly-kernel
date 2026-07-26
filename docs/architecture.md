@@ -122,6 +122,8 @@ release using the `proc_exec3`/`proc_spawn2` ABI implemented by Wasmer JS
 0.10's WASIX 6.1 runtime. Newer sysroots require
 `proc_exit2`/`proc_exec4`/`proc_spawn3`; silently stubbing those process
 semantics would violate the kernel's compatibility and capability boundaries.
+CI installs only that release's legacy-EH sysroot asset and verifies its pinned
+SHA-256, avoiding the toolchain's unrelated newer `exnref` asset set.
 
 ## OPFS WAL precondition
 

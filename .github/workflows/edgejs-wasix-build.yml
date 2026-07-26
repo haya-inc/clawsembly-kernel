@@ -103,8 +103,35 @@ jobs:
         uses: wasix-org/wasixcc@8a505d4605b15fd466a3881d286582b23e4ffecb
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          sysroot-tag: ${{ steps.contract.outputs.sysroot_tag }}
+          install-sysroot: false
           version: ${{ steps.contract.outputs.wasixcc_version }}
+
+      - name: Install pinned legacy-EH WASIX sysroot
+        id: legacy_sysroot
+        shell: bash
+        env:
+          SYSROOT_ASSET: ${{ steps.contract.outputs.sysroot_asset }}
+          SYSROOT_ASSET_SHA256: ${{ steps.contract.outputs.sysroot_asset_sha256 }}
+          SYSROOT_TAG: ${{ steps.contract.outputs.sysroot_tag }}
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/${SYSROOT_ASSET}"
+          extract_root="${RUNNER_TEMP}/clawsembly-wasix-sysroot"
+          curl -fsSL \
+            -o "${archive}" \
+            "https://github.com/wasix-org/wasix-libc/releases/download/${SYSROOT_TAG}/${SYSROOT_ASSET}"
+          echo "${SYSROOT_ASSET_SHA256}  ${archive}" | sha256sum -c -
+          mkdir -p "${extract_root}"
+          tar -xzf "${archive}" -C "${extract_root}"
+          sysroot_path="${extract_root}/wasix-sysroot-eh/sysroot"
+          test -d "${sysroot_path}/include"
+          actual_sysroot="$(
+            WASIXCC_SYSROOT="${sysroot_path}" \
+              WASIXCC_WASM_EXCEPTIONS=legacy \
+              wasixcc --print-sysroot
+          )"
+          test "${actual_sysroot}" = "${sysroot_path}"
+          echo "path=${sysroot_path}" >> "${GITHUB_OUTPUT}"
 
       - name: Install build and inspection tools
         shell: bash
@@ -164,6 +191,7 @@ jobs:
         env:
           EDGE_WASIX_EMIT_EXNREF: ${{ steps.contract.outputs.emit_exnref }}
           EDGE_QUICKJS_WEBASSEMBLY: ${{ steps.contract.outputs.quickjs_webassembly }}
+          WASIXCC_SYSROOT: ${{ steps.legacy_sysroot.outputs.path }}
           WASIXCC_RUN_WASM_OPT: ${{ steps.contract.outputs.wasixcc_run_wasm_opt }}
           WASIXCC_WASM_EXCEPTIONS: ${{ steps.contract.outputs.wasixcc_wasm_exceptions }}
         run: |
@@ -222,6 +250,7 @@ jobs:
           EMIT_EXNREF: ${{ steps.contract.outputs.emit_exnref }}
           QUICKJS_WEBASSEMBLY: ${{ steps.contract.outputs.quickjs_webassembly }}
           RUNTIME_PROVIDER: ${{ steps.contract.outputs.runtime_provider }}
+          SYSROOT_ASSET_SHA256: ${{ steps.contract.outputs.sysroot_asset_sha256 }}
           SYSROOT_TAG: ${{ steps.contract.outputs.sysroot_tag }}
           WASMER_PATCH: ${{ steps.contract.outputs.wasmer_patch_path }}
           WASMER_SOURCE_COMMIT: ${{ steps.contract.outputs.wasmer_source_commit }}
@@ -245,6 +274,7 @@ jobs:
             --arg patchSha256 "${patch_sha256}" \
             --arg quickjsWebAssembly "${QUICKJS_WEBASSEMBLY}" \
             --arg runtimeProvider "${RUNTIME_PROVIDER}" \
+            --arg sysrootAssetSha256 "${SYSROOT_ASSET_SHA256}" \
             --arg sysrootTag "${SYSROOT_TAG}" \
             --arg wasmerJsSha256 "${wasmer_js_sha256}" \
             --arg wasmerPatchSha256 "${wasmer_patch_sha256}" \
@@ -269,6 +299,7 @@ jobs:
               toolchain: {
                 wasixccVersion: $wasixccVersion,
                 sysrootTag: $sysrootTag,
+                sysrootAssetSha256: $sysrootAssetSha256,
                 wasixccWasmExceptions: $wasixccWasmExceptions,
                 wasixccRunWasmOpt: $wasixccRunWasmOpt,
                 emitExnref: $emitExnref,

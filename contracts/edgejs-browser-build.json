@@ -16,6 +16,8 @@
     "wasixccActionCommit": "8a505d4605b15fd466a3881d286582b23e4ffecb",
     "wasixccVersion": "v0.4.3",
     "sysrootTag": "v2025-12-10.1",
+    "sysrootAsset": "sysroot-eh.tar.gz",
+    "sysrootAssetSha256": "bc7c890d178bac09082eaff6f9d509a83a787b8a79f3790ae4e5ee694ab11dcf",
     "wasmToolsVersion": "1.254.0",
     "rustVersion": "1.97.1",
     "wasixccWasmExceptions": "legacy",

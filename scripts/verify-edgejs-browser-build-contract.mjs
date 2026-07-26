@@ -24,6 +24,8 @@ assert.equal(contract.toolchain.emitExceptionReferences, false);
 assert.equal(contract.toolchain.wasixccWasmExceptions, "legacy");
 assert.equal(contract.toolchain.wasixccRunWasmOpt, false);
 assert.equal(contract.toolchain.quickjsWebAssembly, false);
+assert.equal(contract.toolchain.sysrootAsset, "sysroot-eh.tar.gz");
+assert.match(contract.toolchain.sysrootAssetSha256, /^[0-9a-f]{64}$/u);
 
 for (const patch of contract.patches) {
   const patchPath = path.join(repositoryRoot, patch.path);
@@ -61,6 +63,8 @@ const outputs = {
   quickjs_webassembly: contract.toolchain.quickjsWebAssembly ? "yes" : "no",
   runtime_provider: contract.runtimeProvider,
   rust_version: contract.toolchain.rustVersion,
+  sysroot_asset: contract.toolchain.sysrootAsset,
+  sysroot_asset_sha256: contract.toolchain.sysrootAssetSha256,
   sysroot_tag: contract.toolchain.sysrootTag,
   wasmer_patch_path: contract.browserExecutor.patches[0].path,
   wasmer_rust_toolchain: contract.browserExecutor.build.rustToolchain,
