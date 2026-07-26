@@ -1,7 +1,13 @@
 # Clawsembly Kernel
 
-A clean-room browser execution kernel for running an unmodified OpenClaw
-artifact without BrowserPod.
+Run the exact official OpenClaw release, unchanged, entirely inside a browser
+on an open-source, self-hostable kernel — persistently, securely, and without a
+proprietary runtime or remote operating system.
+
+This is the repository's [North Star](NORTH_STAR.md). Completion requires
+reproducible evidence of the real OpenClaw Gateway, a real agent turn, durable
+browser-local state, and an explicit capability boundary. A mock, partial boot,
+or patched OpenClaw build does not count.
 
 This repository starts below Node. Browser capabilities form the kernel;
 Node compatibility is a replaceable personality above it. The first vertical
@@ -44,7 +50,9 @@ npm run dev
 
 Experimental. This proves a browser-native SQLite capability; it does not yet
 run Edge.js or OpenClaw. See [the architecture note](docs/architecture.md) for
-the implemented and deliberately unsupported boundaries.
+the implemented and deliberately unsupported boundaries. Intermediate
+milestones are measured against the [definition of done](NORTH_STAR.md#definition-of-done)
+and do not weaken it.
 
 ## License
 

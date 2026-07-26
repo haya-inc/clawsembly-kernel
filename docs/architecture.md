@@ -1,5 +1,9 @@
 # Architecture
 
+The architecture serves the repository's [North Star](../NORTH_STAR.md).
+Implementation components remain replaceable until the complete unmodified
+OpenClaw path is proven.
+
 ## Decision
 
 Clawsembly Kernel is a clean-room browser execution substrate. It does not

@@ -1,7 +1,7 @@
 {
   "name": "clawsembly-kernel",
   "version": "0.0.0",
-  "description": "A clean-room browser execution kernel for an unmodified OpenClaw artifact.",
+  "description": "Run the exact unmodified OpenClaw release entirely inside a browser on an OSS, self-hostable kernel.",
   "private": true,
   "license": "MIT",
   "type": "module",
