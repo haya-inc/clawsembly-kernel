@@ -36,7 +36,7 @@
     "patches": [
       {
         "path": "patches/wasmer-js/0001-compile-browser-modules-with-native-engine.patch",
-        "sha256": "a7f602c95776adcff2b87812aaff44a3b3d17d2abdbbfcea2c8caefc729bfa6a"
+        "sha256": "f01f42832540a33ec6e8157ad97daa243b320e0fb7d95ed9c7e0f5f3ba993451"
       }
     ],
     "build": {

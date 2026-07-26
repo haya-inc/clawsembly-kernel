@@ -76,11 +76,108 @@ index ef54a7d..687c680 100644
      "node_modules/webidl-conversions": {
        "version": "7.0.0",
        "resolved": "https://registry.npmjs.org/webidl-conversions/-/webidl-conversions-7.0.0.tgz",
+diff --git a/src/options.rs b/src/options.rs
+index 9fb3958..6664cf9 100644
+--- a/src/options.rs
++++ b/src/options.rs
+@@ -1,10 +1,8 @@
+ use std::{collections::BTreeMap, sync::Arc};
+ 
+-use anyhow::Context;
+ use js_sys::Array;
+-use virtual_fs::TmpFileSystem;
+ use wasm_bindgen::{prelude::wasm_bindgen, JsCast, JsValue, UnwrapThrowExt};
+-use wasmer_wasix::WasiEnvBuilder;
++use wasmer_wasix::runners::wasi::WasiRunner;
+ 
+ use crate::{runtime::Runtime, utils::Error, Directory, DirectoryInit, JsRuntime, StringOrBytes};
+ 
+@@ -177,11 +175,11 @@ extern "C" {
+ }
+ 
+ impl RunOptions {
+-    /// Propagate any provided options to the [`WasiEnvBuilder`], returning
++    /// Propagate any provided options to the [`WasiRunner`], returning
+     /// streams that can be used for stdin/stdout/stderr.
+-    pub(crate) fn configure_builder(
++    pub(crate) fn configure_runner(
+         &self,
+-        builder: &mut WasiEnvBuilder,
++        runner: &mut WasiRunner,
+     ) -> Result<
+         (
+             Option<web_sys::WritableStream>,
+@@ -190,54 +188,39 @@ impl RunOptions {
+         ),
+         Error,
+     > {
+-        for arg in self.parse_args()? {
+-            builder.add_arg(arg);
+-        }
++        runner.with_args(self.parse_args()?);
+ 
+-        for (key, value) in self.parse_env()? {
+-            builder.add_env(key, value);
++        runner.with_envs(self.parse_env()?);
++
++        if let Some(cwd) = self.parse_cwd()? {
++            runner.with_current_dir(cwd);
+         }
+ 
+         let stdin = match self.read_stdin() {
+             Some(stdin) => {
+                 let f = virtual_fs::StaticFile::new(stdin);
+-                builder.set_stdin(Box::new(f));
++                runner.with_stdin(Box::new(f));
+                 None
+             }
+             None => {
+                 let (f, stdin) = crate::streams::input_pipe();
+-                builder.set_stdin(Box::new(f));
++                runner.with_stdin(Box::new(f));
+                 Some(stdin)
+             }
+         };
+ 
+         let (stdout_file, stdout) = crate::streams::output_pipe();
+-        builder.set_stdout(Box::new(stdout_file));
++        runner.with_stdout(Box::new(stdout_file));
+ 
+         let (stderr_file, stderr) = crate::streams::output_pipe();
+-        builder.set_stderr(Box::new(stderr_file));
+-
+-        let fs = self.filesystem()?;
+-        builder.set_fs(Box::new(fs));
+-        builder.add_preopen_dir("/")?;
+-
+-        Ok((stdin, stdout, stderr))
+-    }
+-
+-    pub(crate) fn filesystem(&self) -> Result<TmpFileSystem, Error> {
+-        let root = TmpFileSystem::new();
++        runner.with_stderr(Box::new(stderr_file));
+ 
+         for (dest, fs) in self.mounted_directories()? {
+             tracing::trace!(%dest, ?fs, "Mounting directory");
+-
+-            let fs = Arc::new(fs) as Arc<_>;
+-            root.mount(dest.as_str().into(), &fs, "/".into())
+-                .with_context(|| format!("Unable to mount to \"{dest}\""))?;
++            runner.with_mount(dest, Arc::new(fs));
+         }
+ 
+-        tracing::trace!(?root, "Initialized the filesystem");
+-
+-        Ok(root)
++        Ok((stdin, stdout, stderr))
+     }
+ }
+ 
 diff --git a/src/run.rs b/src/run.rs
-index 6e25018..092c4bd 100644
+index 6e25018..20def54 100644
 --- a/src/run.rs
 +++ b/src/run.rs
-@@ -1,11 +1,10 @@
+@@ -1,11 +1,9 @@
  use futures::channel::oneshot;
 -use wasmer_types::ModuleHash;
  use std::sync::Arc;
@@ -88,13 +185,32 @@ index 6e25018..092c4bd 100644
 +use wasmer_types::ModuleHash;
 +use wasmer_wasix::runners::wasi::{RuntimeOrEngine, WasiRunner};
  use wasmer_wasix::Runtime as _;
- use wasmer_wasix::WasiEnvBuilder;
+-use wasmer_wasix::WasiEnvBuilder;
 -use wasmer_wasix::runtime::module_cache::HashedModuleData;
 -use wasmer_wasix::runners::wasi::{WasiRunner, RuntimeOrEngine};
  
  use crate::{instance::ExitCondition, utils::Error, Instance, RunOptions};
  
-@@ -55,7 +54,12 @@ async fn run_wasix_inner(wasm_module: WasmModule, config: RunOptions) -> Result<
+@@ -39,23 +37,25 @@ async fn run_wasix_inner(wasm_module: WasmModule, config: RunOptions) -> Result<
+         .as_string()
+         .unwrap_or_else(|| DEFAULT_PROGRAM_NAME.to_string());
+ 
+-    let mut builder = WasiEnvBuilder::new(program_name.clone()).runtime(runtime.clone());
+-    let (stdin, stdout, stderr) = config.configure_builder(&mut builder)?;
+-
+-    let (exit_code_tx, exit_code_rx) = oneshot::channel();
+     let mut runner = WasiRunner::new();
++    let (stdin, stdout, stderr) = config.configure_runner(&mut runner)?;
++    let (exit_code_tx, exit_code_rx) = oneshot::channel();
+ 
+     let module: wasmer::Module = wasm_module.to_module(&*runtime).await?;
+ 
+-    // Note: The WasiEnvBuilder::run() method blocks, so we need to run it on
+-    // the thread pool.
++    // WasiRunner::run_wasm() blocks, so run it on the thread pool.
+     let tasks = runtime.task_manager().clone();
+     tasks.spawn_with_module(
+         module,
          Box::new(move |module| {
              let _span = tracing::debug_span!("run").entered();
              let hash = ModuleHash::random();
@@ -108,7 +224,7 @@ index 6e25018..092c4bd 100644
              let _ = exit_code_tx.send(ExitCondition::from_result(result));
          }),
      )?;
-@@ -70,24 +74,43 @@ async fn run_wasix_inner(wasm_module: WasmModule, config: RunOptions) -> Result<
+@@ -70,24 +70,43 @@ async fn run_wasix_inner(wasm_module: WasmModule, config: RunOptions) -> Result<
  
  #[wasm_bindgen]
  extern "C" {
