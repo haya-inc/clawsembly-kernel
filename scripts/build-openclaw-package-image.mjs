@@ -32,6 +32,7 @@ const packageContract = JSON.parse(
 );
 const IMAGE_MAGIC = Buffer.from("CLAWSEMBLYFS1\n", "ascii");
 const IMAGE_VERSION = 1;
+const IMAGE_FILE_UMASK = 0o022;
 
 function parseArguments(argv) {
   const options = {
@@ -130,8 +131,11 @@ function cacheNameForIntegrity(integrity) {
 }
 
 function runTar(arguments_, label, options = {}) {
+  const environment = { ...process.env };
+  delete environment.TAR_OPTIONS;
   const result = spawnSync("tar", arguments_, {
     encoding: "utf8",
+    env: environment,
     maxBuffer: options.maxBuffer ?? 64 * 1024 * 1024
   });
   if (result.status !== 0) {
@@ -140,6 +144,91 @@ function runTar(arguments_, label, options = {}) {
     );
   }
   return result.stdout;
+}
+
+let tarExtractionCapabilities;
+
+function getTarExtractionCapabilities() {
+  if (tarExtractionCapabilities) return tarExtractionCapabilities;
+  const result = spawnSync("tar", ["--help"], {
+    encoding: "utf8",
+    maxBuffer: 4 * 1024 * 1024
+  });
+  if (result.error) throw result.error;
+  const help = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  tarExtractionCapabilities = {
+    delayDirectoryRestore: help.includes("--delay-directory-restore"),
+    noOverwriteDirectory: help.includes("--no-overwrite-dir")
+  };
+  return tarExtractionCapabilities;
+}
+
+async function prepareArchiveDirectories(
+  destination,
+  archiveEntries,
+  stripComponents
+) {
+  const relativeDirectories = new Set([""]);
+  for (const entry of archiveEntries) {
+    const components = entry.replace(/\/$/u, "").split("/");
+    const stripped = components.slice(stripComponents);
+    for (let length = 1; length < stripped.length; length += 1) {
+      relativeDirectories.add(stripped.slice(0, length).join("/"));
+    }
+  }
+  const orderedDirectories = [...relativeDirectories].sort(
+    (left, right) => (
+      left.split("/").length - right.split("/").length
+      || left.localeCompare(right)
+    )
+  );
+  for (const relativeDirectory of orderedDirectories) {
+    const absoluteDirectory = path.join(
+      destination,
+      ...relativeDirectory.split("/").filter(Boolean)
+    );
+    await mkdir(absoluteDirectory, { recursive: true, mode: 0o700 });
+    const metadata = await lstat(absoluteDirectory);
+    if (!metadata.isDirectory()) {
+      throw new Error(
+        `archive parent is not a directory: ${relativeDirectory || "."}`
+      );
+    }
+    if ((metadata.mode & 0o700) !== 0o700) {
+      await chmod(absoluteDirectory, metadata.mode | 0o700);
+    }
+  }
+}
+
+async function extractNpmArchive(
+  archivePath,
+  destination,
+  archiveEntries,
+  label,
+  stripComponents = 0
+) {
+  const capabilities = getTarExtractionCapabilities();
+  await prepareArchiveDirectories(
+    destination,
+    archiveEntries,
+    stripComponents
+  );
+  const arguments_ = [
+    "-xzf",
+    archivePath,
+    "-C",
+    destination,
+    ...(stripComponents === 0
+      ? []
+      : [`--strip-components=${stripComponents}`]),
+    ...(capabilities.delayDirectoryRestore
+      ? ["--delay-directory-restore"]
+      : []),
+    ...(capabilities.noOverwriteDirectory
+      ? ["--no-overwrite-dir"]
+      : [])
+  ];
+  runTar(arguments_, label);
 }
 
 function validateNpmArchive(archivePath, label, expectedRoot) {
@@ -174,7 +263,7 @@ function validateNpmArchive(archivePath, label, expectedRoot) {
       `${label} has unexpected top-level directory: ${archiveRoot}`
     );
   }
-  return { entries: entries.length, root: archiveRoot };
+  return { entries: entries.length, paths: entries, root: archiveRoot };
 }
 
 async function readVerifiedFile(filename, integrity) {
@@ -359,6 +448,14 @@ async function collectFiles(directory) {
   const rootRealPath = await realpath(directory);
   const files = [];
   let materializedSymlinks = 0;
+  let normalizedFileModes = 0;
+
+  function imageFileMode(metadata) {
+    const archiveMode = metadata.mode & 0o777;
+    const normalizedMode = archiveMode & ~IMAGE_FILE_UMASK;
+    if (archiveMode !== normalizedMode) normalizedFileModes += 1;
+    return normalizedMode;
+  }
 
   async function visit(current, relativeDirectory) {
     const entries = await readdir(current, { withFileTypes: true });
@@ -375,7 +472,7 @@ async function collectFiles(directory) {
         files.push({
           absolutePath,
           relativePath,
-          mode: metadata.mode & 0o777
+          mode: imageFileMode(metadata)
         });
       } else if (entry.isSymbolicLink()) {
         const target = await readlink(absolutePath);
@@ -393,7 +490,7 @@ async function collectFiles(directory) {
         files.push({
           absolutePath: resolved,
           relativePath,
-          mode: metadata.mode & 0o777
+          mode: imageFileMode(metadata)
         });
         materializedSymlinks += 1;
       } else {
@@ -410,7 +507,7 @@ async function collectFiles(directory) {
         ? 1
         : 0
   ));
-  return { files, materializedSymlinks };
+  return { files, materializedSymlinks, normalizedFileModes };
 }
 
 function writeWithBackpressure(stream, bytes) {
@@ -503,10 +600,16 @@ async function main() {
       override: options.archive,
       url: artifactContract.tarball
     });
-    validateNpmArchive(official.path, "official OpenClaw archive", "package");
+    const officialArchive = validateNpmArchive(
+      official.path,
+      "official OpenClaw archive",
+      "package"
+    );
 
-    runTar(
-      ["-xzf", official.path, "-C", temporaryRoot],
+    await extractNpmArchive(
+      official.path,
+      temporaryRoot,
+      officialArchive.paths,
       "official OpenClaw extraction"
     );
     const packageRoot = path.join(temporaryRoot, "package");
@@ -554,21 +657,21 @@ async function main() {
     process.stdout.write("Extracting and verifying the locked runtime graph...\n");
     const dependencyManifests = [];
     for (const { artifact, dependency } of dependencyArchives) {
-      validateNpmArchive(artifact.path, dependency.installPath);
+      const archive = validateNpmArchive(
+        artifact.path,
+        dependency.installPath
+      );
       const destination = path.join(
         packageRoot,
         ...dependency.installPath.split("/")
       );
       await mkdir(destination, { recursive: true });
-      runTar(
-        [
-          "-xzf",
-          artifact.path,
-          "-C",
-          destination,
-          "--strip-components=1"
-        ],
-        `${dependency.installPath} extraction`
+      await extractNpmArchive(
+        artifact.path,
+        destination,
+        archive.paths,
+        `${dependency.installPath} extraction`,
+        1
       );
       normalizedDirectoryModes +=
         await normalizeDirectoryPermissions(destination);
@@ -606,7 +709,11 @@ async function main() {
       );
     }
 
-    const { files, materializedSymlinks } = await collectFiles(packageRoot);
+    const {
+      files,
+      materializedSymlinks,
+      normalizedFileModes
+    } = await collectFiles(packageRoot);
     process.stdout.write(
       `Writing ${files.length} files to ${options.output}...\n`
     );
@@ -626,10 +733,16 @@ async function main() {
       },
       assembly: {
         method: "direct integrity-pinned npm archive extraction",
+        delayedDirectoryMetadataRestore:
+          getTarExtractionCapabilities().delayDirectoryRestore,
+        preservedPreparedDirectoryPermissions:
+          getTarExtractionCapabilities().noOverwriteDirectory,
         dependencyManifests: dependencyManifests.length,
         optionalArchives:
           packageContract.dependencies.filter((entry) => entry.optional).length,
+        imageFileUmask: "0022",
         materializedSymlinks,
+        normalizedFileModes,
         normalizedDirectoryModes,
         lifecycleScripts: {
           executed: false,
