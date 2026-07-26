@@ -17,7 +17,7 @@
     "sysrootTag": "v2026-06-25.1",
     "wasmToolsVersion": "1.254.0",
     "rustVersion": "1.97.1",
-    "wasixccWasmExceptions": "yes",
+    "wasixccWasmExceptions": "legacy",
     "emitExceptionReferences": false
   },
   "browserExecutor": {

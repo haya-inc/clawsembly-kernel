@@ -20,7 +20,7 @@ assert.equal(contract.schemaVersion, 1);
 assert.equal(contract.upstream.commit, edgeArtifact.source.commit);
 assert.equal(contract.upstream.repository, edgeArtifact.source.repository);
 assert.equal(contract.toolchain.emitExceptionReferences, false);
-assert.equal(contract.toolchain.wasixccWasmExceptions, "yes");
+assert.equal(contract.toolchain.wasixccWasmExceptions, "legacy");
 
 for (const patch of contract.patches) {
   const patchPath = path.join(repositoryRoot, patch.path);
@@ -63,6 +63,7 @@ if (process.argv.includes("--github-output")) {
 console.log(
   `Verified Edge.js browser build contract at ${contract.upstream.commit}: `
   + `${contract.patches.length} patch, @wasmer/sdk@${sdk.version}, `
+  + `wasm-exceptions=${outputs.wasixcc_wasm_exceptions}, `
   + `emit-exnref=${outputs.emit_exnref}.`
 );
 

@@ -113,6 +113,16 @@ jobs:
             ZIP_NAME=edge-wasix-browser-compatible.zip
           test -s edgejs/edge-wasix-browser-compatible.zip
 
+      - name: Upload inspectable build candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: edgejs-wasix-browser-candidate
+          path: |
+            edgejs/build-wasix/edgejs.wasm
+            edgejs/edge-wasix-browser-compatible.zip
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Install browser proof dependencies
         run: |
           npm ci
