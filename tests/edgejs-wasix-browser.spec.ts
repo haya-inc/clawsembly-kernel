@@ -40,6 +40,31 @@ type BrowserEvidence = {
     stderr: string;
     stdout: string;
   };
+  network: {
+    client: {
+      code: number;
+      ok: boolean;
+      stdout: string;
+    };
+    externalEgress: {
+      result: {
+        code: number;
+        ok: boolean;
+        stdout: string;
+      };
+      status: string;
+    };
+    listenHost: string;
+    namespace: string;
+    port: number;
+    request: string;
+    response: string;
+    server: {
+      code: number;
+      ok: boolean;
+      stdout: string;
+    };
+  };
   schemaVersion: number;
   sqlite: {
     crossProcessRead: {
@@ -135,6 +160,28 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
       stderr: "",
       stdout: "before-exit\n"
     },
+    network: {
+      namespace: "browser-local-loopback",
+      listenHost: "127.0.0.1",
+      port: 18_790,
+      externalEgress: {
+        status: "denied-by-default",
+        result: {
+          code: 0,
+          ok: true
+        }
+      },
+      request: "ping",
+      response: "pong",
+      server: {
+        code: 0,
+        ok: true
+      },
+      client: {
+        code: 0,
+        ok: true
+      }
+    },
     sqlite: {
       version: contract.sqlite.version,
       write: {
@@ -171,6 +218,15 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
   expect(evidence.artifactBytes).toBeGreaterThan(1_000_000);
   expect(evidence.sqlite.databaseBytes).toBeGreaterThan(0);
   expect(evidence.sqlite.databaseSha256).toMatch(/^[0-9a-f]{64}$/u);
+  expect(evidence.network.server.stdout).toContain(
+    "CLAWSEMBLY_LOOPBACK_SERVER=ping:pong"
+  );
+  expect(evidence.network.client.stdout).toContain(
+    "CLAWSEMBLY_LOOPBACK_CLIENT=pong"
+  );
+  expect(evidence.network.externalEgress.result.stdout).toContain(
+    "CLAWSEMBLY_EXTERNAL_EGRESS=denied:"
+  );
 
   const artifactSha256 = createHash("sha256")
     .update(readFileSync(resolvedArtifactPath))

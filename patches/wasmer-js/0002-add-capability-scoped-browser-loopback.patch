@@ -1,0 +1,213 @@
+diff --git a/src/browser_loopback.rs b/src/browser_loopback.rs
+new file mode 100644
+index 0000000..f4c1a81
+--- /dev/null
++++ b/src/browser_loopback.rs
+@@ -0,0 +1,173 @@
++use std::{
++    collections::HashSet,
++    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
++    sync::{Arc, Mutex},
++    task::{Context, Poll},
++};
++
++use virtual_net::{
++    InterestHandler, IpCidr, LoopbackNetworking, NetworkError, VirtualIoSource, VirtualNetworking,
++    VirtualTcpListener, VirtualTcpSocket,
++};
++
++/// A browser-local TCP namespace with no ambient external network authority.
++#[derive(Clone, Debug, Default)]
++pub(crate) struct BrowserLoopbackNetworking {
++    inner: LoopbackNetworking,
++    listeners: Arc<Mutex<HashSet<SocketAddr>>>,
++}
++
++impl BrowserLoopbackNetworking {
++    fn is_allowed_address(address: SocketAddr) -> bool {
++        address.ip().is_loopback()
++    }
++}
++
++#[async_trait::async_trait]
++impl VirtualNetworking for BrowserLoopbackNetworking {
++    async fn dhcp_acquire(&self) -> virtual_net::Result<Vec<IpAddr>> {
++        self.inner.dhcp_acquire().await
++    }
++
++    async fn ip_add(&self, ip: IpAddr, prefix: u8) -> virtual_net::Result<()> {
++        if !ip.is_loopback() {
++            return Err(NetworkError::PermissionDenied);
++        }
++        self.inner.ip_add(ip, prefix).await
++    }
++
++    async fn ip_remove(&self, ip: IpAddr) -> virtual_net::Result<()> {
++        self.inner.ip_remove(ip).await
++    }
++
++    async fn ip_clear(&self) -> virtual_net::Result<()> {
++        self.inner.ip_clear().await
++    }
++
++    async fn ip_list(&self) -> virtual_net::Result<Vec<IpCidr>> {
++        self.inner.ip_list().await
++    }
++
++    async fn listen_tcp(
++        &self,
++        address: SocketAddr,
++        only_v6: bool,
++        reuse_port: bool,
++        reuse_addr: bool,
++    ) -> virtual_net::Result<Box<dyn VirtualTcpListener + Sync>> {
++        if !Self::is_allowed_address(address) {
++            return Err(NetworkError::PermissionDenied);
++        }
++        {
++            let mut listeners = self.listeners.lock().unwrap();
++            if !listeners.insert(address) {
++                return Err(NetworkError::AddressInUse);
++            }
++        }
++        match self
++            .inner
++            .listen_tcp(address, only_v6, reuse_port, reuse_addr)
++            .await
++        {
++            Ok(inner) => Ok(Box::new(TrackedTcpListener {
++                address,
++                inner,
++                listeners: self.listeners.clone(),
++            })),
++            Err(error) => {
++                self.listeners.lock().unwrap().remove(&address);
++                Err(error)
++            }
++        }
++    }
++
++    async fn connect_tcp(
++        &self,
++        local_address: SocketAddr,
++        peer_address: SocketAddr,
++    ) -> virtual_net::Result<Box<dyn VirtualTcpSocket + Sync>> {
++        if !Self::is_allowed_address(peer_address) {
++            return Err(NetworkError::PermissionDenied);
++        }
++        if !self.listeners.lock().unwrap().contains(&peer_address) {
++            return Err(NetworkError::ConnectionRefused);
++        }
++        self.inner
++            .loopback_connect_to(local_address, peer_address)
++            .map(|socket| Box::new(socket) as Box<dyn VirtualTcpSocket + Sync>)
++            .ok_or(NetworkError::ConnectionRefused)
++    }
++
++    async fn resolve(
++        &self,
++        host: &str,
++        _port: Option<u16>,
++        _dns_server: Option<IpAddr>,
++    ) -> virtual_net::Result<Vec<IpAddr>> {
++        if host.eq_ignore_ascii_case("localhost") {
++            return Ok(vec![
++                IpAddr::V4(Ipv4Addr::LOCALHOST),
++                IpAddr::V6(Ipv6Addr::LOCALHOST),
++            ]);
++        }
++        match host.parse::<IpAddr>() {
++            Ok(ip) if ip.is_loopback() => Ok(vec![ip]),
++            Ok(_) => Err(NetworkError::PermissionDenied),
++            Err(_) => Err(NetworkError::Unsupported),
++        }
++    }
++}
++
++#[derive(Debug)]
++struct TrackedTcpListener {
++    address: SocketAddr,
++    inner: Box<dyn VirtualTcpListener + Sync>,
++    listeners: Arc<Mutex<HashSet<SocketAddr>>>,
++}
++
++impl Drop for TrackedTcpListener {
++    fn drop(&mut self) {
++        self.listeners.lock().unwrap().remove(&self.address);
++    }
++}
++
++impl VirtualIoSource for TrackedTcpListener {
++    fn remove_handler(&mut self) {
++        self.inner.remove_handler();
++    }
++
++    fn poll_read_ready(&mut self, context: &mut Context<'_>) -> Poll<virtual_net::Result<usize>> {
++        self.inner.poll_read_ready(context)
++    }
++
++    fn poll_write_ready(&mut self, context: &mut Context<'_>) -> Poll<virtual_net::Result<usize>> {
++        self.inner.poll_write_ready(context)
++    }
++}
++
++impl VirtualTcpListener for TrackedTcpListener {
++    fn try_accept(
++        &mut self,
++    ) -> virtual_net::Result<(Box<dyn VirtualTcpSocket + Sync>, SocketAddr)> {
++        self.inner.try_accept()
++    }
++
++    fn set_handler(
++        &mut self,
++        handler: Box<dyn InterestHandler + Send + Sync>,
++    ) -> virtual_net::Result<()> {
++        self.inner.set_handler(handler)
++    }
++
++    fn addr_local(&self) -> virtual_net::Result<SocketAddr> {
++        self.inner.addr_local()
++    }
++
++    fn set_ttl(&mut self, ttl: u8) -> virtual_net::Result<()> {
++        self.inner.set_ttl(ttl)
++    }
++
++    fn ttl(&self) -> virtual_net::Result<u8> {
++        self.inner.ttl()
++    }
++}
+diff --git a/src/lib.rs b/src/lib.rs
+index 7b22da5..b51bfee 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -5,6 +5,7 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+ 
+ extern crate alloc;
+ 
++mod browser_loopback;
+ pub mod fs;
+ mod instance;
+ mod js_runtime;
+diff --git a/src/runtime.rs b/src/runtime.rs
+index d71638f..bb2fd44 100644
+--- a/src/runtime.rs
++++ b/src/runtime.rs
+@@ -21,7 +21,7 @@ lazy_static! {
+     static ref DEFAULT_THREAD_POOL: Arc<ThreadPool> = Arc::new(ThreadPool::new());
+ }
+ 
+-use crate::{tasks::ThreadPool, utils::Error};
++use crate::{browser_loopback::BrowserLoopbackNetworking, tasks::ThreadPool, utils::Error};
+ 
+ /// A weak reference to the global [`Runtime`].
+ static GLOBAL_RUNTIME: Lazy<Mutex<Weak<Runtime>>> = Lazy::new(Mutex::default);
+@@ -117,7 +117,7 @@ impl Runtime {
+ 
+         Runtime {
+             task_manager: None,
+-            networking: Arc::new(virtual_net::UnsupportedVirtualNetworking::default()),
++            networking: Arc::new(BrowserLoopbackNetworking::default()),
+             source: None,
+             http_client: Arc::new(http_client),
+             package_loader: Arc::new(package_loader),

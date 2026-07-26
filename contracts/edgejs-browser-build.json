@@ -14,6 +14,10 @@
     {
       "path": "patches/edgejs/0002-add-openclaw-node-sqlite.patch",
       "sha256": "5373da3eca17fe3bcec389061c81c2df4aee0abfe79ae0b4473b983ac0330ebc"
+    },
+    {
+      "path": "patches/edgejs/0003-complete-synchronous-wasix-tcp-connect.patch",
+      "sha256": "f7f1c6e93ddec19c408dd7282c18a3474ec738fea58abe46c27b71b51a64edb2"
     }
   ],
   "sqlite": {
@@ -56,6 +60,10 @@
       {
         "path": "patches/wasmer-js/0001-compile-browser-modules-with-native-engine.patch",
         "sha256": "f01f42832540a33ec6e8157ad97daa243b320e0fb7d95ed9c7e0f5f3ba993451"
+      },
+      {
+        "path": "patches/wasmer-js/0002-add-capability-scoped-browser-loopback.patch",
+        "sha256": "1c2e76f13ed50fefc00454d6c9a35e0a4334d22889a44dee51449945a07dd42b"
       }
     ],
     "build": {

@@ -92,6 +92,7 @@ jobs:
             git -C edgejs apply --unidiff-zero "../${edge_patch}"
           done
           git -C edgejs diff --check
+          git -C edgejs/deps/libuv-wasix diff --check
           git -C edgejs/napi diff --check
 
       - name: Verify QuickJS execution termination
@@ -125,14 +126,19 @@ jobs:
           git -C wasmer-js checkout --detach FETCH_HEAD
           test "$(git -C wasmer-js rev-parse HEAD)" = "${WASMER_SOURCE_COMMIT}"
 
-      - name: Apply audited Wasmer JS browser-runtime patch
+      - name: Apply audited Wasmer JS browser-runtime patches
         shell: bash
-        env:
-          WASMER_PATCH: ${{ steps.contract.outputs.wasmer_patch_path }}
         run: |
           set -euo pipefail
-          git -C wasmer-js apply --check "../${WASMER_PATCH}"
-          git -C wasmer-js apply "../${WASMER_PATCH}"
+          mapfile -t wasmer_patches < <(
+            jq -r '.browserExecutor.patches[].path' \
+              contracts/edgejs-browser-build.json
+          )
+          test "${#wasmer_patches[@]}" -gt 0
+          for wasmer_patch in "${wasmer_patches[@]}"; do
+            git -C wasmer-js apply --check "../${wasmer_patch}"
+            git -C wasmer-js apply "../${wasmer_patch}"
+          done
           git -C wasmer-js diff --check
 
       - name: Set up Rust
@@ -420,7 +426,6 @@ jobs:
           SYSROOT_TAG: ${{ steps.contract.outputs.sysroot_tag }}
           SQLITE_SHA256: ${{ steps.contract.outputs.sqlite_sha256 }}
           SQLITE_VERSION: ${{ steps.contract.outputs.sqlite_version }}
-          WASMER_PATCH: ${{ steps.contract.outputs.wasmer_patch_path }}
           WASMER_SOURCE_COMMIT: ${{ steps.contract.outputs.wasmer_source_commit }}
           WASIXCC_VERSION: ${{ steps.contract.outputs.wasixcc_version }}
         run: |
@@ -451,7 +456,6 @@ jobs:
             artifacts/openclaw-gateway-runtime-browser-evidence.json
           wasm_sha256="$(sha256sum edgejs/build-quickjs-wasix/edgejs.wasm | awk '{print $1}')"
           archive_sha256="$(sha256sum edgejs/edge-quickjs-wasix-browser-compatible.zip | awk '{print $1}')"
-          wasmer_patch_sha256="$(sha256sum "${WASMER_PATCH}" | awk '{print $1}')"
           wasmer_js_sha256="$(sha256sum wasmer-js/dist/index.mjs | awk '{print $1}')"
           wasmer_wasm_sha256="$(sha256sum wasmer-js/dist/wasmer_js_bg.wasm | awk '{print $1}')"
           jq -n \
@@ -465,7 +469,6 @@ jobs:
             --arg sqliteSha256 "${SQLITE_SHA256}" \
             --arg sqliteVersion "${SQLITE_VERSION}" \
             --arg wasmerJsSha256 "${wasmer_js_sha256}" \
-            --arg wasmerPatchSha256 "${wasmer_patch_sha256}" \
             --arg wasmerSourceCommit "${WASMER_SOURCE_COMMIT}" \
             --arg wasmerWasmSha256 "${wasmer_wasm_sha256}" \
             --arg wasmSha256 "${wasm_sha256}" \
@@ -484,6 +487,12 @@ jobs:
                 sha256
               }]' contracts/edgejs-browser-build.json
             )" \
+            --argjson wasmerPatches "$(
+              jq '[.browserExecutor.patches[] | {
+                path,
+                sha256
+              }]' contracts/edgejs-browser-build.json
+            )" \
             '{
               schemaVersion: 1,
               edgeSourceCommit: $edgeSourceCommit,
@@ -495,7 +504,7 @@ jobs:
               },
               browserExecutor: {
                 wasmerSourceCommit: $wasmerSourceCommit,
-                patchSha256: $wasmerPatchSha256,
+                patches: $wasmerPatches,
                 indexMjsSha256: $wasmerJsSha256,
                 runtimeWasmSha256: $wasmerWasmSha256
               },

@@ -13,6 +13,12 @@ type WasixOutput = {
   stdout: string;
 };
 
+type StreamCapture = {
+  done: Promise<void>;
+  snapshot: () => string;
+  waitFor: (marker: string, timeoutMs: number) => Promise<void>;
+};
+
 type SqliteMarker = {
   checkpointed: number;
   count: number;
@@ -52,6 +58,74 @@ function markerPayload<T>(
   return JSON.parse(line.slice(prefix.length)) as T;
 }
 
+function captureStream(
+  stream: ReadableStream<Uint8Array>
+): StreamCapture {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  const waiters = new Set<() => void>();
+  let captured = "";
+  let failure: unknown;
+  let finished = false;
+  const notify = () => {
+    for (const waiter of [...waiters]) waiter();
+  };
+  const done = (async () => {
+    try {
+      for (;;) {
+        const { done: streamDone, value } = await reader.read();
+        if (streamDone) break;
+        captured += decoder.decode(value, { stream: true });
+        notify();
+      }
+      captured += decoder.decode();
+    } catch (error) {
+      failure = error;
+      throw error;
+    } finally {
+      finished = true;
+      notify();
+      reader.releaseLock();
+    }
+  })();
+  return {
+    done,
+    snapshot: () => captured,
+    waitFor: (expectedMarker, timeoutMs) => {
+      if (captured.includes(expectedMarker)) return Promise.resolve();
+      return new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(() => {
+          cleanup();
+          reject(
+            new Error(
+              `Timed out waiting for stream marker: ${expectedMarker}`
+            )
+          );
+        }, timeoutMs);
+        const check = () => {
+          if (captured.includes(expectedMarker)) {
+            cleanup();
+            resolve();
+          } else if (finished) {
+            cleanup();
+            reject(
+              failure
+                ?? new Error(
+                  `Stream ended before marker: ${expectedMarker}`
+                )
+            );
+          }
+        };
+        const cleanup = () => {
+          window.clearTimeout(timeout);
+          waiters.delete(check);
+        };
+        waiters.add(check);
+      });
+    }
+  };
+}
+
 async function sha256(bytes: Uint8Array): Promise<string> {
   const copy = new Uint8Array(bytes.byteLength);
   copy.set(bytes);
@@ -66,9 +140,10 @@ async function runProbe(): Promise<void> {
     if (!crossOriginIsolated) {
       throw new Error("Edge.js WASIX requires a cross-origin-isolated browser context");
     }
-    const { Directory, init, initializeLogger, runWasix } =
+    const { Directory, init, initializeLogger, Runtime, runWasix } =
       await import("@wasmer/sdk");
     await init();
+    const wasixRuntime = new Runtime({ registry: null });
     if (searchParams.get("debug") === "1") initializeLogger("debug");
     status.textContent = "Fetching the self-built Edge.js WASIX artifact…";
     const response = await fetch(artifactUrl);
@@ -92,7 +167,8 @@ async function runProbe(): Promise<void> {
     const moduleWithBytes = { module, bytes } as unknown as WebAssembly.Module;
     const instance = await runWasix(moduleWithBytes, {
       program: "edgejs",
-      args: ["-e", runtimeScript]
+      args: ["-e", runtimeScript],
+      runtime: wasixRuntime
     });
     const output = await instance.wait();
     if (!output.ok) {
@@ -117,7 +193,8 @@ async function runProbe(): Promise<void> {
           "process.exit(7)",
           'console.log("after-exit")'
         ].join(";")
-      ]
+      ],
+      runtime: wasixRuntime
     });
     const processExit = await exitInstance.wait() as WasixOutput;
     if (
@@ -172,7 +249,8 @@ async function runProbe(): Promise<void> {
     const sqliteWriteInstance = await runWasix(moduleWithBytes, {
       program: "edgejs",
       args: ["-e", sqliteWriteScript],
-      mount: { "/state": sqliteDirectory }
+      mount: { "/state": sqliteDirectory },
+      runtime: wasixRuntime
     });
     const sqliteWrite = await sqliteWriteInstance.wait() as WasixOutput;
     if (!sqliteWrite.ok) {
@@ -206,7 +284,8 @@ async function runProbe(): Promise<void> {
     const sqliteReadInstance = await runWasix(moduleWithBytes, {
       program: "edgejs",
       args: ["-e", sqliteReadScript],
-      mount: { "/state": sqliteDirectory }
+      mount: { "/state": sqliteDirectory },
+      runtime: wasixRuntime
     });
     const sqliteRead = await sqliteReadInstance.wait() as WasixOutput;
     if (!sqliteRead.ok) {
@@ -241,6 +320,157 @@ async function runProbe(): Promise<void> {
       "openclaw-state.db"
     );
 
+    status.textContent =
+      "Verifying capability-scoped TCP across browser guest processes…";
+    const loopbackPort = 18_790;
+    const loopbackListeningMarker = "CLAWSEMBLY_LOOPBACK_LISTENING";
+    const loopbackServerMarker = "CLAWSEMBLY_LOOPBACK_SERVER=ping:pong";
+    const loopbackClientMarker = "CLAWSEMBLY_LOOPBACK_CLIENT=pong";
+    const loopbackServerScript = [
+      "const net=require('node:net');",
+      `const port=${loopbackPort};`,
+      "const server=net.createServer((socket)=>{",
+      "console.log('CLAWSEMBLY_LOOPBACK_SERVER_ACCEPTED');",
+      "let request='';",
+      "let responded=false;",
+      "socket.setEncoding('utf8');",
+      "socket.on('data',(chunk)=>{",
+      "console.log('CLAWSEMBLY_LOOPBACK_SERVER_DATA='+chunk);",
+      "request+=chunk;",
+      "if(request==='ping'){responded=true;socket.end('pong')}",
+      "});",
+      "socket.on('end',()=>{",
+      "console.log('CLAWSEMBLY_LOOPBACK_SERVER_END')",
+      "});",
+      "socket.on('close',(hadError)=>{",
+      "console.log('CLAWSEMBLY_LOOPBACK_SERVER_CLOSE='+hadError);",
+      "if(!responded){console.error('unexpected request:'+request);",
+      "process.exit(2);return}",
+      "server.close(()=>{",
+      `console.log(${JSON.stringify(loopbackServerMarker)});`,
+      "clearTimeout(watchdog);process.exit(0)",
+      "})",
+      "})",
+      "});",
+      "server.on('error',(error)=>{console.error(error);process.exit(1)});",
+      "server.listen(port,'127.0.0.1',()=>{",
+      `console.log(${JSON.stringify(loopbackListeningMarker)});`,
+      "});",
+      "const watchdog=setTimeout(()=>{",
+      "console.error('loopback server timeout');process.exit(124)",
+      "},30000);"
+    ].join("");
+    const loopbackServerInstance = await runWasix(moduleWithBytes, {
+      program: "edgejs",
+      args: ["-e", loopbackServerScript],
+      runtime: wasixRuntime
+    });
+    const loopbackServerStdout =
+      captureStream(loopbackServerInstance.stdout);
+    const loopbackServerStderr =
+      captureStream(loopbackServerInstance.stderr);
+    const loopbackServerExit =
+      loopbackServerInstance.wait() as Promise<WasixOutput>;
+    await loopbackServerStdout.waitFor(
+      loopbackListeningMarker,
+      30_000
+    );
+
+    const loopbackClientScript = [
+      "const net=require('node:net');",
+      "let response='';",
+      "const socket=net.createConnection({",
+      `host:'127.0.0.1',port:${loopbackPort}`,
+      "});",
+      "socket.setEncoding('utf8');",
+      "socket.on('connect',()=>{",
+      "console.log('CLAWSEMBLY_LOOPBACK_CLIENT_CONNECTED');",
+      "const accepted=socket.write('ping',()=>{",
+      "console.log('CLAWSEMBLY_LOOPBACK_CLIENT_WROTE')",
+      "});",
+      "console.log('CLAWSEMBLY_LOOPBACK_CLIENT_WRITE_ACCEPTED='+accepted);",
+      "});",
+      "socket.on('data',(chunk)=>{",
+      "console.log('CLAWSEMBLY_LOOPBACK_CLIENT_DATA='+chunk);",
+      "response+=chunk",
+      "});",
+      "socket.on('end',()=>{",
+      "if(response!=='pong'){console.error('unexpected response:'+response);",
+      "process.exit(2);return}",
+      `console.log(${JSON.stringify(loopbackClientMarker)});`,
+      "clearTimeout(watchdog);process.exit(0)",
+      "});",
+      "socket.on('error',(error)=>{console.error(error);process.exit(1)});",
+      "const watchdog=setTimeout(()=>{",
+      "console.error('loopback client timeout');process.exit(124)",
+      "},20000);"
+    ].join("");
+    const loopbackClientInstance = await runWasix(moduleWithBytes, {
+      program: "edgejs",
+      args: ["-e", loopbackClientScript],
+      runtime: wasixRuntime
+    });
+    const loopbackClient =
+      await loopbackClientInstance.wait() as WasixOutput;
+    const loopbackServerResult = await loopbackServerExit;
+    await Promise.all([
+      loopbackServerStdout.done,
+      loopbackServerStderr.done
+    ]);
+    const loopbackServer: WasixOutput = {
+      ...loopbackServerResult,
+      stdout: loopbackServerStdout.snapshot(),
+      stderr: loopbackServerStderr.snapshot()
+    };
+    if (
+      !loopbackServer.ok
+      || !loopbackClient.ok
+      || !loopbackServer.stdout.includes(loopbackServerMarker)
+      || !loopbackClient.stdout.includes(loopbackClientMarker)
+    ) {
+      throw new Error(
+        "Browser-local loopback contract mismatch: "
+        + JSON.stringify({ loopbackClient, loopbackServer })
+      );
+    }
+    const externalDeniedMarker = "CLAWSEMBLY_EXTERNAL_EGRESS=denied:";
+    const externalDeniedScript = [
+      "const net=require('node:net');",
+      "let watchdog;",
+      "const denied=(error)=>{",
+      `console.log(${JSON.stringify(externalDeniedMarker)}`,
+      "+(error?.code??error?.name??'unknown'));",
+      "clearTimeout(watchdog);process.exit(0)",
+      "};",
+      "let socket;",
+      "try{socket=net.createConnection({host:'1.1.1.1',port:80})}",
+      "catch(error){denied(error)}",
+      "socket?.on('connect',()=>{",
+      "console.error('external egress unexpectedly connected');",
+      "process.exit(2)",
+      "});",
+      "socket?.on('error',denied);",
+      "watchdog=setTimeout(()=>{",
+      "console.error('external denial timeout');process.exit(124)",
+      "},10000);"
+    ].join("");
+    const externalDeniedInstance = await runWasix(moduleWithBytes, {
+      program: "edgejs",
+      args: ["-e", externalDeniedScript],
+      runtime: wasixRuntime
+    });
+    const externalDenied =
+      await externalDeniedInstance.wait() as WasixOutput;
+    if (
+      !externalDenied.ok
+      || !externalDenied.stdout.includes(externalDeniedMarker)
+    ) {
+      throw new Error(
+        "External egress capability was not denied explicitly: "
+        + JSON.stringify(externalDenied)
+      );
+    }
+
     const evidence = {
       schemaVersion: 1,
       status: "pass",
@@ -251,6 +481,19 @@ async function runProbe(): Promise<void> {
       exitCode: output.code,
       stderr: output.stderr,
       processExit,
+      network: {
+        namespace: "browser-local-loopback",
+        listenHost: "127.0.0.1",
+        port: loopbackPort,
+        externalEgress: {
+          status: "denied-by-default",
+          result: externalDenied
+        },
+        request: "ping",
+        response: "pong",
+        server: loopbackServer,
+        client: loopbackClient
+      },
       sqlite: {
         version: sqliteWriteMarker.version,
         databaseBytes: sqliteDatabase.byteLength,

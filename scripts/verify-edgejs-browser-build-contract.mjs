@@ -79,7 +79,6 @@ const outputs = {
   sysroot_asset: contract.toolchain.sysrootAsset,
   sysroot_asset_sha256: contract.toolchain.sysrootAssetSha256,
   sysroot_tag: contract.toolchain.sysrootTag,
-  wasmer_patch_path: contract.browserExecutor.patches[0].path,
   wasmer_rust_toolchain: contract.browserExecutor.build.rustToolchain,
   wasmer_source_commit: contract.browserExecutor.upstream.commit,
   wasmer_source_repository: contract.browserExecutor.upstream.repository,
@@ -113,6 +112,7 @@ console.log(
   + `SQLite ${contract.sqlite.version}, `
   + `self-built @wasmer/sdk@${sdk.version} from `
   + `${contract.browserExecutor.upstream.commit}, `
+  + `${contract.browserExecutor.patches.length} Wasmer JS patches, `
   + `quickjs-webassembly=${outputs.quickjs_webassembly}, `
   + `wasm-exceptions=${outputs.wasixcc_wasm_exceptions}, `
   + `wasixcc-wasm-opt=${outputs.wasixcc_run_wasm_opt}, `
