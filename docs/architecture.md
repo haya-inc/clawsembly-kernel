@@ -117,6 +117,13 @@ already-compiled `WebAssembly.Module` loses the original bytes required by
 WASIX child Workers. The kernel compiles asynchronously with Chromium, passes
 `{ module, bytes }`, and preserves both across scheduler messages.
 
+The pinned Wasmer JS source also constructs a configured `WasiEnvBuilder` but
+then executes a different, unconfigured `WasiRunner`. That loses command-line
+arguments, environment variables, stdio pipes, the current directory, and
+mounted directories. The audited patch applies those options directly to the
+runner that calls `run_wasm`; this is a compatibility and capability fix, not a
+success-looking shim.
+
 The Edge.js compiler sysroot is pinned to wasix-libc `v2025-12-10.1`, the last
 release using the `proc_exec3`/`proc_spawn2` ABI implemented by Wasmer JS
 0.10's WASIX 6.1 runtime. Newer sysroots require
@@ -124,6 +131,21 @@ release using the `proc_exec3`/`proc_spawn2` ABI implemented by Wasmer JS
 semantics would violate the kernel's compatibility and capability boundaries.
 CI installs only that release's legacy-EH sysroot asset and verifies its pinned
 SHA-256, avoiding the toolchain's unrelated newer `exnref` asset set.
+
+The browser lane is publicly proven by
+[GitHub Actions run 30195135929](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30195135929).
+Chromium reported three arguments (`edgejs`, `-e`, and the evidence program),
+captured the runtime marker, and observed a clean exit. The evidence pins:
+
+- Edge `0.0.0-554eb9b`
+- Node `24.13.2`
+- V8 `0.0.0-node.0`
+- Edge.js WASIX SHA-256
+  `6b12a3e0381365e112ea291828d4b5b34354b7fec2f28520474c4d5ebcd6f85d`
+- Wasmer JS runtime Wasm SHA-256
+  `e19c6af6d0e7ad228b91b95e7e4d74559787844aaa057ab7f1b0edbdaa11f7ea`
+
+This proves the browser runtime lane, not complete OpenClaw startup.
 
 ## OPFS WAL precondition
 

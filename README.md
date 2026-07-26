@@ -78,22 +78,28 @@ own shrinkwrap, and runs two fresh Edge.js processes. Set
 
 ## Status
 
-Experimental. Two execution layers are now proven:
+Experimental. Three execution layers are now proven:
 
 - Chromium executes the artifact-derived SQLite contract against official
   SQLite Wasm with OPFS persistence.
 - Native Edge.js executes the exact unmodified OpenClaw state artifact through
   the kernel `node:sqlite` personality and recovers its state in a fresh
   Edge.js process.
+- Chromium executes the pinned, self-built QuickJS Edge.js WASIX artifact
+  through the pinned, self-built Wasmer JS runtime. The public proof records
+  `argc=3`, Edge `0.0.0-554eb9b`, Node `24.13.2`, exit code 0, empty stderr,
+  and an artifact SHA-256 match in
+  [GitHub Actions run 30195135929](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30195135929).
 
 This does not yet claim complete OpenClaw startup. The pinned Edge.js runtime
 reports Node 24.13.2, below OpenClaw's Node 24.15.0 safety floor. The browser
-runtime lane now pins a self-contained QuickJS Edge.js WASIX build and a
-source-built Wasmer JS executor patched to preserve original module bytes
-across Workers. Chromium startup evidence for that exact pair is the current
-in-progress gate. QuickJS's optional JavaScript `WebAssembly` global is
-explicitly disabled until its native `wasm_c_api_v0` dependency is replaced by
-a browser-native OSS adapter. See
+startup milestone proves the runtime path, argument propagation, captured
+stdio, and clean process exit; it does not yet execute OpenClaw's top-level
+entrypoint. QuickJS's optional JavaScript `WebAssembly` global is explicitly
+disabled until its native `wasm_c_api_v0` dependency is replaced by a
+browser-native OSS adapter. The next hard gate is a Node-compatible runtime at
+OpenClaw's safety floor, followed by the unmodified top-level entrypoint,
+capability-complete Gateway connectivity, and one real agent turn. See
 [the artifact-derived SQLite contract](docs/openclaw-sqlite-contract.md) and
 [the Edge.js personality proof](docs/edgejs-node-sqlite-personality.md) for the
 implemented and deliberately unsupported boundaries.

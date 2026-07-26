@@ -91,8 +91,10 @@ This proof deliberately does not claim complete OpenClaw startup:
   self-contained QuickJS artifact instead of depending on the mutable registry
   package. It also source-builds a patched Wasmer JS executor so the browser
   can compile the large module asynchronously while preserving its original
-  bytes across WASIX Workers. Chromium startup proof for this exact pair is the
-  active gate.
+  bytes across WASIX Workers. Chromium startup for this exact pair is proven by
+  [GitHub Actions run 30195135929](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30195135929);
+  the remaining gate is the complete OpenClaw entrypoint rather than runtime
+  startup.
 - QuickJS's optional JavaScript `WebAssembly` global is disabled because its
   WASIX implementation imports native Wasmer's `wasm_c_api_v0` namespace.
   Reintroducing that surface through a browser-native OSS adapter is a tracked
