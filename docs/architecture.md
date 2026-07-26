@@ -176,25 +176,36 @@ success-looking shim.
 
 ### Browser-local virtual networking
 
-The diagnostic-only Node-floor artifact now advances the exact unmodified
-OpenClaw Gateway through configuration, token authentication, plugin
-bootstrap, and runtime configuration. Startup then fails closed with:
+The runtime now contains a browser-local virtual network namespace rather than
+delegating OpenClaw execution to a remote machine. The patched Wasmer JS
+runtime owns a listener registry scoped to one explicit `Runtime` object. It
+permits loopback listen/connect, rejects unsupported external routes with
+`PermissionDenied`, reports duplicate listeners and refused connections
+explicitly, and removes a listener when the owning socket is dropped.
 
-```text
-gateway bind=loopback resolved to non-loopback host 0.0.0.0
-```
+WASIX completes an in-namespace virtual `connect(2)` synchronously. Edge.js's
+libuv patch feeds that successful completion back through the ordinary libuv
+I/O queue so Node's existing `net.connect` callback runs without modifying
+OpenClaw or Node JavaScript.
 
-The next runtime layer is therefore a browser-local virtual network namespace,
-not a remote machine and not a rewrite of OpenClaw. One runtime-scoped
-networking provider must:
+The public browser proof creates two separate Edge.js guest processes under
+one runtime. The server listens on `127.0.0.1:18790`; the client connects,
+sends `ping`, receives `pong`, and both processes close cleanly. A third guest
+attempts an external connection and receives `EPERM`, proving that loopback
+support did not introduce ambient egress. This completes the kernel-level
+loopback sub-gate, including:
 
-- give `127.0.0.1` and `::1` real loopback semantics;
-- let the Gateway process listen and a separate browser guest process connect;
-- keep listen, connect, DNS, and external egress as distinct revocable
-  capabilities;
-- map Node `net`, HTTP, and WebSocket behavior onto that namespace; and
-- produce readiness evidence only after a second process completes the real
-  Gateway health exchange.
+- real `127.0.0.1` listen/connect semantics;
+- a shared runtime-scoped namespace across separate guest processes;
+- explicit listen, connect, listener-lifetime, and denied-egress behavior; and
+- ordinary Node `net` callback completion over synchronous WASIX virtual TCP.
+
+It does not yet prove that the real OpenClaw Gateway is ready. The
+diagnostic-only Node-floor artifact starts the exact unmodified Gateway
+entrypoint, reaches the traced pre-bootstrap boundary, and then reaches the
+65-second host diagnostic deadline. The next gate is a phase-aware Gateway
+startup proof followed by a second browser guest completing the real Gateway
+readiness/health exchange.
 
 External model-provider traffic may later use a separately authorized
 self-hostable transport, but it cannot substitute for local Gateway loopback.
@@ -210,22 +221,23 @@ CI installs only that release's legacy-EH sysroot asset and verifies its pinned
 SHA-256, avoiding the toolchain's unrelated newer `exnref` asset set.
 
 The browser lane is publicly proven by
-[GitHub Actions run 30197574607](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30197574607).
+[GitHub Actions run 30203815745](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30203815745).
 Chromium reported three arguments (`edgejs`, `-e`, and the evidence program),
 captured the runtime marker, and observed a clean exit. A second process proved
 that `process.exit(7)` unwinds immediately: stdout is exactly `before-exit\n`,
 the following statement is not executed, and WASIX reports code 7. A third
 process executes the exact official `openclaw.mjs` launcher and stops at its
 honest Node version gate with code 1, empty stdout, and no `dist/entry.js`
-fall-through. The evidence pins:
+fall-through. Additional guests prove synchronous SQLite persistence and the
+browser-local loopback exchange described above. The evidence pins:
 
 - Edge `0.0.0-554eb9b`
 - Node `24.13.2`
 - V8 `0.0.0-node.0`
 - Edge.js WASIX SHA-256
-  `3ddd8410e20d04572a2079a1805079ed09210d3e5f36b7beb5902b4c94ab482a`
+  `706af076949e662f3af2c2d57ae5e23b25956bf796377fa84b56bb048be208ae`
 - Wasmer JS runtime Wasm SHA-256
-  `e19c6af6d0e7ad228b91b95e7e4d74559787844aaa057ab7f1b0edbdaa11f7ea`
+  `467cbca59bd647262cd6f7377f6354a36f72f696d959acc60fb79ed52fa2c46d`
 - OpenClaw `2026.7.1-2` npm integrity
   `sha512-ycF3yPcbjN6bUPeaUx6Mh6vze1hQWoD3CT/wWcmD7a8xaHHHRUaAlaq+lFxMHf1ssEgODVAwjlzYqp2twkYZ7g==`
 

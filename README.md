@@ -91,10 +91,11 @@ Experimental. Current execution milestones:
 - Chromium executes the pinned, self-built QuickJS Edge.js WASIX artifact
   through the pinned, self-built Wasmer JS runtime. The latest public proof
   records Edge `0.0.0-554eb9b`, Node `24.13.2`, an exact
-  `process.exit(7)` unwind, and an artifact SHA-256 match. It then executes the
+  `process.exit(7)` unwind, an artifact SHA-256 match, and browser-local TCP
+  communication between two isolated guest processes. It then executes the
   official `openclaw@2026.7.1-2` launcher from its integrity-pinned npm
   archive in
-  [GitHub Actions run 30197574607](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30197574607).
+  [GitHub Actions run 30203815745](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30203815745).
 - The exact OpenClaw shrinkwrap is materialized as a deterministic
   browser-mountable image: 308 integrity-pinned runtime archives, 32,027 files,
   and exact hashes for `openclaw.mjs`, `dist/entry.js`, `package.json`, and
@@ -108,14 +109,20 @@ Experimental. Current execution milestones:
   compiled binding with automatic exclusive locking, WAL, and a fresh-process
   read in
   [GitHub Actions run 30201564289](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30201564289).
-- A diagnostic-only Edge.js artifact, whose two embedded Node version labels
+- The runtime now provides a capability-scoped browser-local loopback
+  namespace. Two separate Edge.js guest processes listen and connect at
+  `127.0.0.1:18790`, exchange `ping`/`pong`, and close cleanly. A separate
+  guest proves that external egress is denied by default with `EPERM`. The
+  Edge.js WASIX artifact is
+  `706af076949e662f3af2c2d57ae5e23b25956bf796377fa84b56bb048be208ae`;
+  the complete browser proof is in
+  [GitHub Actions run 30203815745](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30203815745).
+- The diagnostic-only Edge.js artifact, whose two embedded Node version labels
   are auditably changed from 24.13.2 to 24.15.0 without changing OpenClaw,
-  advances the exact unmodified `dist/entry.js` through SQLite, configuration,
-  authentication, plugin bootstrap, and runtime configuration. It then fails
-  closed because WASIX resolves the requested loopback bind to `0.0.0.0`.
-  This is not a Node-compatibility or Gateway-readiness claim; it identifies
-  browser-local virtual loopback networking as the next concrete runtime
-  boundary.
+  starts the exact unmodified Gateway entrypoint. In the current public run it
+  reaches the traced pre-bootstrap boundary and then hits the 65-second host
+  diagnostic deadline. It does not yet prove Gateway readiness or a client
+  connection.
 
 This does not yet claim complete OpenClaw startup. The pinned Edge.js runtime
 reports Node 24.13.2, below OpenClaw's Node 24.15.0 safety floor. The official
@@ -127,11 +134,12 @@ version-bound diagnostic instrument. SQLite WAL-reset safety is pinned to
 3.53.4 and its compiled browser binding is proven. QuickJS's optional
 JavaScript `WebAssembly` global is explicitly disabled until its native
 `wasm_c_api_v0` dependency is replaced by a browser-native OSS adapter. The
-next hard gate is an OSS browser-local networking personality that preserves
-real loopback semantics and lets a second browser process connect to the
-Gateway. Required lifecycle scripts, a genuine Node compatibility profile,
-Gateway readiness, capability-complete external connectivity, durable OPFS
-ownership, and one real agent turn remain open. See
+browser-local networking sub-gate is complete at the kernel level; the next
+hard gate is to run the real Gateway through readiness and connect a second
+browser guest using that namespace. Required lifecycle scripts, a genuine
+Node compatibility profile, Gateway readiness, capability-complete authorized
+external connectivity, durable OPFS ownership, and one real agent turn remain
+open. See
 [the artifact-derived SQLite contract](docs/openclaw-sqlite-contract.md) and
 [the Edge.js personality proof](docs/edgejs-node-sqlite-personality.md) for the
 implemented and deliberately unsupported boundaries.
