@@ -97,6 +97,9 @@ This proof deliberately does not claim complete OpenClaw startup:
   WASIX implementation imports native Wasmer's `wasm_c_api_v0` namespace.
   Reintroducing that surface through a browser-native OSS adapter is a tracked
   compatibility gate, not an implicit host dependency.
+- The WASIX compiler sysroot is pinned to `v2025-12-10.1` so its process ABI
+  matches Wasmer JS 0.10's WASIX 6.1 implementation. Newer process imports are
+  not replaced with success-looking stubs.
 - Filesystem, process, network, worker, WebSocket, and Gateway capability
   surfaces required by the remaining OpenClaw startup path have not yet been
   proven.

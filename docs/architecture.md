@@ -117,6 +117,12 @@ already-compiled `WebAssembly.Module` loses the original bytes required by
 WASIX child Workers. The kernel compiles asynchronously with Chromium, passes
 `{ module, bytes }`, and preserves both across scheduler messages.
 
+The Edge.js compiler sysroot is pinned to wasix-libc `v2025-12-10.1`, the last
+release using the `proc_exec3`/`proc_spawn2` ABI implemented by Wasmer JS
+0.10's WASIX 6.1 runtime. Newer sysroots require
+`proc_exit2`/`proc_exec4`/`proc_spawn3`; silently stubbing those process
+semantics would violate the kernel's compatibility and capability boundaries.
+
 ## OPFS WAL precondition
 
 The official SQLite Wasm build requires `locking_mode=EXCLUSIVE` before the

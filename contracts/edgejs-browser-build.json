@@ -15,7 +15,7 @@
   "toolchain": {
     "wasixccActionCommit": "8a505d4605b15fd466a3881d286582b23e4ffecb",
     "wasixccVersion": "v0.4.3",
-    "sysrootTag": "v2026-06-25.1",
+    "sysrootTag": "v2025-12-10.1",
     "wasmToolsVersion": "1.254.0",
     "rustVersion": "1.97.1",
     "wasixccWasmExceptions": "legacy",
