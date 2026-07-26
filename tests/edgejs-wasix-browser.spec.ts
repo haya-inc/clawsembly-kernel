@@ -57,12 +57,20 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
       path: resolvedArtifactPath
     });
   });
-  await page.goto("/wasix-probe.html?artifact=/edgejs.wasm");
+  page.on("console", (message) => {
+    console.log(`[browser:${message.type()}] ${message.text()}`);
+  });
+  const pageError = page.waitForEvent("pageerror");
+  await page.goto("/wasix-probe.html?artifact=/edgejs.wasm&debug=1");
   const status = page.locator("#status");
-  await expect.poll(
-    () => status.getAttribute("data-state"),
-    { timeout: 240_000 }
-  ).toMatch(/^(?:pass|fail)$/u);
+  const outcome = await Promise.race([
+    expect.poll(
+      () => status.getAttribute("data-state"),
+      { timeout: 240_000 }
+    ).toMatch(/^(?:pass|fail)$/u).then(() => ({ kind: "status" as const })),
+    pageError.then((error) => ({ error, kind: "pageerror" as const }))
+  ]);
+  if (outcome.kind === "pageerror") throw outcome.error;
   const state = await status.getAttribute("data-state");
   if (state === "fail") {
     throw new Error(await page.locator("#result").innerText());

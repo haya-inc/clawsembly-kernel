@@ -78,6 +78,38 @@ kernel continues to use OPFS directly.
 
 Unsupported behavior throws instead of silently degrading.
 
+## Browser Node runtime lane
+
+The browser runtime is source-built from pinned upstream commits:
+
+```text
+Chromium Worker
+  -> patched Wasmer JS (browser-native async compilation)
+  -> WASIX scheduler (module + original bytes retained across Workers)
+  -> self-contained Edge.js WASIX
+  -> embedded QuickJS N-API provider
+  -> Node-compatible OpenClaw process
+```
+
+The first Edge.js WASIX experiment used its imported N-API provider. It crossed
+browser validation, compilation, and WASIX Worker scheduling, then failed
+correctly at the missing `napi` and `napi_extension_wasmer_v0` host namespaces.
+Those namespaces are supplied by native Wasmer's experimental N-API runtime,
+not by Wasmer JS.
+
+Edge.js also ships an embedded QuickJS provider and a dedicated WASIX build
+whose own build check rejects unresolved N-API imports. Clawsembly uses that
+self-contained provider as the primary browser path. This avoids making a
+browser-specific reimplementation of Wasmer's native V8 bridge part of the
+kernel. A future browser-engine N-API bridge can remain an optimization without
+defining the correctness boundary.
+
+The Wasmer JS patch is still required. Stock `@wasmer/sdk@0.10.0` validates a
+large byte buffer through its older compiler path, while passing only an
+already-compiled `WebAssembly.Module` loses the original bytes required by
+WASIX child Workers. The kernel compiles asynchronously with Chromium, passes
+`{ module, bytes }`, and preserves both across scheduler messages.
+
 ## OPFS WAL precondition
 
 The official SQLite Wasm build requires `locking_mode=EXCLUSIVE` before the

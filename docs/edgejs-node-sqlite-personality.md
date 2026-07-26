@@ -86,10 +86,13 @@ This proof deliberately does not claim complete OpenClaw startup:
   newer on the Node 24 line because of its SQLite WAL-reset safety gate. The
   focused state proof is safe because the injected SQLite is 3.53.0, but the
   top-level `openclaw.mjs` wrapper still rejects the runtime version.
-- The current published Edge.js WASIX archive was post-processed with exception
-  references. `@wasmer/sdk@0.10.0` rejects its `exnref` function signatures
-  before Edge.js starts. The browser kernel must self-build and pin a compatible
-  Edge.js WASIX artifact rather than depend on the mutable registry package.
+- The published Edge.js WASIX archive was post-processed with exception
+  references. The browser lane therefore source-builds a pinned, legacy-EH,
+  self-contained QuickJS artifact instead of depending on the mutable registry
+  package. It also source-builds a patched Wasmer JS executor so the browser
+  can compile the large module asynchronously while preserving its original
+  bytes across WASIX Workers. Chromium startup proof for this exact pair is the
+  active gate.
 - Filesystem, process, network, worker, WebSocket, and Gateway capability
   surfaces required by the remaining OpenClaw startup path have not yet been
   proven.

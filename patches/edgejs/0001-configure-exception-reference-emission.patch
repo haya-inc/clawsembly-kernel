@@ -1,3 +1,23 @@
+diff --git a/quickjs-wasm/build.sh b/quickjs-wasm/build.sh
+--- a/quickjs-wasm/build.sh
++++ b/quickjs-wasm/build.sh
+@@ -33,9 +33,14 @@ optimize_wasm() {
+   local input="$1"
+   local output="$2"
+-  if command -v wasm-opt >/dev/null 2>&1; then
++  local emit_exnref="${EDGE_WASIX_EMIT_EXNREF:-yes}"
++  if [[ "${emit_exnref}" != "yes" && "${emit_exnref}" != "no" ]]; then
++    echo "error: EDGE_WASIX_EMIT_EXNREF must be yes or no" >&2
++    exit 1
++  fi
++  if [[ "${emit_exnref}" == "yes" ]] && command -v wasm-opt >/dev/null 2>&1; then
+     wasm-opt --emit-exnref -o "${output}" "${input}"
+     return
+   fi
+-  echo "warning: wasm-opt not found in PATH; copying ${input} to ${output}" >&2
++  echo "preserving legacy WebAssembly EH in ${output} (emit-exnref=${emit_exnref})" >&2
+   cp "${input}" "${output}"
+ }
 diff --git a/wasix/build-wasix.sh b/wasix/build-wasix.sh
 --- a/wasix/build-wasix.sh
 +++ b/wasix/build-wasix.sh

@@ -20,6 +20,9 @@ import { fileURLToPath } from "node:url";
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const edgeContract = readJson(path.join(repositoryRoot, "contracts/edgejs-artifact.json"));
+const browserBuildContract = readJson(
+  path.join(repositoryRoot, "contracts/edgejs-browser-build.json")
+);
 const openClawContract = readJson(path.join(repositoryRoot, "contracts/openclaw-artifact.json"));
 const sqliteContract = readJson(
   path.join(repositoryRoot, "contracts/openclaw-sqlite-contract.generated.json")
@@ -198,8 +201,11 @@ try {
       },
       browserWasixExecution: {
         satisfied: false,
-        reason: edgeContract.knownBrowserBlocker.error,
-        disposition: edgeContract.knownBrowserBlocker.disposition
+        runtimeProvider: browserBuildContract.runtimeProvider,
+        edgeSourceCommit: browserBuildContract.upstream.commit,
+        browserExecutorSourceCommit: browserBuildContract.browserExecutor.upstream.commit,
+        reason: "This native-process proof does not execute the self-built QuickJS Edge.js and patched Wasmer JS pair in Chromium.",
+        disposition: "Build and execute the pair pinned by contracts/edgejs-browser-build.json in .github/workflows/edgejs-wasix-build.yml."
       }
     }
   };

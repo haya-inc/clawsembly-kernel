@@ -14,7 +14,8 @@ function requiredElement<T extends Element>(selector: string): T {
 
 const status = requiredElement<HTMLOutputElement>("#status");
 const result = requiredElement<HTMLPreElement>("#result");
-const artifactUrl = new URLSearchParams(location.search).get("artifact")
+const searchParams = new URLSearchParams(location.search);
+const artifactUrl = searchParams.get("artifact")
   ?? "/edgejs.wasm";
 const marker = "clawsembly-edgejs-wasix-browser";
 const markerPrefix = "CLAWSEMBLY_EDGE_WASIX=";
@@ -24,14 +25,19 @@ async function runProbe(): Promise<void> {
     if (!crossOriginIsolated) {
       throw new Error("Edge.js WASIX requires a cross-origin-isolated browser context");
     }
-    const { init, runWasix } = await import("@wasmer/sdk");
+    const { init, initializeLogger, runWasix } = await import("@wasmer/sdk");
     await init();
+    if (searchParams.get("debug") === "1") initializeLogger("debug");
     status.textContent = "Fetching the self-built Edge.js WASIX artifact…";
     const response = await fetch(artifactUrl);
     if (!response.ok) {
       throw new Error(`Edge.js WASIX fetch failed with ${response.status}`);
     }
     const bytes = new Uint8Array(await response.arrayBuffer());
+    if (!WebAssembly.validate(bytes)) {
+      throw new Error("Chromium rejected the Edge.js WASIX module");
+    }
+    const module = await WebAssembly.compile(bytes);
     status.textContent = "Starting Edge.js inside the browser…";
     const runtimeScript = [
       `console.log(${JSON.stringify(markerPrefix)} + JSON.stringify({`,
@@ -41,7 +47,8 @@ async function runProbe(): Promise<void> {
       "v8: process.versions.v8",
       "}))"
     ].join("");
-    const instance = await runWasix(bytes, {
+    const moduleWithBytes = { module, bytes } as unknown as WebAssembly.Module;
+    const instance = await runWasix(moduleWithBytes, {
       program: "edgejs",
       args: ["-e", runtimeScript]
     });

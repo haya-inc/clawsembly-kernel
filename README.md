@@ -3,6 +3,21 @@
 A clean-room browser execution kernel for running an unmodified OpenClaw
 artifact without BrowserPod.
 
+## North Star
+
+Run the official, unmodified OpenClaw artifact completely inside a browser on
+an OSS, self-hostable kernel, without a proprietary execution substrate or a
+remote operating system. Completion requires reproducible public evidence of:
+
+- persistent OpenClaw state;
+- sufficient Node compatibility to start the official entrypoint;
+- explicit filesystem, network, process, and secret capability boundaries;
+- an OpenClaw Gateway connection; and
+- one real agent turn.
+
+Partial compatibility probes are milestones toward that result, not alternate
+definitions of success.
+
 This repository starts below Node. Browser capabilities form the kernel;
 Node compatibility is a replaceable personality above it. The first vertical
 slice derives a synchronous `node:sqlite` contract from a pinned official
@@ -72,9 +87,11 @@ Experimental. Two execution layers are now proven:
   Edge.js process.
 
 This does not yet claim complete OpenClaw startup. The pinned Edge.js runtime
-reports Node 24.13.2, below OpenClaw's Node 24.15.0 safety floor, and the current
-published WASIX artifact uses exception references that
-`@wasmer/sdk@0.10.0` cannot instantiate in a browser. See
+reports Node 24.13.2, below OpenClaw's Node 24.15.0 safety floor. The browser
+runtime lane now pins a self-contained QuickJS Edge.js WASIX build and a
+source-built Wasmer JS executor patched to preserve original module bytes
+across Workers. Chromium startup evidence for that exact pair is the current
+in-progress gate. See
 [the artifact-derived SQLite contract](docs/openclaw-sqlite-contract.md) and
 [the Edge.js personality proof](docs/edgejs-node-sqlite-personality.md) for the
 implemented and deliberately unsupported boundaries.

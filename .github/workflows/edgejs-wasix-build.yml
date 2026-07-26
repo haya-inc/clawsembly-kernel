@@ -11,6 +11,7 @@ on:
       - package-lock.json
       - package.json
       - patches/edgejs/**
+      - patches/wasmer-js/**
       - playwright.config.ts
       - scripts/verify-edgejs-browser-build-contract.mjs
       - src/edgejs-wasix-probe.ts
@@ -70,6 +71,29 @@ jobs:
           git -C edgejs apply --unidiff-zero "../${EDGE_PATCH}"
           git -C edgejs diff --check
 
+      - name: Check out pinned Wasmer JS source
+        shell: bash
+        env:
+          WASMER_SOURCE_COMMIT: ${{ steps.contract.outputs.wasmer_source_commit }}
+          WASMER_SOURCE_REPOSITORY: ${{ steps.contract.outputs.wasmer_source_repository }}
+        run: |
+          set -euo pipefail
+          git init wasmer-js
+          git -C wasmer-js remote add origin "${WASMER_SOURCE_REPOSITORY}"
+          git -C wasmer-js fetch --depth=1 origin "${WASMER_SOURCE_COMMIT}"
+          git -C wasmer-js checkout --detach FETCH_HEAD
+          test "$(git -C wasmer-js rev-parse HEAD)" = "${WASMER_SOURCE_COMMIT}"
+
+      - name: Apply audited Wasmer JS browser-runtime patch
+        shell: bash
+        env:
+          WASMER_PATCH: ${{ steps.contract.outputs.wasmer_patch_path }}
+        run: |
+          set -euo pipefail
+          git -C wasmer-js apply --check "../${WASMER_PATCH}"
+          git -C wasmer-js apply "../${WASMER_PATCH}"
+          git -C wasmer-js diff --check
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
@@ -92,7 +116,50 @@ jobs:
           sudo apt-get install -y cmake libicu-dev ninja-build
           cargo install --locked wasm-tools --version "${WASM_TOOLS_VERSION}"
 
-      - name: Build Edge.js WASIX with legacy exception handling
+      - name: Install pinned Wasmer JS build toolchain
+        shell: bash
+        env:
+          WASMER_RUST_TOOLCHAIN: ${{ steps.contract.outputs.wasmer_rust_toolchain }}
+          WASM_PACK_ASSET: ${{ steps.contract.outputs.wasm_pack_linux_asset }}
+          WASM_PACK_SHA256: ${{ steps.contract.outputs.wasm_pack_linux_sha256 }}
+          WASM_PACK_VERSION: ${{ steps.contract.outputs.wasm_pack_version }}
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${WASMER_RUST_TOOLCHAIN}" \
+            --profile minimal \
+            --component rust-src \
+            --target wasm32-unknown-unknown
+          mkdir -p tools/wasm-pack
+          curl -fsSL \
+            -o "tools/${WASM_PACK_ASSET}" \
+            "https://github.com/wasm-bindgen/wasm-pack/releases/download/v${WASM_PACK_VERSION}/${WASM_PACK_ASSET}"
+          echo "${WASM_PACK_SHA256}  tools/${WASM_PACK_ASSET}" | sha256sum -c -
+          tar -xzf "tools/${WASM_PACK_ASSET}" \
+            -C tools/wasm-pack \
+            --strip-components=1
+          test "$(tools/wasm-pack/wasm-pack --version)" = "wasm-pack ${WASM_PACK_VERSION}"
+
+      - name: Build patched Wasmer JS browser runtime
+        shell: bash
+        env:
+          WASMER_RUST_TOOLCHAIN: ${{ steps.contract.outputs.wasmer_rust_toolchain }}
+        run: |
+          set -euo pipefail
+          npm --prefix wasmer-js ci --ignore-scripts
+          (
+            cd wasmer-js
+            RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
+              ../tools/wasm-pack/wasm-pack build \
+                --release \
+                --target=web \
+                --weak-refs \
+                --no-pack
+            npm run build:rollup
+          )
+          test -s wasmer-js/dist/index.mjs
+          test -s wasmer-js/dist/wasmer_js_bg.wasm
+
+      - name: Build self-contained QuickJS Edge.js WASIX
         shell: bash
         env:
           EDGE_WASIX_EMIT_EXNREF: ${{ steps.contract.outputs.emit_exnref }}
@@ -100,9 +167,9 @@ jobs:
           WASIXCC_WASM_EXCEPTIONS: ${{ steps.contract.outputs.wasixcc_wasm_exceptions }}
         run: |
           set -euo pipefail
-          make -C edgejs build-wasix
-          test -s edgejs/build-wasix/edgejs.wasm
-          if wasm-tools validate edgejs/build-wasix/edgejs.wasm \
+          make -C edgejs build-quickjs-wasix
+          test -s edgejs/build-quickjs-wasix/edgejs.wasm
+          if wasm-tools validate edgejs/build-quickjs-wasix/edgejs.wasm \
             2>legacy-validation-error.txt
           then
             echo "error: Edge.js WASIX did not require legacy exception handling" >&2
@@ -111,26 +178,27 @@ jobs:
           grep -q "legacy_exceptions feature required" legacy-validation-error.txt
           wasm-tools validate \
             --features legacy-exceptions \
-            edgejs/build-wasix/edgejs.wasm
+            edgejs/build-quickjs-wasix/edgejs.wasm
 
       - name: Package Edge.js WASIX
         shell: bash
         run: |
           set -euo pipefail
           make -C edgejs dist-only \
-            BUILD_DIR=build-wasix \
+            BUILD_DIR=build-quickjs-wasix \
             JOBS=4 \
-            ZIP_NAME=edge-wasix-browser-compatible.zip
-          test -s edgejs/edge-wasix-browser-compatible.zip
+            ZIP_NAME=edge-quickjs-wasix-browser-compatible.zip
+          test -s edgejs/edge-quickjs-wasix-browser-compatible.zip
 
       - name: Upload inspectable build candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: edgejs-wasix-browser-candidate
           path: |
-            edgejs/build-wasix/edgejs.wasm
-            edgejs/edge-wasix-browser-compatible.zip
+            edgejs/build-quickjs-wasix/edgejs.wasm
+            edgejs/edge-quickjs-wasix-browser-compatible.zip
             legacy-validation-error.txt
+            wasmer-js/dist/
           if-no-files-found: error
           retention-days: 7
 
@@ -141,7 +209,8 @@ jobs:
 
       - name: Prove Edge.js starts inside Chromium
         env:
-          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-wasix/edgejs.wasm
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
         run: npx playwright test tests/edgejs-wasix-browser.spec.ts
 
       - name: Assemble build evidence
@@ -150,23 +219,34 @@ jobs:
           EDGE_SOURCE_COMMIT: ${{ steps.contract.outputs.edge_source_commit }}
           EDGE_PATCH: ${{ steps.contract.outputs.patch_path }}
           EMIT_EXNREF: ${{ steps.contract.outputs.emit_exnref }}
+          RUNTIME_PROVIDER: ${{ steps.contract.outputs.runtime_provider }}
           SYSROOT_TAG: ${{ steps.contract.outputs.sysroot_tag }}
+          WASMER_PATCH: ${{ steps.contract.outputs.wasmer_patch_path }}
+          WASMER_SOURCE_COMMIT: ${{ steps.contract.outputs.wasmer_source_commit }}
           WASIXCC_VERSION: ${{ steps.contract.outputs.wasixcc_version }}
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          cp edgejs/edge-wasix-browser-compatible.zip artifacts/
+          cp edgejs/edge-quickjs-wasix-browser-compatible.zip artifacts/
           browser_evidence="$(find test-results -name edgejs-wasix-browser-evidence.json -type f | head -n 1)"
           test -n "${browser_evidence}"
-          wasm_sha256="$(sha256sum edgejs/build-wasix/edgejs.wasm | awk '{print $1}')"
-          archive_sha256="$(sha256sum edgejs/edge-wasix-browser-compatible.zip | awk '{print $1}')"
+          wasm_sha256="$(sha256sum edgejs/build-quickjs-wasix/edgejs.wasm | awk '{print $1}')"
+          archive_sha256="$(sha256sum edgejs/edge-quickjs-wasix-browser-compatible.zip | awk '{print $1}')"
           patch_sha256="$(sha256sum "${EDGE_PATCH}" | awk '{print $1}')"
+          wasmer_patch_sha256="$(sha256sum "${WASMER_PATCH}" | awk '{print $1}')"
+          wasmer_js_sha256="$(sha256sum wasmer-js/dist/index.mjs | awk '{print $1}')"
+          wasmer_wasm_sha256="$(sha256sum wasmer-js/dist/wasmer_js_bg.wasm | awk '{print $1}')"
           jq -n \
             --arg archiveSha256 "${archive_sha256}" \
             --arg edgeSourceCommit "${EDGE_SOURCE_COMMIT}" \
             --arg emitExnref "${EMIT_EXNREF}" \
             --arg patchSha256 "${patch_sha256}" \
+            --arg runtimeProvider "${RUNTIME_PROVIDER}" \
             --arg sysrootTag "${SYSROOT_TAG}" \
+            --arg wasmerJsSha256 "${wasmer_js_sha256}" \
+            --arg wasmerPatchSha256 "${wasmer_patch_sha256}" \
+            --arg wasmerSourceCommit "${WASMER_SOURCE_COMMIT}" \
+            --arg wasmerWasmSha256 "${wasmer_wasm_sha256}" \
             --arg wasmSha256 "${wasm_sha256}" \
             --arg wasixccRunWasmOpt "${{ steps.contract.outputs.wasixcc_run_wasm_opt }}" \
             --arg wasixccWasmExceptions "${{ steps.contract.outputs.wasixcc_wasm_exceptions }}" \
@@ -175,7 +255,14 @@ jobs:
             '{
               schemaVersion: 1,
               edgeSourceCommit: $edgeSourceCommit,
+              runtimeProvider: $runtimeProvider,
               patchSha256: $patchSha256,
+              browserExecutor: {
+                wasmerSourceCommit: $wasmerSourceCommit,
+                patchSha256: $wasmerPatchSha256,
+                indexMjsSha256: $wasmerJsSha256,
+                runtimeWasmSha256: $wasmerWasmSha256
+              },
               toolchain: {
                 wasixccVersion: $wasixccVersion,
                 sysrootTag: $sysrootTag,
