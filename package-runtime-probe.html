@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Clawsembly Kernel · OpenClaw package runtime diagnostic</title>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Clawsembly Kernel · Unmodified entry diagnostic</p>
+      <h1>Complete OpenClaw package, inside Chromium</h1>
+      <p>
+        This diagnostic mounts the complete integrity-pinned package graph and
+        invokes its exact unmodified <code>dist/entry.js</code> through the
+        browser WASIX runtime. It bypasses only the launcher's Node version
+        check to identify the next real compatibility boundary; it is not a
+        successful OpenClaw startup claim.
+      </p>
+      <output id="status" data-state="running">Initializing Wasmer…</output>
+      <pre id="result" aria-live="polite"></pre>
+    </main>
+    <script
+      type="module"
+      src="/src/openclaw-package-runtime-probe.ts"
+    ></script>
+  </body>
+</html>

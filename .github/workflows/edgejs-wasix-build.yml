@@ -5,23 +5,36 @@ on:
     branches:
       - agent/edgejs-wasix-build
       - agent/openclaw-entrypoint
+      - agent/openclaw-package-image
     paths:
       - .github/workflows/edgejs-wasix-build.yml
       - contracts/edgejs-artifact.json
       - contracts/edgejs-browser-build.json
       - contracts/openclaw-artifact.json
+      - contracts/openclaw-package.generated.json
       - package-lock.json
       - package.json
       - patches/edgejs/**
       - patches/wasmer-js/**
       - playwright.config.ts
       - scripts/verify-edgejs-browser-build-contract.mjs
+      - scripts/build-openclaw-package-image.mjs
+      - scripts/create-edgejs-node-version-diagnostic.mjs
+      - scripts/generate-openclaw-package-contract.mjs
+      - src/clawsemblyfs.ts
       - src/edgejs-wasix-probe.ts
       - src/openclaw-entrypoint-probe.ts
+      - src/openclaw-package-runtime-probe.ts
+      - src/package-image-probe.ts
+      - tests/clawsemblyfs.test.ts
       - tests/edgejs-wasix-browser.spec.ts
       - tests/openclaw-entrypoint-browser.spec.ts
+      - tests/openclaw-package-image-browser.spec.ts
+      - tests/openclaw-package-runtime-browser.spec.ts
       - vite.config.ts
       - openclaw-probe.html
+      - package-image-probe.html
+      - package-runtime-probe.html
       - wasix-probe.html
   workflow_dispatch:
 
@@ -66,14 +79,18 @@ jobs:
           git -C edgejs -c protocol.version=2 submodule update --init --recursive --depth=1
           test "$(git -C edgejs rev-parse HEAD)" = "${EDGE_SOURCE_COMMIT}"
 
-      - name: Apply audited browser-build patch
+      - name: Apply audited browser-build patches
         shell: bash
-        env:
-          EDGE_PATCH: ${{ steps.contract.outputs.patch_path }}
         run: |
           set -euo pipefail
-          git -C edgejs apply --unidiff-zero --check "../${EDGE_PATCH}"
-          git -C edgejs apply --unidiff-zero "../${EDGE_PATCH}"
+          mapfile -t edge_patches < <(
+            jq -r '.patches[].path' contracts/edgejs-browser-build.json
+          )
+          test "${#edge_patches[@]}" -gt 0
+          for edge_patch in "${edge_patches[@]}"; do
+            git -C edgejs apply --unidiff-zero --check "../${edge_patch}"
+            git -C edgejs apply --unidiff-zero "../${edge_patch}"
+          done
           git -C edgejs diff --check
           git -C edgejs/napi diff --check
 
@@ -164,8 +181,38 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y cmake libicu-dev ninja-build
+          sudo apt-get install -y cmake libicu-dev ninja-build unzip
           cargo install --locked wasm-tools --version "${WASM_TOOLS_VERSION}"
+
+      - name: Fetch pinned official SQLite amalgamation
+        id: sqlite
+        shell: bash
+        env:
+          SQLITE_ARCHIVE: ${{ steps.contract.outputs.sqlite_archive }}
+          SQLITE_BYTES: ${{ steps.contract.outputs.sqlite_bytes }}
+          SQLITE_SHA256: ${{ steps.contract.outputs.sqlite_sha256 }}
+          SQLITE_SHA3_256: ${{ steps.contract.outputs.sqlite_sha3_256 }}
+          SQLITE_URL: ${{ steps.contract.outputs.sqlite_url }}
+          SQLITE_VERSION: ${{ steps.contract.outputs.sqlite_version }}
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/${SQLITE_ARCHIVE}"
+          extract_root="${RUNNER_TEMP}/clawsembly-sqlite"
+          curl -fsSL -o "${archive}" "${SQLITE_URL}"
+          test "$(wc -c < "${archive}")" = "${SQLITE_BYTES}"
+          echo "${SQLITE_SHA256}  ${archive}" | sha256sum -c -
+          test "$(
+            openssl dgst -sha3-256 "${archive}" | awk '{print $2}'
+          )" = "${SQLITE_SHA3_256}"
+          mkdir -p "${extract_root}"
+          unzip -q "${archive}" -d "${extract_root}"
+          amalgamation="${extract_root}/sqlite-amalgamation-3530400"
+          test -s "${amalgamation}/sqlite3.c"
+          test -s "${amalgamation}/sqlite3.h"
+          test -s "${amalgamation}/sqlite3ext.h"
+          grep -q "#define SQLITE_VERSION *\"${SQLITE_VERSION}\"" \
+            "${amalgamation}/sqlite3.h"
+          echo "path=${amalgamation}" >> "${GITHUB_OUTPUT}"
 
       - name: Install pinned Wasmer JS build toolchain
         shell: bash
@@ -215,6 +262,7 @@ jobs:
         env:
           EDGE_WASIX_EMIT_EXNREF: ${{ steps.contract.outputs.emit_exnref }}
           EDGE_QUICKJS_WEBASSEMBLY: ${{ steps.contract.outputs.quickjs_webassembly }}
+          EDGE_SQLITE_AMALGAMATION_DIR: ${{ steps.sqlite.outputs.path }}
           WASIXCC_SYSROOT: ${{ steps.legacy_sysroot.outputs.path }}
           WASIXCC_RUN_WASM_OPT: ${{ steps.contract.outputs.wasixcc_run_wasm_opt }}
           WASIXCC_WASM_EXCEPTIONS: ${{ steps.contract.outputs.wasixcc_wasm_exceptions }}
@@ -289,16 +337,88 @@ jobs:
             tests/edgejs-wasix-browser.spec.ts \
             tests/openclaw-entrypoint-browser.spec.ts
 
+      - name: Preserve base browser evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          edge_evidence="$(
+            find test-results -name edgejs-wasix-browser-evidence.json \
+              -type f | head -n 1
+          )"
+          launcher_evidence="$(
+            find test-results -name openclaw-entrypoint-browser-evidence.json \
+              -type f | head -n 1
+          )"
+          test -n "${edge_evidence}"
+          test -n "${launcher_evidence}"
+          cp "${edge_evidence}" artifacts/edgejs-wasix-browser-evidence.json
+          cp "${launcher_evidence}" \
+            artifacts/openclaw-entrypoint-browser-evidence.json
+
+      - name: Build complete integrity-pinned OpenClaw package image
+        id: package_image
+        shell: bash
+        env:
+          CLAWSEMBLY_OPENCLAW_ARCHIVE: ${{ steps.openclaw.outputs.path }}
+        run: |
+          set -euo pipefail
+          image="${RUNNER_TEMP}/openclaw.clawfs"
+          evidence="${RUNNER_TEMP}/openclaw-package-image-build-evidence.json"
+          npm run package-contract:check
+          node scripts/build-openclaw-package-image.mjs \
+            --archive "${CLAWSEMBLY_OPENCLAW_ARCHIVE}" \
+            --output "${image}" \
+            --evidence "${evidence}"
+          test -s "${image}"
+          test -s "${evidence}"
+          cp "${evidence}" artifacts/openclaw-package-image-build-evidence.json
+          echo "path=${image}" >> "${GITHUB_OUTPUT}"
+          echo "evidence=${evidence}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create diagnostic-only Node-floor artifact
+        id: diagnostic_node
+        shell: bash
+        run: |
+          set -euo pipefail
+          diagnostic="${RUNNER_TEMP}/edgejs-openclaw-node-floor-diagnostic.wasm"
+          evidence="${RUNNER_TEMP}/edgejs-openclaw-node-floor-diagnostic.evidence.json"
+          node scripts/create-edgejs-node-version-diagnostic.mjs \
+            --input edgejs/build-quickjs-wasix/edgejs.wasm \
+            --output "${diagnostic}" \
+            --evidence "${evidence}"
+          test -s "${diagnostic}"
+          test -s "${evidence}"
+          cp "${evidence}" \
+            artifacts/edgejs-openclaw-node-floor-diagnostic.evidence.json
+          echo "path=${diagnostic}" >> "${GITHUB_OUTPUT}"
+          echo "evidence=${evidence}" >> "${GITHUB_OUTPUT}"
+
+      - name: Prove complete package mount and advance the real Gateway path
+        env:
+          CLAWSEMBLY_EDGE_NODE_DIAGNOSTIC_EVIDENCE: ${{ steps.diagnostic_node.outputs.evidence }}
+          CLAWSEMBLY_EDGE_WASIX: ${{ steps.diagnostic_node.outputs.path }}
+          CLAWSEMBLY_OPENCLAW_GATEWAY_DIAGNOSTIC: "1"
+          CLAWSEMBLY_OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
+          CLAWSEMBLY_OPENCLAW_IMAGE_EVIDENCE: ${{ steps.package_image.outputs.evidence }}
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
+        run: |
+          npx playwright test \
+            tests/openclaw-package-image-browser.spec.ts \
+            tests/openclaw-package-runtime-browser.spec.ts \
+            --grep "complete integrity-pinned|advances beyond the SQLite boundary"
+
       - name: Assemble build evidence
         shell: bash
         env:
           EDGE_SOURCE_COMMIT: ${{ steps.contract.outputs.edge_source_commit }}
-          EDGE_PATCH: ${{ steps.contract.outputs.patch_path }}
           EMIT_EXNREF: ${{ steps.contract.outputs.emit_exnref }}
           QUICKJS_WEBASSEMBLY: ${{ steps.contract.outputs.quickjs_webassembly }}
           RUNTIME_PROVIDER: ${{ steps.contract.outputs.runtime_provider }}
           SYSROOT_ASSET_SHA256: ${{ steps.contract.outputs.sysroot_asset_sha256 }}
           SYSROOT_TAG: ${{ steps.contract.outputs.sysroot_tag }}
+          SQLITE_SHA256: ${{ steps.contract.outputs.sqlite_sha256 }}
+          SQLITE_VERSION: ${{ steps.contract.outputs.sqlite_version }}
           WASMER_PATCH: ${{ steps.contract.outputs.wasmer_patch_path }}
           WASMER_SOURCE_COMMIT: ${{ steps.contract.outputs.wasmer_source_commit }}
           WASIXCC_VERSION: ${{ steps.contract.outputs.wasixcc_version }}
@@ -306,13 +426,30 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts
           cp edgejs/edge-quickjs-wasix-browser-compatible.zip artifacts/
-          browser_evidence="$(find test-results -name edgejs-wasix-browser-evidence.json -type f | head -n 1)"
-          openclaw_evidence="$(find test-results -name openclaw-entrypoint-browser-evidence.json -type f | head -n 1)"
-          test -n "${browser_evidence}"
-          test -n "${openclaw_evidence}"
+          browser_evidence="artifacts/edgejs-wasix-browser-evidence.json"
+          openclaw_evidence="artifacts/openclaw-entrypoint-browser-evidence.json"
+          package_build_evidence="artifacts/openclaw-package-image-build-evidence.json"
+          package_mount_evidence="$(
+            find test-results -name openclaw-package-image-browser-evidence.json \
+              -type f | head -n 1
+          )"
+          gateway_evidence="$(
+            find test-results -name openclaw-gateway-runtime-browser-evidence.json \
+              -type f | head -n 1
+          )"
+          node_diagnostic_evidence="artifacts/edgejs-openclaw-node-floor-diagnostic.evidence.json"
+          test -s "${browser_evidence}"
+          test -s "${openclaw_evidence}"
+          test -s "${package_build_evidence}"
+          test -n "${package_mount_evidence}"
+          test -n "${gateway_evidence}"
+          test -s "${node_diagnostic_evidence}"
+          cp "${package_mount_evidence}" \
+            artifacts/openclaw-package-image-browser-evidence.json
+          cp "${gateway_evidence}" \
+            artifacts/openclaw-gateway-runtime-browser-evidence.json
           wasm_sha256="$(sha256sum edgejs/build-quickjs-wasix/edgejs.wasm | awk '{print $1}')"
           archive_sha256="$(sha256sum edgejs/edge-quickjs-wasix-browser-compatible.zip | awk '{print $1}')"
-          patch_sha256="$(sha256sum "${EDGE_PATCH}" | awk '{print $1}')"
           wasmer_patch_sha256="$(sha256sum "${WASMER_PATCH}" | awk '{print $1}')"
           wasmer_js_sha256="$(sha256sum wasmer-js/dist/index.mjs | awk '{print $1}')"
           wasmer_wasm_sha256="$(sha256sum wasmer-js/dist/wasmer_js_bg.wasm | awk '{print $1}')"
@@ -320,11 +457,12 @@ jobs:
             --arg archiveSha256 "${archive_sha256}" \
             --arg edgeSourceCommit "${EDGE_SOURCE_COMMIT}" \
             --arg emitExnref "${EMIT_EXNREF}" \
-            --arg patchSha256 "${patch_sha256}" \
             --arg quickjsWebAssembly "${QUICKJS_WEBASSEMBLY}" \
             --arg runtimeProvider "${RUNTIME_PROVIDER}" \
             --arg sysrootAssetSha256 "${SYSROOT_ASSET_SHA256}" \
             --arg sysrootTag "${SYSROOT_TAG}" \
+            --arg sqliteSha256 "${SQLITE_SHA256}" \
+            --arg sqliteVersion "${SQLITE_VERSION}" \
             --arg wasmerJsSha256 "${wasmer_js_sha256}" \
             --arg wasmerPatchSha256 "${wasmer_patch_sha256}" \
             --arg wasmerSourceCommit "${WASMER_SOURCE_COMMIT}" \
@@ -335,11 +473,25 @@ jobs:
             --arg wasixccVersion "${WASIXCC_VERSION}" \
             --slurpfile browser "${browser_evidence}" \
             --slurpfile openclaw "${openclaw_evidence}" \
+            --slurpfile packageBuild "${package_build_evidence}" \
+            --slurpfile packageMount "${package_mount_evidence}" \
+            --slurpfile gateway "${gateway_evidence}" \
+            --slurpfile nodeDiagnostic "${node_diagnostic_evidence}" \
+            --argjson edgePatches "$(
+              jq '[.patches[] | {
+                path,
+                sha256
+              }]' contracts/edgejs-browser-build.json
+            )" \
             '{
               schemaVersion: 1,
               edgeSourceCommit: $edgeSourceCommit,
               runtimeProvider: $runtimeProvider,
-              patchSha256: $patchSha256,
+              patches: $edgePatches,
+              sqlite: {
+                version: $sqliteVersion,
+                archiveSha256: $sqliteSha256
+              },
               browserExecutor: {
                 wasmerSourceCommit: $wasmerSourceCommit,
                 patchSha256: $wasmerPatchSha256,
@@ -360,7 +512,15 @@ jobs:
                 archiveSha256: $archiveSha256
               },
               browser: $browser[0],
-              openclaw: $openclaw[0]
+              openclaw: $openclaw[0],
+              packageImage: {
+                build: $packageBuild[0],
+                browserMount: $packageMount[0]
+              },
+              gatewayDiagnostic: {
+                nodeVersionEvidence: $nodeDiagnostic[0],
+                browser: $gateway[0]
+              }
             }' > artifacts/edgejs-wasix-build-evidence.json
           cat artifacts/edgejs-wasix-build-evidence.json
 

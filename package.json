@@ -1,7 +1,7 @@
 {
   "name": "clawsembly-kernel",
   "version": "0.0.0",
-  "description": "A clean-room browser execution kernel for an unmodified OpenClaw artifact.",
+  "description": "Run an exact, unmodified OpenClaw release entirely inside a browser on an OSS, self-hostable kernel.",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -11,13 +11,18 @@
   "scripts": {
     "dev": "vite",
     "contract:generate": "node scripts/generate-openclaw-sqlite-contract.mjs",
-    "contract:check": "node scripts/generate-openclaw-sqlite-contract.mjs --check && node scripts/verify-edgejs-browser-build-contract.mjs",
+    "package-contract:generate": "node scripts/generate-openclaw-package-contract.mjs",
+    "package-contract:check": "node scripts/generate-openclaw-package-contract.mjs --check",
+    "package-image:build": "node scripts/build-openclaw-package-image.mjs",
+    "edgejs:diagnostic-node-floor": "node scripts/create-edgejs-node-version-diagnostic.mjs",
+    "contract:check": "node scripts/generate-openclaw-sqlite-contract.mjs --check && npm run package-contract:check && node scripts/verify-edgejs-browser-build-contract.mjs",
     "typecheck": "tsc -p tsconfig.app.json && tsc -p tsconfig.worker.json && tsc -p tsconfig.node.json",
     "build": "npm run typecheck && vite build",
     "preview": "vite preview",
+    "test:clawsemblyfs": "node --test tests/clawsemblyfs.test.ts",
     "test:browser": "playwright test",
     "test:edgejs": "node scripts/run-edgejs-openclaw-state-contract.mjs",
-    "check": "npm run contract:check && npm run build && npm run test:browser && npm run test:edgejs"
+    "check": "npm run contract:check && npm run build && npm run test:clawsemblyfs && npm run test:browser && npm run test:edgejs"
   },
   "dependencies": {
     "@sqlite.org/sqlite-wasm": "3.53.0-build1"

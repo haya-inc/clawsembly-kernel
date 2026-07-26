@@ -108,6 +108,47 @@ browser-specific reimplementation of Wasmer's native V8 bridge part of the
 kernel. A future browser-engine N-API bridge can remain an optimization without
 defining the correctness boundary.
 
+### Compiled SQLite personality
+
+The browser Edge.js build no longer depends on nested JavaScript WebAssembly
+for its startup-critical SQLite surface:
+
+```text
+OpenClaw require("node:sqlite")
+  -> Edge.js lib/sqlite.js
+  -> internalBinding("sqlite")
+  -> portable N-API DatabaseSync / StatementSync binding
+  -> pinned SQLite 3.53.4 amalgamation compiled into Edge.js WASIX
+  -> capability-mounted WASIX directory
+```
+
+The amalgamation archive is fetched directly from SQLite, verified by byte
+length, SHA-256, and the upstream-published SHA3-256, then compiled with
+extension loading and double-quoted string literals disabled. No host SQLite
+library is accepted. The native QuickJS build proves the reached OpenClaw
+surface; the browser build must additionally prove WAL database bytes survive
+one Edge.js process and can be reopened read-only by another process sharing
+the same mounted directory.
+
+That mounted directory is currently an in-memory Wasmer JS capability object.
+It proves the SQLite and process boundary, but does not yet satisfy the North
+Star persistence requirement. The final storage broker must commit the
+capability directory to OPFS and recover it in a fresh browser session without
+granting ambient filesystem access to the guest.
+
+### Complete package image
+
+The official OpenClaw artifact publishes a lockfile with hundreds of runtime
+archives. The kernel derives a contract from that exact shrinkwrap, verifies
+each archive's SRI, validates archive paths and package identities, and writes
+a deterministic `ClawsemblyFS` image. The browser verifies and mounts that
+complete image at `/openclaw`; OpenClaw files remain byte-identical.
+
+Required lifecycle scripts are recorded with their exact package identities
+and commands. They are not silently treated as complete: executing or replacing
+each required lifecycle effect inside the capability kernel remains an
+explicit gate before the package-install requirement is satisfied.
+
 Edge.js's optional QuickJS `globalThis.WebAssembly` implementation is disabled
 in this first browser build. That implementation imports native Wasmer's
 `wasm_c_api_v0` namespace, which Wasmer JS does not expose. The audited build

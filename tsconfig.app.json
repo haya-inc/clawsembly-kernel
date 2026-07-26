@@ -5,8 +5,12 @@
     "types": ["vite/client"]
   },
   "include": [
+    "src/clawsemblyfs.ts",
     "src/edgejs-wasix-probe.ts",
     "src/main.ts",
+    "src/openclaw-entrypoint-probe.ts",
+    "src/openclaw-package-runtime-probe.ts",
+    "src/package-image-probe.ts",
     "src/protocol.ts"
   ]
 }

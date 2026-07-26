@@ -16,7 +16,7 @@ const edgeArtifact = readJson(
 );
 const packageLock = readJson(path.join(repositoryRoot, "package-lock.json"));
 
-assert.equal(contract.schemaVersion, 2);
+assert.equal(contract.schemaVersion, 3);
 assert.equal(contract.runtimeProvider, "quickjs");
 assert.equal(contract.upstream.commit, edgeArtifact.source.commit);
 assert.equal(contract.upstream.repository, edgeArtifact.source.repository);
@@ -26,6 +26,20 @@ assert.equal(contract.toolchain.wasixccRunWasmOpt, false);
 assert.equal(contract.toolchain.quickjsWebAssembly, false);
 assert.equal(contract.toolchain.sysrootAsset, "sysroot-eh.tar.gz");
 assert.match(contract.toolchain.sysrootAssetSha256, /^[0-9a-f]{64}$/u);
+assert.equal(contract.sqlite.version, "3.53.4");
+assert.equal(contract.sqlite.amalgamationCode, 3530400);
+assert.equal(
+  contract.sqlite.url,
+  `https://www.sqlite.org/2026/${contract.sqlite.archive}`
+);
+assert.equal(contract.sqlite.bytes, 2_946_650);
+assert.match(contract.sqlite.sha256, /^[0-9a-f]{64}$/u);
+assert.match(contract.sqlite.sha3_256, /^[0-9a-f]{64}$/u);
+assert.deepEqual(
+  contract.sqlite.sourceFiles,
+  ["sqlite3.c", "sqlite3.h", "sqlite3ext.h"]
+);
+assert.equal(contract.sqlite.extensionLoading, false);
 
 for (const patch of contract.patches) {
   const patchPath = path.join(repositoryRoot, patch.path);
@@ -59,7 +73,6 @@ const outputs = {
   edge_source_commit: contract.upstream.commit,
   edge_source_repository: contract.upstream.repository,
   emit_exnref: contract.toolchain.emitExceptionReferences ? "yes" : "no",
-  patch_path: contract.patches[0].path,
   quickjs_webassembly: contract.toolchain.quickjsWebAssembly ? "yes" : "no",
   runtime_provider: contract.runtimeProvider,
   rust_version: contract.toolchain.rustVersion,
@@ -74,6 +87,12 @@ const outputs = {
   wasm_pack_linux_sha256: contract.browserExecutor.build.wasmPackLinuxSha256,
   wasm_pack_version: contract.browserExecutor.build.wasmPackVersion,
   wasm_tools_version: contract.toolchain.wasmToolsVersion,
+  sqlite_archive: contract.sqlite.archive,
+  sqlite_bytes: String(contract.sqlite.bytes),
+  sqlite_sha256: contract.sqlite.sha256,
+  sqlite_sha3_256: contract.sqlite.sha3_256,
+  sqlite_url: contract.sqlite.url,
+  sqlite_version: contract.sqlite.version,
   wasixcc_version: contract.toolchain.wasixccVersion,
   wasixcc_wasm_exceptions: contract.toolchain.wasixccWasmExceptions,
   wasixcc_run_wasm_opt: contract.toolchain.wasixccRunWasmOpt ? "yes" : "no"
@@ -90,7 +109,8 @@ if (process.argv.includes("--github-output")) {
 
 console.log(
   `Verified Edge.js browser build contract at ${contract.upstream.commit}: `
-  + `${contract.runtimeProvider} provider, ${contract.patches.length} Edge.js patch, `
+  + `${contract.runtimeProvider} provider, ${contract.patches.length} Edge.js patches, `
+  + `SQLite ${contract.sqlite.version}, `
   + `self-built @wasmer/sdk@${sdk.version} from `
   + `${contract.browserExecutor.upstream.commit}, `
   + `quickjs-webassembly=${outputs.quickjs_webassembly}, `

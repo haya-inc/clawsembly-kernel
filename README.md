@@ -81,7 +81,7 @@ own shrinkwrap, and runs two fresh Edge.js processes. Set
 
 ## Status
 
-Experimental. Three execution layers are now proven:
+Experimental. Current execution milestones:
 
 - Chromium executes the artifact-derived SQLite contract against official
   SQLite Wasm with OPFS persistence.
@@ -95,18 +95,31 @@ Experimental. Three execution layers are now proven:
   official `openclaw@2026.7.1-2` launcher from its integrity-pinned npm
   archive in
   [GitHub Actions run 30197574607](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30197574607).
+- The exact OpenClaw shrinkwrap is materialized as a deterministic
+  browser-mountable image: 308 integrity-pinned runtime archives, 32,027 files,
+  and exact hashes for `openclaw.mjs`, `dist/entry.js`, `package.json`, and
+  `npm-shrinkwrap.json`. Chromium mounts and verifies the whole image without
+  rewriting OpenClaw.
+- Edge.js now has an auditable optional `internalBinding("sqlite")` patch. It
+  compiles the official SQLite 3.53.4 amalgamation directly into the QuickJS
+  WASIX runtime, disables extension loading, and passes the OpenClaw-reached
+  synchronous API, transaction, savepoint, WAL, checkpoint, read-only, and
+  persistence contract in a native QuickJS build.
 
 This does not yet claim complete OpenClaw startup. The pinned Edge.js runtime
 reports Node 24.13.2, below OpenClaw's Node 24.15.0 safety floor. The official
 launcher now stops synchronously at that version gate with exit code 1, empty
 stdout, the exact diagnostic, and no fall-through into `dist/entry.js`. The
 runtime will not be relabeled until a compatibility profile proves the
-required Node surfaces and SQLite WAL-reset safety. QuickJS's optional
+required Node surfaces. SQLite WAL-reset safety is pinned to 3.53.4 and the
+browser CI now must prove that same compiled binding in Chromium before it can
+remove the first Gateway blocker. QuickJS's optional
 JavaScript `WebAssembly` global is explicitly disabled until its native
 `wasm_c_api_v0` dependency is replaced by a browser-native OSS adapter. The
-next hard gate is that Node compatibility profile, followed by the complete
-unmodified package and dependency graph, capability-complete Gateway
-connectivity, and one real agent turn. See
+next hard gate is the rebuilt Chromium artifact advancing the exact unmodified
+Gateway beyond `requireNodeSqlite()`, followed by Gateway readiness,
+capability-complete connectivity, durable OPFS ownership, and one real agent
+turn. See
 [the artifact-derived SQLite contract](docs/openclaw-sqlite-contract.md) and
 [the Edge.js personality proof](docs/edgejs-node-sqlite-personality.md) for the
 implemented and deliberately unsupported boundaries.

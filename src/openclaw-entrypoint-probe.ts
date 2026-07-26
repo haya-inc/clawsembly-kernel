@@ -20,7 +20,10 @@ type OpenClawPackage = {
   version?: string;
 };
 
-async function fetchBytes(url: string, label: string): Promise<Uint8Array> {
+async function fetchBytes(
+  url: string,
+  label: string
+): Promise<Uint8Array<ArrayBuffer>> {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`${label} fetch failed with ${response.status}`);
   return new Uint8Array(await response.arrayBuffer());

@@ -18,6 +18,9 @@ type BrowserBuildContract = {
     node: string;
     v8: string;
   };
+  sqlite: {
+    version: string;
+  };
 };
 
 type BrowserEvidence = {
@@ -38,6 +41,38 @@ type BrowserEvidence = {
     stdout: string;
   };
   schemaVersion: number;
+  sqlite: {
+    crossProcessRead: {
+      marker: {
+        count: number;
+        foreignKeys: number;
+        journalMode: string;
+        phase: string;
+        version: string;
+      };
+      result: {
+        code: number;
+        ok: boolean;
+      };
+    };
+    databaseBytes: number;
+    databaseSha256: string;
+    version: string;
+    write: {
+      marker: {
+        count: number;
+        extensionLoadingRejected: boolean;
+        foreignKeys: number;
+        journalMode: string;
+        phase: string;
+        version: string;
+      };
+      result: {
+        code: number;
+        ok: boolean;
+      };
+    };
+  };
   status: string;
   stderr: string;
 };
@@ -97,9 +132,41 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
       ok: false,
       stderr: "",
       stdout: "before-exit\n"
+    },
+    sqlite: {
+      version: contract.sqlite.version,
+      write: {
+        marker: {
+          phase: "write",
+          version: contract.sqlite.version,
+          foreignKeys: 1,
+          journalMode: "wal",
+          count: 1,
+          extensionLoadingRejected: true
+        },
+        result: {
+          code: 0,
+          ok: true
+        }
+      },
+      crossProcessRead: {
+        marker: {
+          phase: "read",
+          version: contract.sqlite.version,
+          foreignKeys: 1,
+          journalMode: "wal",
+          count: 1
+        },
+        result: {
+          code: 0,
+          ok: true
+        }
+      }
     }
   });
   expect(evidence.artifactBytes).toBeGreaterThan(1_000_000);
+  expect(evidence.sqlite.databaseBytes).toBeGreaterThan(0);
+  expect(evidence.sqlite.databaseSha256).toMatch(/^[0-9a-f]{64}$/u);
 
   const artifactSha256 = createHash("sha256")
     .update(readFileSync(resolvedArtifactPath))
