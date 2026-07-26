@@ -35,7 +35,7 @@ export default defineConfig({
   build: {
     target: "es2023",
     rollupOptions: {
-      input: ["index.html", "wasix-probe.html"]
+      input: ["index.html", "openclaw-probe.html", "wasix-probe.html"]
     }
   }
 });

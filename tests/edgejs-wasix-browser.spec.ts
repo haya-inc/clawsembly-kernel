@@ -31,6 +31,12 @@ type BrowserEvidence = {
     node: string;
     v8: string;
   };
+  processExit: {
+    code: number;
+    ok: boolean;
+    stderr: string;
+    stdout: string;
+  };
   schemaVersion: number;
   status: string;
   stderr: string;
@@ -85,7 +91,13 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
     crossOriginIsolated: true,
     executor: contract.browserExecutor.package,
     exitCode: 0,
-    runtime: contract.expectedRuntime
+    runtime: contract.expectedRuntime,
+    processExit: {
+      code: 7,
+      ok: false,
+      stderr: "",
+      stdout: "before-exit\n"
+    }
   });
   expect(evidence.artifactBytes).toBeGreaterThan(1_000_000);
 

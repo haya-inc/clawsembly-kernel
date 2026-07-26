@@ -6,6 +6,13 @@ type EdgeVersions = {
   v8: string;
 };
 
+type WasixOutput = {
+  code: number;
+  ok: boolean;
+  stderr: string;
+  stdout: string;
+};
+
 function requiredElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
   if (!element) throw new Error(`Missing required element: ${selector}`);
@@ -70,6 +77,30 @@ async function runProbe(): Promise<void> {
       throw new Error(`Unexpected Edge.js marker: ${runtime.marker}`);
     }
 
+    status.textContent = "Verifying synchronous process.exit() semantics…";
+    const exitInstance = await runWasix(moduleWithBytes, {
+      program: "edgejs",
+      args: [
+        "-e",
+        [
+          'console.log("before-exit")',
+          "process.exit(7)",
+          'console.log("after-exit")'
+        ].join(";")
+      ]
+    });
+    const processExit = await exitInstance.wait() as WasixOutput;
+    if (
+      processExit.code !== 7
+      || processExit.stdout !== "before-exit\n"
+      || processExit.stderr !== ""
+    ) {
+      throw new Error(
+        "Edge.js process.exit() semantics mismatch: "
+        + JSON.stringify(processExit)
+      );
+    }
+
     const evidence = {
       schemaVersion: 1,
       status: "pass",
@@ -78,7 +109,8 @@ async function runProbe(): Promise<void> {
       artifactBytes: bytes.byteLength,
       runtime,
       exitCode: output.code,
-      stderr: output.stderr
+      stderr: output.stderr,
+      processExit
     };
     status.dataset.state = "pass";
     status.textContent = "PASS · Edge.js started inside the browser";

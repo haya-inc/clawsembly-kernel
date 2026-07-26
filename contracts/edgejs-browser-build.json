@@ -9,7 +9,7 @@
   "patches": [
     {
       "path": "patches/edgejs/0001-configure-exception-reference-emission.patch",
-      "sha256": "3150d722b8da35c7b59e2071c6fabb76171d7cd0cba3f0e7ce95fdbeff421e97"
+      "sha256": "9a68fc05f1a59e9715a7a51fd54997fa8e07c7c2a1e86df98107bc8e6761ab96"
     }
   ],
   "toolchain": {

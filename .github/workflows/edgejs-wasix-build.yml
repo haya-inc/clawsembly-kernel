@@ -4,10 +4,12 @@ on:
   push:
     branches:
       - agent/edgejs-wasix-build
+      - agent/openclaw-entrypoint
     paths:
       - .github/workflows/edgejs-wasix-build.yml
       - contracts/edgejs-artifact.json
       - contracts/edgejs-browser-build.json
+      - contracts/openclaw-artifact.json
       - package-lock.json
       - package.json
       - patches/edgejs/**
@@ -15,8 +17,11 @@ on:
       - playwright.config.ts
       - scripts/verify-edgejs-browser-build-contract.mjs
       - src/edgejs-wasix-probe.ts
+      - src/openclaw-entrypoint-probe.ts
       - tests/edgejs-wasix-browser.spec.ts
+      - tests/openclaw-entrypoint-browser.spec.ts
       - vite.config.ts
+      - openclaw-probe.html
       - wasix-probe.html
   workflow_dispatch:
 
@@ -70,6 +75,25 @@ jobs:
           git -C edgejs apply --unidiff-zero --check "../${EDGE_PATCH}"
           git -C edgejs apply --unidiff-zero "../${EDGE_PATCH}"
           git -C edgejs diff --check
+          git -C edgejs/napi diff --check
+
+      - name: Verify QuickJS execution termination
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake \
+            -S edgejs/napi \
+            -B edgejs/build-napi-termination-test \
+            -DNAPI_BUILD_QUICKJS=ON \
+            -DNAPI_BUILD_V8=OFF \
+            -DNAPI_QUICKJS_BUILD_TESTS=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake \
+            --build edgejs/build-napi-termination-test \
+            --target napi_quickjs_test_66_unofficial_termination \
+            -j4
+          edgejs/build-napi-termination-test/quickjs/tests/napi_quickjs_test_66_unofficial_termination \
+            --gtest_color=no
 
       - name: Check out pinned Wasmer JS source
         shell: bash
@@ -236,11 +260,34 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
-      - name: Prove Edge.js starts inside Chromium
+      - name: Fetch pinned official OpenClaw artifact
+        id: openclaw
+        shell: bash
+        run: |
+          set -euo pipefail
+          openclaw_version="$(
+            node -p "JSON.parse(require('fs').readFileSync('contracts/openclaw-artifact.json')).version"
+          )"
+          archive_name="$(
+            npm pack \
+              "openclaw@${openclaw_version}" \
+              --ignore-scripts \
+              --pack-destination "${RUNNER_TEMP}" \
+              --silent
+          )"
+          archive_path="${RUNNER_TEMP}/${archive_name}"
+          test -s "${archive_path}"
+          echo "path=${archive_path}" >> "${GITHUB_OUTPUT}"
+
+      - name: Prove Edge.js and the official OpenClaw launcher in Chromium
         env:
           CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
+          CLAWSEMBLY_OPENCLAW_ARCHIVE: ${{ steps.openclaw.outputs.path }}
           CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
-        run: npx playwright test tests/edgejs-wasix-browser.spec.ts
+        run: |
+          npx playwright test \
+            tests/edgejs-wasix-browser.spec.ts \
+            tests/openclaw-entrypoint-browser.spec.ts
 
       - name: Assemble build evidence
         shell: bash
@@ -260,7 +307,9 @@ jobs:
           mkdir -p artifacts
           cp edgejs/edge-quickjs-wasix-browser-compatible.zip artifacts/
           browser_evidence="$(find test-results -name edgejs-wasix-browser-evidence.json -type f | head -n 1)"
+          openclaw_evidence="$(find test-results -name openclaw-entrypoint-browser-evidence.json -type f | head -n 1)"
           test -n "${browser_evidence}"
+          test -n "${openclaw_evidence}"
           wasm_sha256="$(sha256sum edgejs/build-quickjs-wasix/edgejs.wasm | awk '{print $1}')"
           archive_sha256="$(sha256sum edgejs/edge-quickjs-wasix-browser-compatible.zip | awk '{print $1}')"
           patch_sha256="$(sha256sum "${EDGE_PATCH}" | awk '{print $1}')"
@@ -285,6 +334,7 @@ jobs:
             --arg wasixccWasmExceptions "${{ steps.contract.outputs.wasixcc_wasm_exceptions }}" \
             --arg wasixccVersion "${WASIXCC_VERSION}" \
             --slurpfile browser "${browser_evidence}" \
+            --slurpfile openclaw "${openclaw_evidence}" \
             '{
               schemaVersion: 1,
               edgeSourceCommit: $edgeSourceCommit,
@@ -309,7 +359,8 @@ jobs:
                 wasmSha256: $wasmSha256,
                 archiveSha256: $archiveSha256
               },
-              browser: $browser[0]
+              browser: $browser[0],
+              openclaw: $openclaw[0]
             }' > artifacts/edgejs-wasix-build-evidence.json
           cat artifacts/edgejs-wasix-build-evidence.json
 
