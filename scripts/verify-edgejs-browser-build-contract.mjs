@@ -21,6 +21,7 @@ assert.equal(contract.upstream.commit, edgeArtifact.source.commit);
 assert.equal(contract.upstream.repository, edgeArtifact.source.repository);
 assert.equal(contract.toolchain.emitExceptionReferences, false);
 assert.equal(contract.toolchain.wasixccWasmExceptions, "legacy");
+assert.equal(contract.toolchain.wasixccRunWasmOpt, false);
 
 for (const patch of contract.patches) {
   const patchPath = path.join(repositoryRoot, patch.path);
@@ -48,7 +49,8 @@ const outputs = {
   sysroot_tag: contract.toolchain.sysrootTag,
   wasm_tools_version: contract.toolchain.wasmToolsVersion,
   wasixcc_version: contract.toolchain.wasixccVersion,
-  wasixcc_wasm_exceptions: contract.toolchain.wasixccWasmExceptions
+  wasixcc_wasm_exceptions: contract.toolchain.wasixccWasmExceptions,
+  wasixcc_run_wasm_opt: contract.toolchain.wasixccRunWasmOpt ? "yes" : "no"
 };
 
 if (process.argv.includes("--github-output")) {
@@ -64,6 +66,7 @@ console.log(
   `Verified Edge.js browser build contract at ${contract.upstream.commit}: `
   + `${contract.patches.length} patch, @wasmer/sdk@${sdk.version}, `
   + `wasm-exceptions=${outputs.wasixcc_wasm_exceptions}, `
+  + `wasixcc-wasm-opt=${outputs.wasixcc_run_wasm_opt}, `
   + `emit-exnref=${outputs.emit_exnref}.`
 );
 

@@ -18,3 +18,9 @@ diff --git a/wasix/build-wasix.sh b/wasix/build-wasix.sh
 +  echo "preserving legacy WebAssembly EH in ${output} (emit-exnref=${emit_exnref})" >&2
    cp "${input}" "${output}"
  }
+diff --git a/wasix/cmake/wasixcc-env.sh b/wasix/cmake/wasixcc-env.sh
+--- a/wasix/cmake/wasixcc-env.sh
++++ b/wasix/cmake/wasixcc-env.sh
+@@ -3 +3 @@
+-export WASIXCC_WASM_EXCEPTIONS=exnref
++export WASIXCC_WASM_EXCEPTIONS="${WASIXCC_WASM_EXCEPTIONS:-exnref}"

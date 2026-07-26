@@ -66,8 +66,8 @@ jobs:
           EDGE_PATCH: ${{ steps.contract.outputs.patch_path }}
         run: |
           set -euo pipefail
-          git -C edgejs apply --check "../${EDGE_PATCH}"
-          git -C edgejs apply "../${EDGE_PATCH}"
+          git -C edgejs apply --unidiff-zero --check "../${EDGE_PATCH}"
+          git -C edgejs apply --unidiff-zero "../${EDGE_PATCH}"
           git -C edgejs diff --check
 
       - name: Set up Rust
@@ -92,10 +92,11 @@ jobs:
           sudo apt-get install -y cmake libicu-dev ninja-build
           cargo install --locked wasm-tools --version "${WASM_TOOLS_VERSION}"
 
-      - name: Build Edge.js WASIX without exception references
+      - name: Build Edge.js WASIX with legacy exception handling
         shell: bash
         env:
           EDGE_WASIX_EMIT_EXNREF: ${{ steps.contract.outputs.emit_exnref }}
+          WASIXCC_RUN_WASM_OPT: ${{ steps.contract.outputs.wasixcc_run_wasm_opt }}
           WASIXCC_WASM_EXCEPTIONS: ${{ steps.contract.outputs.wasixcc_wasm_exceptions }}
         run: |
           set -euo pipefail
@@ -157,6 +158,8 @@ jobs:
             --arg patchSha256 "${patch_sha256}" \
             --arg sysrootTag "${SYSROOT_TAG}" \
             --arg wasmSha256 "${wasm_sha256}" \
+            --arg wasixccRunWasmOpt "${{ steps.contract.outputs.wasixcc_run_wasm_opt }}" \
+            --arg wasixccWasmExceptions "${{ steps.contract.outputs.wasixcc_wasm_exceptions }}" \
             --arg wasixccVersion "${WASIXCC_VERSION}" \
             --slurpfile browser "${browser_evidence}" \
             '{
@@ -166,6 +169,8 @@ jobs:
               toolchain: {
                 wasixccVersion: $wasixccVersion,
                 sysrootTag: $sysrootTag,
+                wasixccWasmExceptions: $wasixccWasmExceptions,
+                wasixccRunWasmOpt: $wasixccRunWasmOpt,
                 emitExnref: $emitExnref
               },
               artifact: {
