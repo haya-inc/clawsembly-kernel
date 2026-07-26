@@ -11,7 +11,7 @@ const runButton = requiredElement<HTMLButtonElement>("#run");
 const status = requiredElement<HTMLOutputElement>("#status");
 const result = requiredElement<HTMLPreElement>("#result");
 
-const databasePath = "/clawsembly/kernel-m0.sqlite3";
+const databasePath = "/clawsembly/openclaw-state-contract-v1.sqlite3";
 
 function executeWorker(command: ProbeCommand): Promise<ProbeEvidence> {
   return new Promise((resolve, reject) => {
@@ -42,24 +42,31 @@ function executeWorker(command: ProbeCommand): Promise<ProbeEvidence> {
 async function runProbe(): Promise<void> {
   runButton.disabled = true;
   status.dataset.state = "running";
-  status.textContent = "Writing from worker one…";
+  status.textContent = "Initializing the official OpenClaw state schema…";
   result.textContent = "";
 
   try {
+    const runId = crypto.randomUUID();
     const write = await executeWorker({
       id: crypto.randomUUID(),
       kind: "write",
-      databasePath
+      databasePath,
+      attachedDatabasePath: `/clawsembly/attached-${runId}.sqlite3`,
+      snapshotDatabasePath: `/clawsembly/snapshot-${runId}.sqlite3`
     });
-    status.textContent = "Reopening from a fresh worker…";
+    status.textContent = "Reopening the state database from a fresh worker…";
     const read = await executeWorker({
       id: crypto.randomUUID(),
       kind: "read",
       databasePath
     });
-    const persisted = JSON.stringify(write.rows) === JSON.stringify(read.rows)
-      && read.rows.length === 2;
-    if (!persisted) throw new Error("OPFS rows did not survive the worker boundary");
+    const persisted = write.stateSchema.sha256 === read.stateSchema.sha256
+      && write.stateSchema.tables === read.stateSchema.tables
+      && write.stateSchema.indexes === read.stateSchema.indexes
+      && JSON.stringify(write.stateSchema.primary) === JSON.stringify(read.stateSchema.primary);
+    if (!persisted) {
+      throw new Error("The OpenClaw state contract did not survive the worker boundary");
+    }
 
     const evidence = {
       status: "pass",
@@ -69,7 +76,7 @@ async function runProbe(): Promise<void> {
       read
     };
     status.dataset.state = "pass";
-    status.textContent = "PASS · persisted across two workers";
+    status.textContent = "PASS · official OpenClaw state persisted";
     result.textContent = JSON.stringify(evidence, (_, value) => (
       typeof value === "bigint" ? value.toString() : value
     ), 2);

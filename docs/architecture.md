@@ -25,22 +25,42 @@ personality's point of view.
 
 Implemented:
 
+- artifact integrity verification and deterministic contract generation
+- the exact state schema from the pinned official OpenClaw artifact
 - `DatabaseSync` construction for memory and OPFS paths
 - `exec()`, `prepare()`, and `close()`
 - `StatementSync.get()`, `all()`, `run()`, `iterate()`, and `columns()`
 - positional and named bindings
+- OpenClaw's busy timeout, WAL, autocheckpoint, `synchronous=NORMAL`, and
+  foreign-key pragmas
+- `BEGIN IMMEDIATE`, nested savepoint rollback/release, and WAL checkpoint
+- bound `ATTACH DATABASE ?` and `VACUUM INTO ?`, including snapshot validation
 - OPFS persistence across fresh Worker generations
 
 Deliberately unavailable:
 
 - native extension loading
 - `sqlite-vec`
-- file-level backup and restore
+- complete OpenClaw backup archive and restore orchestration
 - multi-tab ownership handoff
 - full error-code normalization
 - Edge.js core-module registration
 
 Unsupported behavior throws instead of silently degrading.
+
+## OPFS WAL precondition
+
+The official SQLite Wasm build requires `locking_mode=EXCLUSIVE` before the
+first database operation in order to activate WAL on OPFS. The OPFS
+`DatabaseSync` personality applies that storage precondition in its constructor
+before the unmodified OpenClaw code can issue SQL. Native Node remains in
+`locking_mode=NORMAL`.
+
+This difference is explicit in the browser evidence and covered by the
+differential test. It does not rewrite or skip OpenClaw's own WAL configuration.
+See SQLite's
+[WAL Mode with OPFS](https://sqlite.org/wasm/doc/trunk/persistence.md#wal_mode_with_opfs)
+documentation.
 
 ## Ownership
 

@@ -2,6 +2,11 @@
 
 import sqlite3InitModule from "@sqlite.org/sqlite-wasm";
 import { createNodeSqliteModule } from "./node-sqlite";
+import {
+  initializeOpenClawStateContract,
+  readOpenClawStateContract,
+  type DatabaseContract
+} from "./openclaw-sqlite-contract";
 import type { ProbeCommand, ProbeEvidence, ProbeResponse } from "./protocol";
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -19,62 +24,23 @@ async function run(command: ProbeCommand): Promise<ProbeEvidence> {
   const sqlite3 = await sqlite3InitModule();
   const vfsName = "clawsembly-kernel-m0";
   const sahPool = await sqlite3.installOpfsSAHPoolVfs({
-    initialCapacity: 6,
+    initialCapacity: 12,
     name: vfsName
   });
+  await sahPool.reserveMinimumCapacity(12);
   const { DatabaseSync } = createNodeSqliteModule(sqlite3, vfsName);
   const database = new DatabaseSync(command.databasePath, {
     readOnly: command.kind === "read"
   });
 
   try {
-    if (command.kind === "write") {
-      database.exec(`
-        DROP TABLE IF EXISTS kernel_probe;
-        CREATE TABLE kernel_probe (
-          id INTEGER PRIMARY KEY,
-          value TEXT NOT NULL
-        ) STRICT;
-      `);
-      const insert = database.prepare(
-        "INSERT INTO kernel_probe(value) VALUES (?)"
-      );
-      const first = insert.run("written-by-worker-one");
-      database.prepare(
-        "INSERT INTO kernel_probe(value) VALUES ($value)"
-      ).run({ $value: "persisted-in-opfs" });
-      const select = database.prepare(
-        "SELECT id, value FROM kernel_probe ORDER BY id"
-      );
-      const rows = select.all() as Array<{ id: number; value: string }>;
-      const version = database.prepare(
-        "SELECT sqlite_version() AS version"
-      ).get()?.version;
-      return {
-        sqliteVersion: String(version),
-        databasePath: command.databasePath,
-        rows,
-        columns: select.columns().map((column) => column.name),
-        readOnly: false,
-        changes: first.changes,
-        lastInsertRowid: first.lastInsertRowid
-      };
-    }
-
-    const select = database.prepare(
-      "SELECT id, value FROM kernel_probe ORDER BY id"
-    );
-    const rows = Array.from(select.iterate()) as Array<{ id: number; value: string }>;
-    const version = database.prepare(
-      "SELECT sqlite_version() AS version"
-    ).get()?.version;
-    return {
-      sqliteVersion: String(version),
-      databasePath: command.databasePath,
-      rows,
-      columns: select.columns().map((column) => column.name),
-      readOnly: true
-    };
+    const contractDatabase = database as unknown as DatabaseContract;
+    return command.kind === "write"
+      ? initializeOpenClawStateContract(contractDatabase, command.databasePath, {
+        attachedDatabasePath: command.attachedDatabasePath,
+        snapshotDatabasePath: command.snapshotDatabasePath
+      })
+      : readOpenClawStateContract(contractDatabase, command.databasePath);
   } finally {
     database.close();
     sahPool.pauseVfs();

@@ -156,6 +156,9 @@ export function createNodeSqliteModule(
           flags,
           vfs: vfsName
         });
+        // SQLite Wasm cannot use WAL over OPFS without exclusive locking.
+        // This VFS precondition must run before OpenClaw issues its first SQL.
+        this.#database.exec("PRAGMA locking_mode=EXCLUSIVE;");
       }
     }
 
