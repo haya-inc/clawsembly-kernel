@@ -6,7 +6,7 @@ index 52b93ff3fd0492bdbf606afd300f709bd8ee8ce4..9667ac3345d18438409283fd4a9717da
 -plans/quickjs-wasm/development/troubleshooting/node-compat/edgejs/012_v8_ctest_environment_attach.md
 +plans/quickjs-wasm/development/troubleshooting/node-compat/edgejs/013_openclaw_node_sqlite_binding.md
 diff --git i/CMakeLists.txt w/CMakeLists.txt
-index 795985c378ff57f72f20ddad29be2aa6d051ffea..e5b667aee4ff0e568650a9b5100be9257f35a1eb 100644
+index 795985c378ff57f72f20ddad29be2aa6d051ffea..b078bd2f44467668abfe0fd8e5f45f7c1c19104d 100644
 --- i/CMakeLists.txt
 +++ w/CMakeLists.txt
 @@ -47,0 +48,14 @@ edge_configure_quickjs_webassembly()
@@ -54,10 +54,10 @@ index d8c045b940c73145956ff31d9c913ea10b2ddd5d..7179d987933a9c86cc2de320f13c0407
 +| ▶️ | High | [013_openclaw_node_sqlite_binding.md](node-compat/edgejs/013_openclaw_node_sqlite_binding.md) | OpenClaw `node:sqlite` binding |
 diff --git i/plans/quickjs-wasm/development/troubleshooting/node-compat/edgejs/013_openclaw_node_sqlite_binding.md w/plans/quickjs-wasm/development/troubleshooting/node-compat/edgejs/013_openclaw_node_sqlite_binding.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..f0dca9c84cce573bbeaf7115ddedf0e3b4b3d3f4
+index 0000000000000000000000000000000000000000..3a64c27c59251568ec518043bf0491a83bdaa136
 --- /dev/null
 +++ w/plans/quickjs-wasm/development/troubleshooting/node-compat/edgejs/013_openclaw_node_sqlite_binding.md
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,89 @@
 +# Edge.js: OpenClaw `node:sqlite` binding
 +
 +| | | Remarks |
@@ -88,7 +88,9 @@ index 0000000000000000000000000000000000000000..f0dca9c84cce573bbeaf7115ddedf0e3
 +   present.
 +3. Implement the synchronous OpenClaw-reached surface: `DatabaseSync`,
 +   `StatementSync`, positional and named binding, `exec`, `prepare`, `get`,
-+   `all`, `run`, `iterate`, `columns`, read-only open, and close.
++   `all`, `run`, `iterate`, `columns`, read-only open, and close. Closing a
++   database must finalize all retained statements, matching Node's
++   `DatabaseSync` lifecycle and releasing exclusive WAL ownership.
 +4. Compile a pinned SQLite 3.53.4 amalgamation into the QuickJS WASIX artifact
 +   with extension loading disabled and column metadata enabled.
 +5. Add focused Edge.js tests for module identity, SQLite version safety,
@@ -130,7 +132,8 @@ index 0000000000000000000000000000000000000000..f0dca9c84cce573bbeaf7115ddedf0e3
 +- A native QuickJS Edge build passes the OpenClaw-reached surface for
 +  `exec`, `prepare`, `get`, `all`, `run`, `iterate`, `columns`, positional and
 +  named bindings, transactions, savepoints, WAL checkpointing, read-only
-+  reopen, foreign keys, and persistence.
++  reopen, foreign keys, persistence, retained-statement finalization, and
++  rejection of duplicate close.
 +- WASIX applies `locking_mode=EXCLUSIVE` before the first guest statement.
 +  Wasmer's mounted virtual filesystem cannot provide SQLite's normal
 +  cross-process shared-memory locking, while exclusive mode permits WAL for
@@ -206,10 +209,10 @@ index 2f0cb4652a95df3916aad65fe10cb7319069c392..481e1fdc9e10c21038a7934cf1dad1df
 +#endif
 diff --git i/src/internal_binding/binding_sqlite.cc w/src/internal_binding/binding_sqlite.cc
 new file mode 100644
-index 0000000000000000000000000000000000000000..4baf49b51752c906aaa61eaf4b852784bfdfe344
+index 0000000000000000000000000000000000000000..c79285c956ec1e790c80fa2fbf788f45d1395a98
 --- /dev/null
 +++ w/src/internal_binding/binding_sqlite.cc
-@@ -0,0 +1,1010 @@
+@@ -0,0 +1,1035 @@
 +#include "internal_binding/binding_initializers.h"
 +
 +#if defined(EDGE_HAS_SQLITE)
@@ -219,6 +222,7 @@ index 0000000000000000000000000000000000000000..4baf49b51752c906aaa61eaf4b852784
 +#include <cstring>
 +#include <limits>
 +#include <string>
++#include <unordered_set>
 +#include <vector>
 +
 +#include <sqlite3.h>
@@ -233,9 +237,12 @@ index 0000000000000000000000000000000000000000..4baf49b51752c906aaa61eaf4b852784
 +  napi_ref statement_constructor = nullptr;
 +};
 +
++struct StatementHandle;
++
 +struct DatabaseHandle {
 +  BindingState* binding = nullptr;
 +  sqlite3* database = nullptr;
++  std::unordered_set<StatementHandle*> statements;
 +};
 +
 +struct StatementHandle {
@@ -356,9 +363,33 @@ index 0000000000000000000000000000000000000000..4baf49b51752c906aaa61eaf4b852784
 +  return handle;
 +}
 +
-+void DatabaseFinalize(napi_env, void* data, void*) {
++void DetachStatement(napi_env env, StatementHandle* handle) {
++  if (handle == nullptr) return;
++  if (handle->owner != nullptr) {
++    handle->owner->statements.erase(handle);
++    handle->owner = nullptr;
++  }
++  if (handle->statement != nullptr) {
++    sqlite3_finalize(handle->statement);
++    handle->statement = nullptr;
++  }
++  if (handle->owner_reference != nullptr) {
++    napi_delete_reference(env, handle->owner_reference);
++    handle->owner_reference = nullptr;
++  }
++}
++
++void FinalizeDatabaseStatements(napi_env env, DatabaseHandle* handle) {
++  if (handle == nullptr) return;
++  while (!handle->statements.empty()) {
++    DetachStatement(env, *handle->statements.begin());
++  }
++}
++
++void DatabaseFinalize(napi_env env, void* data, void*) {
 +  auto* handle = static_cast<DatabaseHandle*>(data);
 +  if (handle == nullptr) return;
++  FinalizeDatabaseStatements(env, handle);
 +  if (handle->database != nullptr) {
 +    sqlite3_close_v2(handle->database);
 +    handle->database = nullptr;
@@ -369,14 +400,7 @@ index 0000000000000000000000000000000000000000..4baf49b51752c906aaa61eaf4b852784
 +void StatementFinalize(napi_env env, void* data, void*) {
 +  auto* handle = static_cast<StatementHandle*>(data);
 +  if (handle == nullptr) return;
-+  if (handle->statement != nullptr) {
-+    sqlite3_finalize(handle->statement);
-+    handle->statement = nullptr;
-+  }
-+  if (handle->owner_reference != nullptr) {
-+    napi_delete_reference(env, handle->owner_reference);
-+    handle->owner_reference = nullptr;
-+  }
++  DetachStatement(env, handle);
 +  delete handle;
 +}
 +
@@ -1002,15 +1026,18 @@ index 0000000000000000000000000000000000000000..4baf49b51752c906aaa61eaf4b852784
 +  }
 +  DatabaseHandle* handle = UnwrapDatabase(env, self, false);
 +  if (handle == nullptr) return nullptr;
-+  if (handle->database != nullptr) {
-+    const int result = sqlite3_close_v2(handle->database);
-+    if (result != SQLITE_OK) {
-+      ThrowSqliteError(env, handle->database, result,
-+                       "Could not close database");
-+      return nullptr;
-+    }
-+    handle->database = nullptr;
++  if (handle->database == nullptr) {
++    ThrowInvalidState(env, "The database is not open");
++    return nullptr;
 +  }
++  FinalizeDatabaseStatements(env, handle);
++  const int result = sqlite3_close_v2(handle->database);
++  if (result != SQLITE_OK) {
++    ThrowSqliteError(env, handle->database, result,
++                     "Could not close database");
++    return nullptr;
++  }
++  handle->database = nullptr;
 +  return Undefined(env);
 +}
 +
@@ -1109,6 +1136,7 @@ index 0000000000000000000000000000000000000000..4baf49b51752c906aaa61eaf4b852784
 +    StatementFinalize(env, statement, nullptr);
 +    return nullptr;
 +  }
++  handle->statements.insert(statement);
 +  return instance;
 +}
 +
@@ -1222,10 +1250,10 @@ index 0000000000000000000000000000000000000000..4baf49b51752c906aaa61eaf4b852784
 +#endif  // defined(EDGE_HAS_SQLITE)
 diff --git i/tests/js/openclaw-sqlite-contract.js w/tests/js/openclaw-sqlite-contract.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..d469c047f1737969586342105bc12ac83ac46108
+index 0000000000000000000000000000000000000000..05b3828b9f708f0694fa79a86c1837ee2db47cc6
 --- /dev/null
 +++ w/tests/js/openclaw-sqlite-contract.js
-@@ -0,0 +1,150 @@
+@@ -0,0 +1,168 @@
 +'use strict';
 +
 +const fs = require('node:fs');
@@ -1352,6 +1380,23 @@ index 0000000000000000000000000000000000000000..d469c047f1737969586342105bc12ac8
 +);
 +database.close();
 +check(database.isOpen === false, 'database should close');
++let finalizedStatementRejected = false;
++try {
++  insertParent.run({ label: 'after-close' });
++} catch (error) {
++  finalizedStatementRejected = error?.code === 'ERR_INVALID_STATE';
++}
++check(
++  finalizedStatementRejected,
++  'database close should finalize every retained statement'
++);
++let duplicateCloseRejected = false;
++try {
++  database.close();
++} catch (error) {
++  duplicateCloseRejected = error?.code === 'ERR_INVALID_STATE';
++}
++check(duplicateCloseRejected, 'closing a closed database should fail');
 +
 +const readOnly = new DatabaseSync(databasePath, { readOnly: true });
 +check(
@@ -1372,6 +1417,7 @@ index 0000000000000000000000000000000000000000..d469c047f1737969586342105bc12ac8
 +  sqliteVersion: '3.53.4',
 +  wal: true,
 +  persistence: true,
++  statementFinalization: true,
 +  readOnly: true,
 +  extensionLoading: false,
 +  status: 'pass'

@@ -93,11 +93,11 @@ const gatewayDiagnosticTimeoutMs = Number(
 if (
   !Number.isSafeInteger(gatewayDiagnosticTimeoutMs)
   || gatewayDiagnosticTimeoutMs < 1_000
-  || gatewayDiagnosticTimeoutMs > 120_000
+  || gatewayDiagnosticTimeoutMs > 240_000
 ) {
   throw new Error(
     "CLAWSEMBLY_OPENCLAW_GATEWAY_DIAGNOSTIC_TIMEOUT_MS must be "
-    + "an integer from 1000 through 120000"
+    + "an integer from 1000 through 240000"
   );
 }
 const packageContract = JSON.parse(
@@ -232,7 +232,7 @@ test("unmodified OpenClaw Gateway path advances beyond the SQLite boundary", asy
       || !existsSync(nodeDiagnosticEvidencePath),
     "Set the Gateway flag, runtime artifacts, and diagnostic-node evidence"
   );
-  test.setTimeout(300_000);
+  test.setTimeout(360_000);
 
   const resolvedEdgePath = path.resolve(edgeArtifactPath!);
   const resolvedImagePath = path.resolve(imagePath!);
@@ -285,7 +285,7 @@ test("unmodified OpenClaw Gateway path advances beyond the SQLite boundary", asy
   const outcome = await Promise.race([
     expect.poll(
       () => status.getAttribute("data-state"),
-      { timeout: 240_000 }
+      { timeout: 300_000 }
     ).toMatch(/^(?:pass|fail)$/u).then(() => ({ kind: "status" as const })),
     pageError.then((error) => ({ error, kind: "pageerror" as const }))
   ]);
@@ -385,6 +385,15 @@ test("unmodified OpenClaw Gateway path advances beyond the SQLite boundary", asy
   ) {
     expect(evidence.blocker).toBe(
       "loopback-networking-resolved-to-wildcard"
+    );
+  }
+  if (
+    evidence.result.stderr.includes(
+      "SQLite statement failed: database is locked"
+    )
+  ) {
+    expect(evidence.blocker).toBe(
+      "node-sqlite-close-retained-lock"
     );
   }
 

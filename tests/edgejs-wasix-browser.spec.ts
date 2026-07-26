@@ -74,6 +74,7 @@ type BrowserEvidence = {
         journalMode: string;
         lockingMode: string;
         phase: string;
+        statementFinalized: boolean;
         version: string;
       };
       result: {
@@ -92,6 +93,7 @@ type BrowserEvidence = {
         journalMode: string;
         lockingMode: string;
         phase: string;
+        statementFinalized: boolean;
         version: string;
       };
       result: {
@@ -192,7 +194,8 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
           lockingMode: "exclusive",
           journalMode: "wal",
           count: 1,
-          extensionLoadingRejected: true
+          extensionLoadingRejected: true,
+          statementFinalized: true
         },
         result: {
           code: 0,
@@ -206,7 +209,8 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
           foreignKeys: 1,
           lockingMode: "exclusive",
           journalMode: "wal",
-          count: 1
+          count: 1,
+          statementFinalized: true
         },
         result: {
           code: 0,

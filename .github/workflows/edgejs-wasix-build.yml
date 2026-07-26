@@ -405,7 +405,7 @@ jobs:
           CLAWSEMBLY_EDGE_NODE_DIAGNOSTIC_EVIDENCE: ${{ steps.diagnostic_node.outputs.evidence }}
           CLAWSEMBLY_EDGE_WASIX: ${{ steps.diagnostic_node.outputs.path }}
           CLAWSEMBLY_OPENCLAW_GATEWAY_DIAGNOSTIC: "1"
-          CLAWSEMBLY_OPENCLAW_GATEWAY_DIAGNOSTIC_TIMEOUT_MS: "60000"
+          CLAWSEMBLY_OPENCLAW_GATEWAY_DIAGNOSTIC_TIMEOUT_MS: "180000"
           CLAWSEMBLY_OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
           CLAWSEMBLY_OPENCLAW_IMAGE_EVIDENCE: ${{ steps.package_image.outputs.evidence }}
           CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist

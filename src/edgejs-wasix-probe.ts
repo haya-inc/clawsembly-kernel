@@ -27,6 +27,7 @@ type SqliteMarker = {
   journalMode: string;
   lockingMode: string;
   phase: "read" | "write";
+  statementFinalized: boolean;
   version: string;
 };
 
@@ -238,12 +239,17 @@ async function runProbe(): Promise<void> {
       "}",
       "const checkpoint=db.prepare(",
       "'PRAGMA wal_checkpoint(TRUNCATE)').get();",
-      "const count=db.prepare('SELECT count(*) AS count FROM turns')",
-      ".get().count;",
+      "const retained=db.prepare('SELECT count(*) AS count FROM turns');",
+      "const count=retained.get().count;",
       "db.close();",
+      "let statementFinalized=false;",
+      "try{retained.get()}catch(error){",
+      "statementFinalized=error?.code==='ERR_INVALID_STATE'",
+      "}",
       "console.log(prefix+JSON.stringify({",
       "phase:'write',version,foreignKeys,lockingMode,journalMode,count,",
-      "checkpointed:checkpoint.checkpointed,extensionLoadingRejected",
+      "checkpointed:checkpoint.checkpointed,extensionLoadingRejected,",
+      "statementFinalized",
       "}));"
     ].join("");
     const sqliteWriteInstance = await runWasix(moduleWithBytes, {
@@ -272,13 +278,17 @@ async function runProbe(): Promise<void> {
       "'SELECT sqlite_version() AS version').get().version;",
       "const foreignKeys=db.prepare('PRAGMA foreign_keys').get().foreign_keys;",
       "const journalMode=db.prepare('PRAGMA journal_mode').get().journal_mode;",
-      "const count=db.prepare('SELECT count(*) AS count FROM turns')",
-      ".get().count;",
+      "const retained=db.prepare('SELECT count(*) AS count FROM turns');",
+      "const count=retained.get().count;",
       "db.close();",
+      "let statementFinalized=false;",
+      "try{retained.get()}catch(error){",
+      "statementFinalized=error?.code==='ERR_INVALID_STATE'",
+      "}",
       "console.log(prefix+JSON.stringify({",
       "phase:'read',version,foreignKeys,lockingMode,journalMode,count,",
       "checkpointed:0,",
-      "extensionLoadingRejected:true",
+      "extensionLoadingRejected:true,statementFinalized",
       "}));"
     ].join("");
     const sqliteReadInstance = await runWasix(moduleWithBytes, {
@@ -310,6 +320,8 @@ async function runProbe(): Promise<void> {
       || sqliteWriteMarker.count !== 1
       || sqliteReadMarker.count !== 1
       || !sqliteWriteMarker.extensionLoadingRejected
+      || !sqliteWriteMarker.statementFinalized
+      || !sqliteReadMarker.statementFinalized
     ) {
       throw new Error(
         "Edge.js SQLite contract mismatch: "

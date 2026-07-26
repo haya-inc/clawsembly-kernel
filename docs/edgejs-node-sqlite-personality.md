@@ -73,6 +73,10 @@ For a granted path, the personality:
 - maps the host path to a non-user-controlled nested Wasm filename;
 - imports existing bytes into the official SQLite Wasm POSIX VFS;
 - applies exclusive locking before OpenClaw requests WAL;
+- tracks every prepared statement and finalizes it on `DatabaseSync.close()`
+  before closing the SQLite connection, so a retained `StatementSync` cannot
+  keep the single-owner WAL lock alive across OpenClaw's sequential database
+  reopen;
 - persists only at autocommit boundaries;
 - checkpoints WAL before serialization;
 - atomically replaces the host file with mode `0600`;

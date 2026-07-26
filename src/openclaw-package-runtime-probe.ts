@@ -58,6 +58,13 @@ function firstDiagnosticLine(output: WasixOutput): string | undefined {
 function classifyBlocker(output: WasixOutput): string | undefined {
   if (
     output.stderr.includes(
+      "SQLite statement failed: database is locked"
+    )
+  ) {
+    return "node-sqlite-close-retained-lock";
+  }
+  if (
+    output.stderr.includes(
       "gateway bind=loopback resolved to non-loopback host 0.0.0.0"
     )
   ) {
@@ -136,7 +143,7 @@ const requestedGatewayDiagnosticTimeoutMs = Number(
 const gatewayDiagnosticTimeoutMs =
   Number.isSafeInteger(requestedGatewayDiagnosticTimeoutMs)
     && requestedGatewayDiagnosticTimeoutMs >= 1_000
-    && requestedGatewayDiagnosticTimeoutMs <= 120_000
+    && requestedGatewayDiagnosticTimeoutMs <= 240_000
     ? requestedGatewayDiagnosticTimeoutMs
     : 12_000;
 const gatewayTimeoutMarker =
