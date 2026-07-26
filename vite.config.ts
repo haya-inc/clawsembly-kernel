@@ -16,6 +16,9 @@ export default defineConfig({
     format: "es"
   },
   build: {
-    target: "es2023"
+    target: "es2023",
+    rollupOptions: {
+      input: ["index.html", "wasix-probe.html"]
+    }
   }
 });

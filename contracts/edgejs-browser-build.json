@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "repository": "https://github.com/wasmerio/edgejs",
+    "commit": "554eb9b697ae7378290bd5f2dee1cea49a747cd7",
+    "license": "MIT"
+  },
+  "patches": [
+    {
+      "path": "patches/edgejs/0001-configure-exception-reference-emission.patch",
+      "sha256": "98f6204076b9fe1dfe5d3bdb055459144d17116dad5d3be7a4d68c60829c16f1"
+    }
+  ],
+  "toolchain": {
+    "wasixccActionCommit": "8a505d4605b15fd466a3881d286582b23e4ffecb",
+    "wasixccVersion": "v0.4.3",
+    "sysrootTag": "v2026-06-25.1",
+    "wasmToolsVersion": "1.254.0",
+    "rustVersion": "1.97.1",
+    "wasixccWasmExceptions": "yes",
+    "emitExceptionReferences": false
+  },
+  "browserExecutor": {
+    "package": "@wasmer/sdk",
+    "version": "0.10.0",
+    "integrity": "sha512-YQ+s5tGag6P/I8kp9BTH+XhjoS9UFvWiZJvnWEEovClHffhYToKhprWr4UJG7wLP7c/2HQpGkF7ZrjoUvKjdmA=="
+  },
+  "expectedRuntime": {
+    "edge": "0.0.0-554eb9b",
+    "node": "24.13.2",
+    "v8": "13.6.233.17-node.0",
+    "marker": "clawsembly-edgejs-wasix-browser"
+  }
+}

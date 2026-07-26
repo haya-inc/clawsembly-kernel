@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Clawsembly Kernel · Edge.js WASIX browser proof</title>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Clawsembly Kernel · Self-built runtime proof</p>
+      <h1>Edge.js WASIX, browser-native</h1>
+      <p>
+        This probe executes the integrity-pinned, Clawsembly-built Edge.js
+        WASIX artifact directly through the OSS Wasmer JavaScript SDK.
+      </p>
+      <output id="status" data-state="running">Initializing Wasmer…</output>
+      <pre id="result" aria-live="polite"></pre>
+    </main>
+    <script type="module" src="/src/edgejs-wasix-probe.ts"></script>
+  </body>
+</html>

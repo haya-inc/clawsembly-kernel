@@ -1,0 +1,174 @@
+name: Build browser-compatible Edge.js WASIX
+
+on:
+  push:
+    branches:
+      - agent/edgejs-wasix-build
+    paths:
+      - .github/workflows/edgejs-wasix-build.yml
+      - contracts/edgejs-artifact.json
+      - contracts/edgejs-browser-build.json
+      - package-lock.json
+      - package.json
+      - patches/edgejs/**
+      - playwright.config.ts
+      - scripts/verify-edgejs-browser-build-contract.mjs
+      - src/edgejs-wasix-probe.ts
+      - tests/edgejs-wasix-browser.spec.ts
+      - vite.config.ts
+      - wasix-probe.html
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: edgejs-wasix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-prove:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out Clawsembly Kernel
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 24.18.0
+          cache: npm
+
+      - name: Verify build contract
+        id: contract
+        run: node scripts/verify-edgejs-browser-build-contract.mjs --github-output
+
+      - name: Check out pinned Edge.js source
+        shell: bash
+        env:
+          EDGE_SOURCE_COMMIT: ${{ steps.contract.outputs.edge_source_commit }}
+          EDGE_SOURCE_REPOSITORY: ${{ steps.contract.outputs.edge_source_repository }}
+        run: |
+          set -euo pipefail
+          git config --global url."https://github.com/".insteadOf git@github.com:
+          git init edgejs
+          git -C edgejs remote add origin "${EDGE_SOURCE_REPOSITORY}"
+          git -C edgejs fetch --depth=1 origin "${EDGE_SOURCE_COMMIT}"
+          git -C edgejs checkout --detach FETCH_HEAD
+          git -C edgejs submodule sync --recursive
+          git -C edgejs -c protocol.version=2 submodule update --init --recursive --depth=1
+          test "$(git -C edgejs rev-parse HEAD)" = "${EDGE_SOURCE_COMMIT}"
+
+      - name: Apply audited browser-build patch
+        shell: bash
+        env:
+          EDGE_PATCH: ${{ steps.contract.outputs.patch_path }}
+        run: |
+          set -euo pipefail
+          git -C edgejs apply --check "../${EDGE_PATCH}"
+          git -C edgejs apply "../${EDGE_PATCH}"
+          git -C edgejs diff --check
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: ${{ steps.contract.outputs.rust_version }}
+
+      - name: Install pinned wasixcc
+        uses: wasix-org/wasixcc@8a505d4605b15fd466a3881d286582b23e4ffecb
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          sysroot-tag: ${{ steps.contract.outputs.sysroot_tag }}
+          version: ${{ steps.contract.outputs.wasixcc_version }}
+
+      - name: Install build and inspection tools
+        shell: bash
+        env:
+          WASM_TOOLS_VERSION: ${{ steps.contract.outputs.wasm_tools_version }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y cmake libicu-dev ninja-build
+          cargo install --locked wasm-tools --version "${WASM_TOOLS_VERSION}"
+
+      - name: Build Edge.js WASIX without exception references
+        shell: bash
+        env:
+          EDGE_WASIX_EMIT_EXNREF: ${{ steps.contract.outputs.emit_exnref }}
+          WASIXCC_WASM_EXCEPTIONS: ${{ steps.contract.outputs.wasixcc_wasm_exceptions }}
+        run: |
+          set -euo pipefail
+          make -C edgejs build-wasix
+          test -s edgejs/build-wasix/edgejs.wasm
+          wasm-tools validate edgejs/build-wasix/edgejs.wasm
+
+      - name: Package Edge.js WASIX
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C edgejs dist-only \
+            BUILD_DIR=build-wasix \
+            JOBS=4 \
+            ZIP_NAME=edge-wasix-browser-compatible.zip
+          test -s edgejs/edge-wasix-browser-compatible.zip
+
+      - name: Install browser proof dependencies
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Prove Edge.js starts inside Chromium
+        env:
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-wasix/edgejs.wasm
+        run: npx playwright test tests/edgejs-wasix-browser.spec.ts
+
+      - name: Assemble build evidence
+        shell: bash
+        env:
+          EDGE_SOURCE_COMMIT: ${{ steps.contract.outputs.edge_source_commit }}
+          EDGE_PATCH: ${{ steps.contract.outputs.patch_path }}
+          EMIT_EXNREF: ${{ steps.contract.outputs.emit_exnref }}
+          SYSROOT_TAG: ${{ steps.contract.outputs.sysroot_tag }}
+          WASIXCC_VERSION: ${{ steps.contract.outputs.wasixcc_version }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          cp edgejs/edge-wasix-browser-compatible.zip artifacts/
+          browser_evidence="$(find test-results -name edgejs-wasix-browser-evidence.json -type f | head -n 1)"
+          test -n "${browser_evidence}"
+          wasm_sha256="$(sha256sum edgejs/build-wasix/edgejs.wasm | awk '{print $1}')"
+          archive_sha256="$(sha256sum edgejs/edge-wasix-browser-compatible.zip | awk '{print $1}')"
+          patch_sha256="$(sha256sum "${EDGE_PATCH}" | awk '{print $1}')"
+          jq -n \
+            --arg archiveSha256 "${archive_sha256}" \
+            --arg edgeSourceCommit "${EDGE_SOURCE_COMMIT}" \
+            --arg emitExnref "${EMIT_EXNREF}" \
+            --arg patchSha256 "${patch_sha256}" \
+            --arg sysrootTag "${SYSROOT_TAG}" \
+            --arg wasmSha256 "${wasm_sha256}" \
+            --arg wasixccVersion "${WASIXCC_VERSION}" \
+            --slurpfile browser "${browser_evidence}" \
+            '{
+              schemaVersion: 1,
+              edgeSourceCommit: $edgeSourceCommit,
+              patchSha256: $patchSha256,
+              toolchain: {
+                wasixccVersion: $wasixccVersion,
+                sysrootTag: $sysrootTag,
+                emitExnref: $emitExnref
+              },
+              artifact: {
+                wasmSha256: $wasmSha256,
+                archiveSha256: $archiveSha256
+              },
+              browser: $browser[0]
+            }' > artifacts/edgejs-wasix-build-evidence.json
+          cat artifacts/edgejs-wasix-build-evidence.json
+
+      - name: Upload browser-compatible runtime and evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: edgejs-wasix-browser-compatible
+          path: artifacts/
+          if-no-files-found: error

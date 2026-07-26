@@ -5,6 +5,7 @@
     "types": ["vite/client"]
   },
   "include": [
+    "src/edgejs-wasix-probe.ts",
     "src/main.ts",
     "src/protocol.ts"
   ]
