@@ -85,16 +85,19 @@ This proof deliberately does not claim complete OpenClaw startup:
 - The pinned Edge.js reports Node 24.13.2. OpenClaw requires Node 24.15.0 or
   newer on the Node 24 line because of its SQLite WAL-reset safety gate. The
   focused state proof is safe because the injected SQLite is 3.53.0, but the
-  top-level `openclaw.mjs` wrapper still rejects the runtime version.
+  exact top-level `openclaw.mjs` wrapper still rejects the runtime version. In
+  Chromium it now exits synchronously with code 1, empty stdout, the exact
+  version diagnostic, and no fall-through into `dist/entry.js`.
 - The published Edge.js WASIX archive was post-processed with exception
   references. The browser lane therefore source-builds a pinned, legacy-EH,
   self-contained QuickJS artifact instead of depending on the mutable registry
   package. It also source-builds a patched Wasmer JS executor so the browser
   can compile the large module asynchronously while preserving its original
-  bytes across WASIX Workers. Chromium startup for this exact pair is proven by
-  [GitHub Actions run 30195135929](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30195135929);
-  the remaining gate is the complete OpenClaw entrypoint rather than runtime
-  startup.
+  bytes across WASIX Workers. Chromium startup, exact `process.exit` semantics,
+  and the official launcher boundary for this source-pinned pair are proven by
+  [GitHub Actions run 30197574607](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30197574607);
+  the remaining gate is a proven Node compatibility profile and the complete
+  OpenClaw package graph rather than runtime startup.
 - QuickJS's optional JavaScript `WebAssembly` global is disabled because its
   WASIX implementation imports native Wasmer's `wasm_c_api_v0` namespace.
   Reintroducing that surface through a browser-native OSS adapter is a tracked

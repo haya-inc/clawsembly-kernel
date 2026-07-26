@@ -133,17 +133,24 @@ CI installs only that release's legacy-EH sysroot asset and verifies its pinned
 SHA-256, avoiding the toolchain's unrelated newer `exnref` asset set.
 
 The browser lane is publicly proven by
-[GitHub Actions run 30195135929](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30195135929).
+[GitHub Actions run 30197574607](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30197574607).
 Chromium reported three arguments (`edgejs`, `-e`, and the evidence program),
-captured the runtime marker, and observed a clean exit. The evidence pins:
+captured the runtime marker, and observed a clean exit. A second process proved
+that `process.exit(7)` unwinds immediately: stdout is exactly `before-exit\n`,
+the following statement is not executed, and WASIX reports code 7. A third
+process executes the exact official `openclaw.mjs` launcher and stops at its
+honest Node version gate with code 1, empty stdout, and no `dist/entry.js`
+fall-through. The evidence pins:
 
 - Edge `0.0.0-554eb9b`
 - Node `24.13.2`
 - V8 `0.0.0-node.0`
 - Edge.js WASIX SHA-256
-  `6b12a3e0381365e112ea291828d4b5b34354b7fec2f28520474c4d5ebcd6f85d`
+  `3ddd8410e20d04572a2079a1805079ed09210d3e5f36b7beb5902b4c94ab482a`
 - Wasmer JS runtime Wasm SHA-256
   `e19c6af6d0e7ad228b91b95e7e4d74559787844aaa057ab7f1b0edbdaa11f7ea`
+- OpenClaw `2026.7.1-2` npm integrity
+  `sha512-ycF3yPcbjN6bUPeaUx6Mh6vze1hQWoD3CT/wWcmD7a8xaHHHRUaAlaq+lFxMHf1ssEgODVAwjlzYqp2twkYZ7g==`
 
 This proves the browser runtime lane, not complete OpenClaw startup.
 
