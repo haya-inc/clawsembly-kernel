@@ -47,6 +47,7 @@ type BrowserEvidence = {
         count: number;
         foreignKeys: number;
         journalMode: string;
+        lockingMode: string;
         phase: string;
         version: string;
       };
@@ -64,6 +65,7 @@ type BrowserEvidence = {
         extensionLoadingRejected: boolean;
         foreignKeys: number;
         journalMode: string;
+        lockingMode: string;
         phase: string;
         version: string;
       };
@@ -102,7 +104,7 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
     console.log(`[browser:${message.type()}] ${message.text()}`);
   });
   const pageError = page.waitForEvent("pageerror");
-  await page.goto("/wasix-probe.html?artifact=/edgejs.wasm&debug=1");
+  await page.goto("/wasix-probe.html?artifact=/edgejs.wasm");
   const status = page.locator("#status");
   const outcome = await Promise.race([
     expect.poll(
@@ -140,6 +142,7 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
           phase: "write",
           version: contract.sqlite.version,
           foreignKeys: 1,
+          lockingMode: "exclusive",
           journalMode: "wal",
           count: 1,
           extensionLoadingRejected: true
@@ -154,6 +157,7 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
           phase: "read",
           version: contract.sqlite.version,
           foreignKeys: 1,
+          lockingMode: "exclusive",
           journalMode: "wal",
           count: 1
         },

@@ -19,6 +19,7 @@ type SqliteMarker = {
   extensionLoadingRejected: boolean;
   foreignKeys: number;
   journalMode: string;
+  lockingMode: string;
   phase: "read" | "write";
   version: string;
 };
@@ -140,6 +141,8 @@ async function runProbe(): Promise<void> {
       "const version=db.prepare(",
       "'SELECT sqlite_version() AS version').get().version;",
       "const foreignKeys=db.prepare('PRAGMA foreign_keys').get().foreign_keys;",
+      "const lockingMode=db.prepare(",
+      "'PRAGMA locking_mode').get().locking_mode;",
       "const journalMode=db.prepare(",
       "'PRAGMA journal_mode = WAL').get().journal_mode;",
       "db.exec(",
@@ -162,7 +165,7 @@ async function runProbe(): Promise<void> {
       ".get().count;",
       "db.close();",
       "console.log(prefix+JSON.stringify({",
-      "phase:'write',version,foreignKeys,journalMode,count,",
+      "phase:'write',version,foreignKeys,lockingMode,journalMode,count,",
       "checkpointed:checkpoint.checkpointed,extensionLoadingRejected",
       "}));"
     ].join("");
@@ -185,6 +188,8 @@ async function runProbe(): Promise<void> {
       `const prefix=${JSON.stringify(sqliteMarkerPrefix)};`,
       "const {DatabaseSync}=require('node:sqlite');",
       "const db=new DatabaseSync('/state/openclaw-state.db',{readOnly:true});",
+      "const lockingMode=db.prepare(",
+      "'PRAGMA locking_mode').get().locking_mode;",
       "const version=db.prepare(",
       "'SELECT sqlite_version() AS version').get().version;",
       "const foreignKeys=db.prepare('PRAGMA foreign_keys').get().foreign_keys;",
@@ -193,7 +198,8 @@ async function runProbe(): Promise<void> {
       ".get().count;",
       "db.close();",
       "console.log(prefix+JSON.stringify({",
-      "phase:'read',version,foreignKeys,journalMode,count,checkpointed:0,",
+      "phase:'read',version,foreignKeys,lockingMode,journalMode,count,",
+      "checkpointed:0,",
       "extensionLoadingRejected:true",
       "}));"
     ].join("");
@@ -218,6 +224,8 @@ async function runProbe(): Promise<void> {
       || sqliteReadMarker.version !== "3.53.4"
       || sqliteWriteMarker.foreignKeys !== 1
       || sqliteReadMarker.foreignKeys !== 1
+      || sqliteWriteMarker.lockingMode !== "exclusive"
+      || sqliteReadMarker.lockingMode !== "exclusive"
       || sqliteWriteMarker.journalMode !== "wal"
       || sqliteReadMarker.journalMode !== "wal"
       || sqliteWriteMarker.count !== 1

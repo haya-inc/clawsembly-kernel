@@ -30,9 +30,10 @@ index 795985c378ff57f72f20ddad29be2aa6d051ffea..e5b667aee4ff0e568650a9b5100be925
 +      "${EDGE_SQLITE_AMALGAMATION_DIR}")
 +    target_compile_definitions("${target_name}" PRIVATE EDGE_HAS_SQLITE=1)
 +  endif()
-@@ -271,0 +291,14 @@ edge_apply_runtime_compile_surface(edge_bindings)
+@@ -271,0 +291,15 @@ edge_apply_runtime_compile_surface(edge_bindings)
 +if(EDGE_HAS_SQLITE)
 +  target_compile_definitions(edge_bindings PRIVATE
++    $<$<BOOL:${EDGE_IS_WASIX_TARGET}>:EDGE_SQLITE_EXCLUSIVE_LOCKING=1>
 +    SQLITE_DEFAULT_MEMSTATUS=0
 +    SQLITE_DQS=0
 +    SQLITE_ENABLE_COLUMN_METADATA=1
@@ -56,7 +57,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..f0dca9c84cce573bbeaf7115ddedf0e3b4b3d3f4
 --- /dev/null
 +++ w/plans/quickjs-wasm/development/troubleshooting/node-compat/edgejs/013_openclaw_node_sqlite_binding.md
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,86 @@
 +# Edge.js: OpenClaw `node:sqlite` binding
 +
 +| | | Remarks |
@@ -130,6 +131,11 @@ index 0000000000000000000000000000000000000000..f0dca9c84cce573bbeaf7115ddedf0e3
 +  `exec`, `prepare`, `get`, `all`, `run`, `iterate`, `columns`, positional and
 +  named bindings, transactions, savepoints, WAL checkpointing, read-only
 +  reopen, foreign keys, and persistence.
++- WASIX applies `locking_mode=EXCLUSIVE` before the first guest statement.
++  Wasmer's mounted virtual filesystem cannot provide SQLite's normal
++  cross-process shared-memory locking, while exclusive mode permits WAL for
++  the kernel's single-owner database capability. Native builds retain Node's
++  normal locking mode.
 +- The normal runtime still reports Node 24.13.2. Only the diagnostic build may
 +  cross the OpenClaw Node floor until the broader compatibility profile passes.
 +
@@ -203,7 +209,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..4baf49b51752c906aaa61eaf4b852784bfdfe344
 --- /dev/null
 +++ w/src/internal_binding/binding_sqlite.cc
-@@ -0,0 +1,990 @@
+@@ -0,0 +1,1010 @@
 +#include "internal_binding/binding_initializers.h"
 +
 +#if defined(EDGE_HAS_SQLITE)
@@ -924,6 +930,26 @@ index 0000000000000000000000000000000000000000..4baf49b51752c906aaa61eaf4b852784
 +  }
 +  sqlite3_extended_result_codes(handle->database, 1);
 +  if (timeout > 0) sqlite3_busy_timeout(handle->database, timeout);
++#if defined(EDGE_SQLITE_EXCLUSIVE_LOCKING)
++  {
++    char* error = nullptr;
++    const int locking_mode_result = sqlite3_exec(
++        handle->database, "PRAGMA locking_mode = EXCLUSIVE",
++        nullptr, nullptr, &error);
++    if (locking_mode_result != SQLITE_OK) {
++      std::string message =
++          "Could not enable SQLite exclusive locking mode";
++      if (error != nullptr) {
++        message.append(": ");
++        message.append(error);
++        sqlite3_free(error);
++      }
++      napi_throw_error(env, "ERR_SQLITE_ERROR", message.c_str());
++      DatabaseFinalize(env, handle, nullptr);
++      return nullptr;
++    }
++  }
++#endif
 +  if (sqlite3_db_config(handle->database, SQLITE_DBCONFIG_DEFENSIVE,
 +                        defensive ? 1 : 0, nullptr) != SQLITE_OK) {
 +    ThrowSqliteError(env, handle->database, sqlite3_errcode(handle->database),
@@ -1199,7 +1225,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..d469c047f1737969586342105bc12ac83ac46108
 --- /dev/null
 +++ w/tests/js/openclaw-sqlite-contract.js
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,150 @@
 +'use strict';
 +
 +const fs = require('node:fs');
@@ -1228,6 +1254,10 @@ index 0000000000000000000000000000000000000000..d469c047f1737969586342105bc12ac8
 +check(
 +  database.prepare('PRAGMA foreign_keys').get().foreign_keys === 1,
 +  'foreign key enforcement should default on'
++);
++check(
++  database.prepare('PRAGMA locking_mode').get().locking_mode === 'normal',
++  'native database should retain normal locking mode'
 +);
 +check(
 +  database.prepare('PRAGMA journal_mode = WAL').get().journal_mode === 'wal',

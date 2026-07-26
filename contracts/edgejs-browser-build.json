@@ -13,7 +13,7 @@
     },
     {
       "path": "patches/edgejs/0002-add-openclaw-node-sqlite.patch",
-      "sha256": "468dc0adcf7e415065339073ee817c8bc1cb460f3be12ac11fc3822624197319"
+      "sha256": "5373da3eca17fe3bcec389061c81c2df4aee0abfe79ae0b4473b983ac0330ebc"
     }
   ],
   "sqlite": {
