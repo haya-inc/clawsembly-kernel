@@ -24,15 +24,19 @@ on:
       - src/clawsemblyfs.ts
       - src/edgejs-wasix-probe.ts
       - src/openclaw-entrypoint-probe.ts
+      - src/openclaw-gateway-health-probe.ts
       - src/openclaw-package-runtime-probe.ts
       - src/package-image-probe.ts
       - tests/clawsemblyfs.test.ts
       - tests/edgejs-wasix-browser.spec.ts
       - tests/openclaw-entrypoint-browser.spec.ts
+      - tests/openclaw-gateway-health-browser.spec.ts
       - tests/openclaw-package-image-browser.spec.ts
       - tests/openclaw-package-runtime-browser.spec.ts
+      - tsconfig.app.json
       - vite.config.ts
       - openclaw-probe.html
+      - openclaw-gateway-health-probe.html
       - package-image-probe.html
       - package-runtime-probe.html
       - wasix-probe.html
@@ -415,6 +419,37 @@ jobs:
             tests/openclaw-package-runtime-browser.spec.ts \
             --grep "complete integrity-pinned|advances beyond the SQLite boundary"
 
+      - name: Preserve package mount and Gateway diagnostic evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_mount_evidence="$(
+            find test-results -name openclaw-package-image-browser-evidence.json \
+              -type f | head -n 1
+          )"
+          gateway_evidence="$(
+            find test-results -name openclaw-gateway-runtime-browser-evidence.json \
+              -type f | head -n 1
+          )"
+          test -n "${package_mount_evidence}"
+          test -n "${gateway_evidence}"
+          cp "${package_mount_evidence}" \
+            artifacts/openclaw-package-image-browser-evidence.json
+          cp "${gateway_evidence}" \
+            artifacts/openclaw-gateway-runtime-browser-evidence.json
+
+      - name: Prove official Gateway health RPC over browser-local loopback
+        env:
+          CLAWSEMBLY_EDGE_NODE_DIAGNOSTIC_EVIDENCE: ${{ steps.diagnostic_node.outputs.evidence }}
+          CLAWSEMBLY_EDGE_WASIX: ${{ steps.diagnostic_node.outputs.path }}
+          CLAWSEMBLY_OPENCLAW_GATEWAY_HEALTH_PROOF: "1"
+          CLAWSEMBLY_OPENCLAW_GATEWAY_HEALTH_TIMEOUT_MS: "120000"
+          CLAWSEMBLY_OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
+          CLAWSEMBLY_OPENCLAW_IMAGE_EVIDENCE: ${{ steps.package_image.outputs.evidence }}
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
+        run: |
+          npx playwright test tests/openclaw-gateway-health-browser.spec.ts
+
       - name: Assemble build evidence
         shell: bash
         env:
@@ -435,25 +470,28 @@ jobs:
           browser_evidence="artifacts/edgejs-wasix-browser-evidence.json"
           openclaw_evidence="artifacts/openclaw-entrypoint-browser-evidence.json"
           package_build_evidence="artifacts/openclaw-package-image-build-evidence.json"
-          package_mount_evidence="$(
-            find test-results -name openclaw-package-image-browser-evidence.json \
-              -type f | head -n 1
-          )"
-          gateway_evidence="$(
-            find test-results -name openclaw-gateway-runtime-browser-evidence.json \
-              -type f | head -n 1
-          )"
+          package_mount_evidence="artifacts/openclaw-package-image-browser-evidence.json"
+          gateway_evidence="artifacts/openclaw-gateway-runtime-browser-evidence.json"
+          gateway_health_evidence=""
+          while IFS= read -r candidate; do
+            if jq -e '.status == "gateway-health-pass"' "${candidate}" >/dev/null; then
+              gateway_health_evidence="${candidate}"
+              break
+            fi
+          done < <(
+            find test-results -name openclaw-gateway-health-browser-evidence.json \
+              -type f
+          )
           node_diagnostic_evidence="artifacts/edgejs-openclaw-node-floor-diagnostic.evidence.json"
           test -s "${browser_evidence}"
           test -s "${openclaw_evidence}"
           test -s "${package_build_evidence}"
-          test -n "${package_mount_evidence}"
-          test -n "${gateway_evidence}"
+          test -s "${package_mount_evidence}"
+          test -s "${gateway_evidence}"
+          test -n "${gateway_health_evidence}"
           test -s "${node_diagnostic_evidence}"
-          cp "${package_mount_evidence}" \
-            artifacts/openclaw-package-image-browser-evidence.json
-          cp "${gateway_evidence}" \
-            artifacts/openclaw-gateway-runtime-browser-evidence.json
+          cp "${gateway_health_evidence}" \
+            artifacts/openclaw-gateway-health-browser-evidence.json
           wasm_sha256="$(sha256sum edgejs/build-quickjs-wasix/edgejs.wasm | awk '{print $1}')"
           archive_sha256="$(sha256sum edgejs/edge-quickjs-wasix-browser-compatible.zip | awk '{print $1}')"
           wasmer_js_sha256="$(sha256sum wasmer-js/dist/index.mjs | awk '{print $1}')"
@@ -480,6 +518,7 @@ jobs:
             --slurpfile packageBuild "${package_build_evidence}" \
             --slurpfile packageMount "${package_mount_evidence}" \
             --slurpfile gateway "${gateway_evidence}" \
+            --slurpfile gatewayHealth "${gateway_health_evidence}" \
             --slurpfile nodeDiagnostic "${node_diagnostic_evidence}" \
             --argjson edgePatches "$(
               jq '[.patches[] | {
@@ -529,7 +568,8 @@ jobs:
               },
               gatewayDiagnostic: {
                 nodeVersionEvidence: $nodeDiagnostic[0],
-                browser: $gateway[0]
+                browser: $gateway[0],
+                healthRpc: $gatewayHealth[0]
               }
             }' > artifacts/edgejs-wasix-build-evidence.json
           cat artifacts/edgejs-wasix-build-evidence.json

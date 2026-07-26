@@ -66,6 +66,7 @@ export default defineConfig({
       input: [
         "index.html",
         "openclaw-probe.html",
+        "openclaw-gateway-health-probe.html",
         "package-image-probe.html",
         "package-runtime-probe.html",
         "wasix-probe.html"

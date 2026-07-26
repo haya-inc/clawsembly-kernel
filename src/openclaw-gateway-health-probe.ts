@@ -1,0 +1,734 @@
+import "./style.css";
+import { parseClawsemblyFs } from "./clawsemblyfs";
+
+type OpenClawPackage = {
+  engines?: {
+    node?: string;
+  };
+  name?: string;
+  version?: string;
+};
+
+type WasixOutput = {
+  code: number;
+  ok: boolean;
+  stderr: string;
+  stdout: string;
+};
+
+type HealthResponse = {
+  ok: true;
+  plugins: {
+    errors: unknown[];
+    loaded: unknown[];
+  };
+};
+
+type StreamCapture = {
+  cancel: () => Promise<void>;
+  done: Promise<void>;
+  snapshot: () => string;
+  waitFor: (marker: string, timeoutMs: number) => Promise<void>;
+};
+
+function requiredElement<T extends Element>(selector: string): T {
+  const element = document.querySelector<T>(selector);
+  if (!element) throw new Error(`Missing required element: ${selector}`);
+  return element;
+}
+
+async function fetchBytes(
+  url: string,
+  label: string
+): Promise<Uint8Array<ArrayBuffer>> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`${label} fetch failed with ${response.status}`);
+  }
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+async function sha256(bytes: Uint8Array): Promise<string> {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  const digest = await crypto.subtle.digest("SHA-256", copy);
+  return [...new Uint8Array(digest)]
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function captureStream(
+  stream: ReadableStream<Uint8Array>
+): StreamCapture {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  const waiters = new Set<() => void>();
+  let captured = "";
+  let failure: unknown;
+  let finished = false;
+  const notify = () => {
+    for (const waiter of [...waiters]) waiter();
+  };
+  const done = (async () => {
+    try {
+      for (;;) {
+        const { done: streamDone, value } = await reader.read();
+        if (streamDone) break;
+        captured += decoder.decode(value, { stream: true });
+        notify();
+      }
+      captured += decoder.decode();
+    } catch (error) {
+      failure = error;
+    } finally {
+      finished = true;
+      notify();
+      reader.releaseLock();
+    }
+  })();
+  return {
+    cancel: async () => {
+      try {
+        await reader.cancel();
+      } catch {
+        // The page teardown or process exit may close the pipe first.
+      }
+    },
+    done,
+    snapshot: () => captured,
+    waitFor: (expectedMarker, timeoutMs) => {
+      if (captured.includes(expectedMarker)) return Promise.resolve();
+      return new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(() => {
+          cleanup();
+          reject(
+            new Error(
+              `Timed out waiting for stream marker: ${expectedMarker}`
+            )
+          );
+        }, timeoutMs);
+        const check = () => {
+          if (captured.includes(expectedMarker)) {
+            cleanup();
+            resolve();
+          } else if (finished) {
+            cleanup();
+            reject(
+              failure
+                ?? new Error(
+                  `Stream ended before marker: ${expectedMarker}`
+                )
+            );
+          }
+        };
+        const cleanup = () => {
+          window.clearTimeout(timeout);
+          waiters.delete(check);
+        };
+        waiters.add(check);
+      });
+    }
+  };
+}
+
+function parseJsonOutput(stdout: string): unknown {
+  const trimmed = stdout.trim();
+  if (!trimmed) throw new Error("Gateway health client emitted no JSON");
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start < 0 || end <= start) {
+      throw new Error("Gateway health client emitted invalid JSON");
+    }
+    return JSON.parse(trimmed.slice(start, end + 1));
+  }
+}
+
+function serializableOutput(output: WasixOutput): WasixOutput {
+  return {
+    code: output.code,
+    ok: output.ok,
+    stdout: output.stdout,
+    stderr: output.stderr
+  };
+}
+
+function isHealthyResponse(value: unknown): value is HealthResponse {
+  if (
+    typeof value !== "object"
+    || value === null
+    || Array.isArray(value)
+  ) {
+    return false;
+  }
+  const candidate = value as {
+    ok?: unknown;
+    plugins?: {
+      errors?: unknown;
+      loaded?: unknown;
+    };
+  };
+  return candidate.ok === true
+    && Array.isArray(candidate.plugins?.loaded)
+    && Array.isArray(candidate.plugins?.errors)
+    && candidate.plugins.errors.length === 0;
+}
+
+const status = requiredElement<HTMLOutputElement>("#status");
+const result = requiredElement<HTMLPreElement>("#result");
+const searchParams = new URLSearchParams(location.search);
+const artifactUrl = searchParams.get("artifact") ?? "/edgejs.wasm";
+const imageUrl = searchParams.get("image") ?? "/openclaw.clawfs";
+const requestedProofTimeoutMs = Number(searchParams.get("timeoutMs"));
+const proofTimeoutMs =
+  Number.isSafeInteger(requestedProofTimeoutMs)
+    && requestedProofTimeoutMs >= 60_000
+    && requestedProofTimeoutMs <= 300_000
+    ? requestedProofTimeoutMs
+    : 240_000;
+const gatewayPort = 18_789;
+const gatewayUrl = `ws://127.0.0.1:${gatewayPort}`;
+const gatewayToken = "clawsembly-diagnostic-non-secret-token";
+const readinessMarker = "http server listening";
+const clientLaunchMarker = "agent runtime plugins pre-warmed";
+const clientCompletionGraceMs = 10_000;
+
+async function runProbe(): Promise<void> {
+  try {
+    if (!crossOriginIsolated) {
+      throw new Error(
+        "OpenClaw Gateway WASIX requires a cross-origin-isolated context"
+      );
+    }
+    const { Directory, init, Runtime, runWasix } =
+      await import("@wasmer/sdk");
+    await init();
+    const wasixRuntime = new Runtime({ registry: null });
+
+    status.textContent = "Fetching Edge.js and the official package image…";
+    const [edgeBytes, imageBytes] = await Promise.all([
+      fetchBytes(artifactUrl, "Edge.js WASIX"),
+      fetchBytes(imageUrl, "OpenClaw package image")
+    ]);
+    if (!WebAssembly.validate(edgeBytes)) {
+      throw new Error("Chromium rejected the Edge.js WASIX module");
+    }
+
+    status.textContent = "Verifying the complete package graph…";
+    const parsed = parseClawsemblyFs(imageBytes);
+    const packageBytes = parsed.files["/package.json"];
+    const launcherBytes = parsed.files["/openclaw.mjs"];
+    const entryBytes = parsed.files["/dist/entry.js"];
+    if (!packageBytes || !launcherBytes || !entryBytes) {
+      throw new Error("package image is missing an official entrypoint file");
+    }
+    const packageMetadata = JSON.parse(
+      new TextDecoder().decode(packageBytes)
+    ) as OpenClawPackage;
+    if (
+      packageMetadata.name !== "openclaw"
+      || !packageMetadata.version
+      || !packageMetadata.engines?.node
+    ) {
+      throw new Error("package image does not contain valid OpenClaw metadata");
+    }
+    const [
+      artifactSha256,
+      imageSha256,
+      packageJsonSha256,
+      launcherSha256,
+      entrySha256
+    ] = await Promise.all([
+      sha256(edgeBytes),
+      sha256(imageBytes),
+      sha256(packageBytes),
+      sha256(launcherBytes),
+      sha256(entryBytes)
+    ]);
+    const artifactEvidence = {
+      bytes: edgeBytes.byteLength,
+      sha256: artifactSha256
+    };
+    const imageEvidence = {
+      bytes: imageBytes.byteLength,
+      files: parsed.fileCount,
+      payloadBytes: parsed.payloadBytes,
+      sha256: imageSha256,
+      version: parsed.version
+    };
+    const openclawEvidence = {
+      name: packageMetadata.name,
+      version: packageMetadata.version,
+      nodeEngine: packageMetadata.engines.node,
+      packageJsonSha256,
+      launcherSha256,
+      entrySha256
+    };
+    const networkEvidence = {
+      namespace: "browser-local-loopback",
+      url: gatewayUrl,
+      externalEgress: "denied-by-default"
+    };
+    const isolationEvidence = {
+      sharedRuntimeNetworkNamespace: true,
+      distinctFilesystemInstances: true,
+      clientRetryFilesystem: "one prebuilt filesystem reused sequentially",
+      gatewayStateRoot: "/openclaw/.clawsembly-gateway-state",
+      clientStateRootPattern: "/openclaw/.clawsembly-client-state-{attempt}"
+    };
+    const notNorthStarCompletion =
+      "This uses an auditably relabeled diagnostic Node version and does "
+      + "not replace the required genuine Node compatibility profile or "
+      + "real agent-turn proof.";
+    const launchHarnessEvidence = {
+      officialEntrypoint: "/openclaw/dist/entry.js",
+      openclawPackageFilesMutated: false,
+      clientCompletionGraceMs,
+      clientLaunchMarker,
+      gateway:
+        "Sets guest process.argv, records the diagnostic runtime label, "
+        + "and retains a bounded watchdog while dynamically importing the "
+        + "official entrypoint.",
+      client:
+        "Sets guest process.argv, retains a bounded watchdog, and exits "
+        + "with the official entrypoint's process.exitCode after a bounded "
+        + "output-drain grace once its dynamic import settles."
+    };
+
+    const maxClientAttempts = 3;
+    const gatewayOpenclaw = new Directory(parsed.files);
+    const clientOpenclaw = new Directory(parsed.files);
+    const module = await WebAssembly.compile(edgeBytes);
+    const moduleWithBytes = {
+      module,
+      bytes: edgeBytes
+    } as unknown as WebAssembly.Module;
+    const gatewayArgs = [
+      "gateway",
+      "run",
+      "--dev",
+      "--allow-unconfigured",
+      "--auth",
+      "token",
+      "--bind",
+      "loopback",
+      "--port",
+      String(gatewayPort),
+      "--tailscale",
+      "off",
+      "--verbose",
+      "--ws-log",
+      "full"
+    ];
+    const gatewayArgv = [
+      "/bin/edge",
+      "/openclaw/dist/entry.js",
+      ...gatewayArgs
+    ];
+    const gatewayTimeoutMarker =
+      `CLAWSEMBLY_GATEWAY_PROOF_TIMEOUT=${proofTimeoutMs}`;
+    const gatewayHarness = [
+      `process.argv=${JSON.stringify(gatewayArgv)};`,
+      "console.error('CLAWSEMBLY_DIAGNOSTIC_NODE='+process.versions.node);",
+      "const gatewayWatchdog=setTimeout(()=>{",
+      `console.error(${JSON.stringify(gatewayTimeoutMarker)});`,
+      "process.exit(124)",
+      `},${proofTimeoutMs});`,
+      "import('file:///openclaw/dist/entry.js').catch((error)=>{",
+      "console.error(error?.stack??String(error));process.exit(1)",
+      "});"
+    ].join("");
+
+    status.textContent = "Starting the exact unmodified OpenClaw Gateway…";
+    const startedAt = performance.now();
+    const gatewayInstance = await runWasix(moduleWithBytes, {
+      program: "edgejs",
+      args: ["-e", gatewayHarness],
+      cwd: "/openclaw",
+      env: {
+        CLAWSEMBLY_DIAGNOSTIC_ONLY: "1",
+        FORCE_COLOR: "0",
+        HOME: "/openclaw/.clawsembly-gateway-home",
+        NO_COLOR: "1",
+        OPENCLAW_DEBUG: "1",
+        OPENCLAW_GATEWAY_STARTUP_TRACE: "1",
+        OPENCLAW_GATEWAY_TOKEN: gatewayToken,
+        OPENCLAW_NO_RESPAWN: "1",
+        OPENCLAW_STATE_DIR: "/openclaw/.clawsembly-gateway-state",
+        PATH: "/bin"
+      },
+      mount: {
+        "/openclaw": gatewayOpenclaw
+      },
+      runtime: wasixRuntime
+    });
+    const gatewayStdout = captureStream(gatewayInstance.stdout);
+    const gatewayStderr = captureStream(gatewayInstance.stderr);
+    const gatewayExit = gatewayInstance.wait().then((output) => ({
+      kind: "gateway-exit" as const,
+      output: output as WasixOutput
+    }));
+    const readiness = Promise.any([
+      gatewayStdout.waitFor(readinessMarker, proofTimeoutMs),
+      gatewayStderr.waitFor(readinessMarker, proofTimeoutMs)
+    ]).then(
+      () => ({ kind: "ready" as const }),
+      (error) => ({
+        error: error instanceof Error ? error.message : String(error),
+        kind: "readiness-stream-ended" as const
+      })
+    );
+    const startupHostTimeout = new Promise<{
+      kind: "startup-host-timeout";
+    }>((resolve) => {
+      window.setTimeout(
+        () => resolve({ kind: "startup-host-timeout" }),
+        proofTimeoutMs + 5_000
+      );
+    });
+    const startup = await Promise.race([
+      gatewayExit,
+      readiness,
+      startupHostTimeout
+    ]);
+
+    if (startup.kind !== "ready") {
+      if (startup.kind === "gateway-exit") {
+        await Promise.all([gatewayStdout.done, gatewayStderr.done]);
+      } else {
+        await Promise.allSettled([
+          gatewayStdout.cancel(),
+          gatewayStderr.cancel()
+        ]);
+      }
+      const evidence = {
+        schemaVersion: 1,
+        status: "blocked",
+        blocker: startup.kind,
+        claim:
+          "The exact unmodified Gateway did not reach its own ready log before "
+          + "the process exited or the bounded browser deadline elapsed.",
+        notNorthStarCompletion,
+        crossOriginIsolated,
+        executor: "@wasmer/sdk + Edge.js QuickJS/WASIX",
+        artifact: artifactEvidence,
+        image: imageEvidence,
+        openclaw: openclawEvidence,
+        network: networkEvidence,
+        isolation: isolationEvidence,
+        launchHarness: launchHarnessEvidence,
+        gateway: {
+          args: gatewayArgs,
+          elapsedMs: Math.round(performance.now() - startedAt),
+          ...(startup.kind === "readiness-stream-ended"
+            ? { readinessError: startup.error }
+            : {}),
+          result: startup.kind === "gateway-exit"
+            ? {
+                ...serializableOutput(startup.output),
+                stdout: gatewayStdout.snapshot(),
+                stderr: gatewayStderr.snapshot()
+              }
+            : {
+                code: 125,
+                ok: false,
+                stdout: gatewayStdout.snapshot(),
+                stderr: gatewayStderr.snapshot()
+                  + `CLAWSEMBLY_GATEWAY_HOST_TIMEOUT=${proofTimeoutMs + 5_000}\n`
+              }
+        }
+      };
+      status.dataset.state = "pass";
+      status.textContent =
+        "MILESTONE · Gateway readiness blocker captured";
+      result.textContent = JSON.stringify(evidence, null, 2);
+      return;
+    }
+
+    const readyElapsedMs = Math.round(performance.now() - startedAt);
+    status.textContent =
+      "Gateway listening; waiting for post-ready plugin prewarm…";
+    await Promise.any([
+      gatewayStdout.waitFor(clientLaunchMarker, 30_000),
+      gatewayStderr.waitFor(clientLaunchMarker, 30_000)
+    ]);
+    const clientLaunchElapsedMs = Math.round(
+      performance.now() - startedAt
+    );
+    status.textContent =
+      "Gateway ready; starting the official OpenClaw health client…";
+    const clientArgs = [
+      "/openclaw/dist/entry.js",
+      "gateway",
+      "call",
+      "health",
+      "--url",
+      gatewayUrl,
+      "--token",
+      gatewayToken,
+      "--timeout",
+      "60000",
+      "--json"
+    ];
+    const clientArgv = ["/bin/edge", ...clientArgs];
+    const clientProofTimeoutMs = Math.min(75_000, proofTimeoutMs);
+    const clientTimeoutMarker =
+      `CLAWSEMBLY_CLIENT_PROOF_TIMEOUT=${clientProofTimeoutMs}`;
+    const runClientAttempt = async (attempt: number) => {
+      const clientStateRoot =
+        `/openclaw/.clawsembly-client-state-${attempt}`;
+      const clientHarness = [
+        `process.argv=${JSON.stringify(clientArgv)};`,
+        "console.error('CLAWSEMBLY_CLIENT_STARTED='+process.versions.node);",
+        "const clientWatchdog=setTimeout(()=>{",
+        `console.error(${JSON.stringify(clientTimeoutMarker)});`,
+        "process.exit(124)",
+        `},${clientProofTimeoutMs});`,
+        "import('file:///openclaw/dist/entry.js').then(()=>{",
+        "console.error('CLAWSEMBLY_CLIENT_ENTRY_SETTLED');",
+        "setTimeout(()=>{",
+        "clearTimeout(clientWatchdog);process.exit(process.exitCode??0)",
+        `},${clientCompletionGraceMs})`,
+        "}).catch((error)=>{",
+        "console.error(error?.stack??String(error));process.exit(1)",
+        "});"
+      ].join("");
+      const clientInstance = await runWasix(moduleWithBytes, {
+        program: "edgejs",
+        args: ["-e", clientHarness],
+        cwd: "/openclaw",
+        env: {
+          CLAWSEMBLY_DIAGNOSTIC_ONLY: "1",
+          FORCE_COLOR: "0",
+          HOME: `/openclaw/.clawsembly-client-home-${attempt}`,
+          NO_COLOR: "1",
+          OPENCLAW_GATEWAY_TOKEN: gatewayToken,
+          OPENCLAW_NO_RESPAWN: "1",
+          OPENCLAW_STATE_DIR: clientStateRoot,
+          PATH: "/bin"
+        },
+        mount: {
+          "/openclaw": clientOpenclaw
+        },
+        runtime: wasixRuntime
+      });
+      const clientStdout = captureStream(clientInstance.stdout);
+      const clientStderr = captureStream(clientInstance.stderr);
+      const elapsedMs = performance.now() - startedAt;
+      const remainingMs = Math.max(
+        1_000,
+        Math.min(
+          clientProofTimeoutMs + 5_000,
+          proofTimeoutMs - elapsedMs
+        )
+      );
+      const outcome = await Promise.race([
+        clientInstance.wait().then((output) => ({
+          kind: "client-exit" as const,
+          output: output as WasixOutput
+        })),
+        clientStdout.waitFor("\n}\n", remainingMs).then(
+          () => ({
+            kind: "client-health-output" as const
+          }),
+          () => new Promise<never>(() => {})
+        ),
+        gatewayExit,
+        new Promise<{ kind: "client-host-timeout" }>((resolve) => {
+          window.setTimeout(
+            () => resolve({ kind: "client-host-timeout" }),
+            remainingMs
+          );
+        })
+      ]);
+
+      if (outcome.kind === "client-exit") {
+        await Promise.all([clientStdout.done, clientStderr.done]);
+      } else {
+        void clientStdout.cancel();
+        void clientStderr.cancel();
+      }
+      if (outcome.kind === "gateway-exit") {
+        await Promise.all([gatewayStdout.done, gatewayStderr.done]);
+      }
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, 1_000);
+      });
+      const attemptResult = outcome.kind === "client-exit"
+        ? {
+            ...serializableOutput(outcome.output),
+            stdout: clientStdout.snapshot(),
+            stderr: clientStderr.snapshot()
+          }
+        : outcome.kind === "client-health-output"
+          ? {
+              code: null,
+              ok: true,
+              stdout: clientStdout.snapshot(),
+              stderr: clientStderr.snapshot()
+            }
+          : {
+              code: outcome.kind === "gateway-exit" ? 126 : 125,
+              ok: false,
+              stdout: clientStdout.snapshot(),
+              stderr: clientStderr.snapshot()
+                + `CLAWSEMBLY_CLIENT_${outcome.kind.toUpperCase().replaceAll("-", "_")}\n`
+            };
+      let attemptHealth: unknown;
+      let healthParseError: string | undefined;
+      if (attemptResult.stdout.trim()) {
+        try {
+          attemptHealth = parseJsonOutput(attemptResult.stdout);
+        } catch (error) {
+          healthParseError = error instanceof Error
+            ? error.message
+            : String(error);
+        }
+      }
+      const attemptPassed = isHealthyResponse(attemptHealth);
+      return {
+        attempt,
+        stateRoot: clientStateRoot,
+        outcome: outcome.kind,
+        completion: attemptPassed
+          ? outcome.kind === "client-exit" && attemptResult.code === 0
+            ? "client-exit-zero"
+            : "health-output-observed"
+          : outcome.kind,
+        result: attemptResult,
+        health: attemptHealth,
+        ...(healthParseError ? { healthParseError } : {}),
+        passed: attemptPassed,
+        retryableTransportError:
+          outcome.kind === "client-exit"
+          && !attemptResult.ok
+          && attemptResult.stdout.includes("gateway_transport_error"),
+        gatewayOutput:
+          outcome.kind === "gateway-exit"
+            ? serializableOutput(outcome.output)
+            : undefined
+      };
+    };
+
+    const clientAttempts: Array<
+      Awaited<ReturnType<typeof runClientAttempt>>
+    > = [];
+    for (let attempt = 1; attempt <= maxClientAttempts; attempt += 1) {
+      status.textContent =
+        `Gateway ready; running official health client (${attempt}/${maxClientAttempts})…`;
+      const clientAttempt = await runClientAttempt(attempt);
+      clientAttempts.push(clientAttempt);
+      if (clientAttempt.passed) break;
+      const enoughTimeForRetry =
+        performance.now() - startedAt < proofTimeoutMs - 45_000;
+      if (
+        !clientAttempt.retryableTransportError
+        || !enoughTimeForRetry
+      ) {
+        break;
+      }
+    }
+    const successfulClient = clientAttempts.find(
+      (attempt) => attempt.passed
+    );
+    const selectedClient =
+      successfulClient ?? clientAttempts[clientAttempts.length - 1];
+    if (!selectedClient) {
+      throw new Error("No official OpenClaw client attempt was executed");
+    }
+    const healthPassed = successfulClient !== undefined;
+    const gatewayExitedDuringClient = clientAttempts.some(
+      (attempt) => attempt.outcome === "gateway-exit"
+    );
+    const gatewayOutput = clientAttempts.find(
+      (attempt) => attempt.gatewayOutput !== undefined
+    )?.gatewayOutput;
+    const evidence = {
+      schemaVersion: 1,
+      status: healthPassed ? "gateway-health-pass" : "blocked",
+      ...(healthPassed
+        ? {}
+        : {
+            blocker: selectedClient.retryableTransportError
+              ? "gateway-client-transport-error"
+              : selectedClient.outcome
+          }),
+      claim: healthPassed
+        ? "A second browser guest executed the exact official OpenClaw CLI "
+          + "and completed an authenticated health RPC against the real "
+          + "unmodified Gateway over browser-local loopback."
+        : "The real Gateway reached readiness, but its official client did "
+          + "not complete a valid authenticated health RPC.",
+      notNorthStarCompletion,
+      crossOriginIsolated,
+      executor: "@wasmer/sdk + Edge.js QuickJS/WASIX",
+      artifact: artifactEvidence,
+      image: imageEvidence,
+      openclaw: openclawEvidence,
+      network: networkEvidence,
+      isolation: isolationEvidence,
+      launchHarness: launchHarnessEvidence,
+      gateway: {
+        args: gatewayArgs,
+        readinessMarker,
+        clientLaunchMarker,
+        clientLaunchElapsedMs,
+        readyElapsedMs,
+        state: gatewayExitedDuringClient
+          ? healthPassed
+            ? "exited-after-health-output"
+            : "exited-before-health-completed"
+          : "running-at-health-proof",
+        ...(gatewayOutput
+          ? {
+              result: {
+                ...gatewayOutput,
+                stdout: gatewayStdout.snapshot(),
+                stderr: gatewayStderr.snapshot()
+              }
+            }
+          : {}),
+        stdout: gatewayStdout.snapshot(),
+        stderr: gatewayStderr.snapshot()
+      },
+      client: {
+        args: clientArgs.slice(1),
+        distinctGuestProcess: true,
+        maxAttempts: maxClientAttempts,
+        selectedAttempt: selectedClient.attempt,
+        completion: selectedClient.completion,
+        attempts: clientAttempts.map((attempt) => ({
+          attempt: attempt.attempt,
+          stateRoot: attempt.stateRoot,
+          outcome: attempt.outcome,
+          completion: attempt.completion,
+          result: attempt.result,
+          health: attempt.health,
+          ...(attempt.healthParseError
+            ? { healthParseError: attempt.healthParseError }
+            : {})
+        })),
+        result: selectedClient.result,
+        health: selectedClient.health,
+        ...(selectedClient.healthParseError
+          ? { healthParseError: selectedClient.healthParseError }
+          : {})
+      }
+    };
+    status.dataset.state = "pass";
+    status.textContent = healthPassed
+      ? "PASS · Official OpenClaw client completed Gateway health RPC"
+      : "MILESTONE · Gateway client blocker captured";
+    result.textContent = JSON.stringify(evidence, null, 2);
+  } catch (error) {
+    status.dataset.state = "fail";
+    status.textContent = "FAIL";
+    result.textContent = error instanceof Error
+      ? `${error.message}\n${error.stack ?? ""}`
+      : String(error);
+  }
+}
+
+void runProbe();
