@@ -1,13 +1,15 @@
 # Clawsembly Kernel
 
-A clean-room browser execution kernel for running an unmodified OpenClaw
-artifact without BrowserPod.
+Run one exact, officially published OpenClaw release, unchanged, entirely
+inside a browser on an open-source, self-hostable kernel — persistently,
+securely, and without a proprietary execution substrate or remote operating
+system.
 
 ## North Star
 
-Run the official, unmodified OpenClaw artifact completely inside a browser on
-an OSS, self-hostable kernel, without a proprietary execution substrate or a
-remote operating system. Completion requires reproducible public evidence of:
+This repository's binding objective and completion criteria are defined in
+[NORTH_STAR.md](NORTH_STAR.md). Completion requires reproducible public
+evidence of:
 
 - persistent OpenClaw state;
 - sufficient Node compatibility to start the official entrypoint;
@@ -15,7 +17,8 @@ remote operating system. Completion requires reproducible public evidence of:
 - an OpenClaw Gateway connection; and
 - one real agent turn.
 
-Partial compatibility probes are milestones toward that result, not alternate
+A mock, partial boot, or patched OpenClaw build does not count. Partial
+compatibility probes are milestones toward the result, not alternate
 definitions of success.
 
 This repository starts below Node. Browser capabilities form the kernel;
