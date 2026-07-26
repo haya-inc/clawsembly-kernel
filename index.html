@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Clawsembly Kernel · SQLite capability probe</title>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Clawsembly Kernel · Milestone 0</p>
+      <h1>Browser-native <code>node:sqlite</code></h1>
+      <p>
+        The probe writes through a Node-compatible synchronous API, releases
+        the database worker, then verifies the same OPFS database from a fresh
+        worker.
+      </p>
+      <button id="run" type="button">Run persistence probe</button>
+      <output id="status" data-state="idle">Idle</output>
+      <pre id="result" aria-live="polite"></pre>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
