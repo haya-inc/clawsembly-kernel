@@ -128,7 +128,7 @@ jobs:
           actual_sysroot="$(
             WASIXCC_SYSROOT="${sysroot_path}" \
               WASIXCC_WASM_EXCEPTIONS=legacy \
-              wasixcc --print-sysroot
+              wasixccenv print-sysroot
           )"
           test "${actual_sysroot}" = "${sysroot_path}"
           echo "path=${sysroot_path}" >> "${GITHUB_OUTPUT}"
