@@ -102,7 +102,16 @@ jobs:
           set -euo pipefail
           make -C edgejs build-wasix
           test -s edgejs/build-wasix/edgejs.wasm
-          wasm-tools validate edgejs/build-wasix/edgejs.wasm
+          if wasm-tools validate edgejs/build-wasix/edgejs.wasm \
+            2>legacy-validation-error.txt
+          then
+            echo "error: Edge.js WASIX did not require legacy exception handling" >&2
+            exit 1
+          fi
+          grep -q "legacy_exceptions feature required" legacy-validation-error.txt
+          wasm-tools validate \
+            --features legacy-exceptions \
+            edgejs/build-wasix/edgejs.wasm
 
       - name: Package Edge.js WASIX
         shell: bash
@@ -121,6 +130,7 @@ jobs:
           path: |
             edgejs/build-wasix/edgejs.wasm
             edgejs/edge-wasix-browser-compatible.zip
+            legacy-validation-error.txt
           if-no-files-found: error
           retention-days: 7
 
