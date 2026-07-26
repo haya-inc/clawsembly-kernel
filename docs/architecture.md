@@ -104,6 +104,13 @@ browser-specific reimplementation of Wasmer's native V8 bridge part of the
 kernel. A future browser-engine N-API bridge can remain an optimization without
 defining the correctness boundary.
 
+Edge.js's optional QuickJS `globalThis.WebAssembly` implementation is disabled
+in this first browser build. That implementation imports native Wasmer's
+`wasm_c_api_v0` namespace, which Wasmer JS does not expose. The audited build
+rejects that namespace so an apparently self-contained artifact cannot regress
+to a hidden native-host dependency. Restoring nested JavaScript WebAssembly
+through an OSS browser-native adapter remains an explicit compatibility gate.
+
 The Wasmer JS patch is still required. Stock `@wasmer/sdk@0.10.0` validates a
 large byte buffer through its older compiler path, while passing only an
 already-compiled `WebAssembly.Module` loses the original bytes required by

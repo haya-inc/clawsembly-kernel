@@ -163,6 +163,7 @@ jobs:
         shell: bash
         env:
           EDGE_WASIX_EMIT_EXNREF: ${{ steps.contract.outputs.emit_exnref }}
+          EDGE_QUICKJS_WEBASSEMBLY: ${{ steps.contract.outputs.quickjs_webassembly }}
           WASIXCC_RUN_WASM_OPT: ${{ steps.contract.outputs.wasixcc_run_wasm_opt }}
           WASIXCC_WASM_EXCEPTIONS: ${{ steps.contract.outputs.wasixcc_wasm_exceptions }}
         run: |
@@ -219,6 +220,7 @@ jobs:
           EDGE_SOURCE_COMMIT: ${{ steps.contract.outputs.edge_source_commit }}
           EDGE_PATCH: ${{ steps.contract.outputs.patch_path }}
           EMIT_EXNREF: ${{ steps.contract.outputs.emit_exnref }}
+          QUICKJS_WEBASSEMBLY: ${{ steps.contract.outputs.quickjs_webassembly }}
           RUNTIME_PROVIDER: ${{ steps.contract.outputs.runtime_provider }}
           SYSROOT_TAG: ${{ steps.contract.outputs.sysroot_tag }}
           WASMER_PATCH: ${{ steps.contract.outputs.wasmer_patch_path }}
@@ -241,6 +243,7 @@ jobs:
             --arg edgeSourceCommit "${EDGE_SOURCE_COMMIT}" \
             --arg emitExnref "${EMIT_EXNREF}" \
             --arg patchSha256 "${patch_sha256}" \
+            --arg quickjsWebAssembly "${QUICKJS_WEBASSEMBLY}" \
             --arg runtimeProvider "${RUNTIME_PROVIDER}" \
             --arg sysrootTag "${SYSROOT_TAG}" \
             --arg wasmerJsSha256 "${wasmer_js_sha256}" \
@@ -268,7 +271,8 @@ jobs:
                 sysrootTag: $sysrootTag,
                 wasixccWasmExceptions: $wasixccWasmExceptions,
                 wasixccRunWasmOpt: $wasixccRunWasmOpt,
-                emitExnref: $emitExnref
+                emitExnref: $emitExnref,
+                quickjsWebAssembly: $quickjsWebAssembly
               },
               artifact: {
                 wasmSha256: $wasmSha256,

@@ -91,7 +91,9 @@ reports Node 24.13.2, below OpenClaw's Node 24.15.0 safety floor. The browser
 runtime lane now pins a self-contained QuickJS Edge.js WASIX build and a
 source-built Wasmer JS executor patched to preserve original module bytes
 across Workers. Chromium startup evidence for that exact pair is the current
-in-progress gate. See
+in-progress gate. QuickJS's optional JavaScript `WebAssembly` global is
+explicitly disabled until its native `wasm_c_api_v0` dependency is replaced by
+a browser-native OSS adapter. See
 [the artifact-derived SQLite contract](docs/openclaw-sqlite-contract.md) and
 [the Edge.js personality proof](docs/edgejs-node-sqlite-personality.md) for the
 implemented and deliberately unsupported boundaries.

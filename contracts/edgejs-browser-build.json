@@ -9,7 +9,7 @@
   "patches": [
     {
       "path": "patches/edgejs/0001-configure-exception-reference-emission.patch",
-      "sha256": "ca0aa7745e0d47a5c264fbfdd2ec4039129af0f18706a8f12ee5dc59e9bd88c1"
+      "sha256": "3150d722b8da35c7b59e2071c6fabb76171d7cd0cba3f0e7ce95fdbeff421e97"
     }
   ],
   "toolchain": {
@@ -20,7 +20,8 @@
     "rustVersion": "1.97.1",
     "wasixccWasmExceptions": "legacy",
     "wasixccRunWasmOpt": false,
-    "emitExceptionReferences": false
+    "emitExceptionReferences": false,
+    "quickjsWebAssembly": false
   },
   "browserExecutor": {
     "package": "@wasmer/sdk",

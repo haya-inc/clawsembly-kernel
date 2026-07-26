@@ -93,6 +93,10 @@ This proof deliberately does not claim complete OpenClaw startup:
   can compile the large module asynchronously while preserving its original
   bytes across WASIX Workers. Chromium startup proof for this exact pair is the
   active gate.
+- QuickJS's optional JavaScript `WebAssembly` global is disabled because its
+  WASIX implementation imports native Wasmer's `wasm_c_api_v0` namespace.
+  Reintroducing that surface through a browser-native OSS adapter is a tracked
+  compatibility gate, not an implicit host dependency.
 - Filesystem, process, network, worker, WebSocket, and Gateway capability
   surfaces required by the remaining OpenClaw startup path have not yet been
   proven.

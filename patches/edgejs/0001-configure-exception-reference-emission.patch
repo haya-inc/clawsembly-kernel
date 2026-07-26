@@ -18,6 +18,10 @@ diff --git a/quickjs-wasm/build.sh b/quickjs-wasm/build.sh
 +  echo "preserving legacy WebAssembly EH in ${output} (emit-exnref=${emit_exnref})" >&2
    cp "${input}" "${output}"
  }
+@@ -110 +115,0 @@ allowed_modules = {
+-    "wasm_c_api_v0",
+@@ -203,0 +209 @@ cmake \
++  -DEDGE_QUICKJS_WEBASSEMBLY="${EDGE_QUICKJS_WEBASSEMBLY:-OFF}" \
 diff --git a/wasix/build-wasix.sh b/wasix/build-wasix.sh
 --- a/wasix/build-wasix.sh
 +++ b/wasix/build-wasix.sh

@@ -23,6 +23,7 @@ assert.equal(contract.upstream.repository, edgeArtifact.source.repository);
 assert.equal(contract.toolchain.emitExceptionReferences, false);
 assert.equal(contract.toolchain.wasixccWasmExceptions, "legacy");
 assert.equal(contract.toolchain.wasixccRunWasmOpt, false);
+assert.equal(contract.toolchain.quickjsWebAssembly, false);
 
 for (const patch of contract.patches) {
   const patchPath = path.join(repositoryRoot, patch.path);
@@ -57,6 +58,7 @@ const outputs = {
   edge_source_repository: contract.upstream.repository,
   emit_exnref: contract.toolchain.emitExceptionReferences ? "yes" : "no",
   patch_path: contract.patches[0].path,
+  quickjs_webassembly: contract.toolchain.quickjsWebAssembly ? "yes" : "no",
   runtime_provider: contract.runtimeProvider,
   rust_version: contract.toolchain.rustVersion,
   sysroot_tag: contract.toolchain.sysrootTag,
@@ -87,6 +89,7 @@ console.log(
   + `${contract.runtimeProvider} provider, ${contract.patches.length} Edge.js patch, `
   + `self-built @wasmer/sdk@${sdk.version} from `
   + `${contract.browserExecutor.upstream.commit}, `
+  + `quickjs-webassembly=${outputs.quickjs_webassembly}, `
   + `wasm-exceptions=${outputs.wasixcc_wasm_exceptions}, `
   + `wasixcc-wasm-opt=${outputs.wasixcc_run_wasm_opt}, `
   + `emit-exnref=${outputs.emit_exnref}.`
