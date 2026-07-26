@@ -450,6 +450,66 @@ jobs:
         run: |
           npx playwright test tests/openclaw-gateway-health-browser.spec.ts
 
+      - name: Preserve Gateway health attempt evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="artifacts/gateway-health-attempts"
+          mkdir -p "${destination}"
+          attempt=0
+          while IFS= read -r candidate; do
+            attempt=$((attempt + 1))
+            cp "${candidate}" \
+              "${destination}/gateway-health-attempt-${attempt}.json"
+          done < <(
+            find test-results \
+              -name openclaw-gateway-health-browser-evidence.json \
+              -type f \
+              -print \
+              | sort
+          )
+          while IFS= read -r context; do
+            attempt=$((attempt + 1))
+            cp "${context}" \
+              "${destination}/error-context-${attempt}.md"
+          done < <(
+            find test-results \
+              -name error-context.md \
+              -type f \
+              -print \
+              | sort
+          )
+          jq -n \
+            --argjson evidenceFiles "$(
+              find "${destination}" \
+                -name 'gateway-health-attempt-*.json' \
+                -type f \
+                | sort \
+                | jq -Rsc 'split("\n") | map(select(length > 0))'
+            )" \
+            --argjson errorContexts "$(
+              find "${destination}" \
+                -name 'error-context-*.md' \
+                -type f \
+                | sort \
+                | jq -Rsc 'split("\n") | map(select(length > 0))'
+            )" \
+            '{
+              schemaVersion: 1,
+              evidenceFiles: $evidenceFiles,
+              errorContexts: $errorContexts
+            }' > "${destination}/manifest.json"
+
+      - name: Upload Gateway health diagnostic evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: edgejs-wasix-gateway-health-diagnostics
+          path: artifacts/gateway-health-attempts/
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Assemble build evidence
         shell: bash
         env:

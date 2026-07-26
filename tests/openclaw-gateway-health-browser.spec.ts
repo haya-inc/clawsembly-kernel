@@ -247,6 +247,33 @@ test("official OpenClaw client attempts authenticated Gateway health over browse
     body: Buffer.from(JSON.stringify(persistedEvidence, null, 2)),
     contentType: "application/json"
   });
+  console.info(JSON.stringify({
+    evidenceFile: testInfo.outputPath(
+      "openclaw-gateway-health-browser-evidence.json"
+    ),
+    status: evidence.status,
+    blocker: evidence.blocker,
+    gateway: {
+      readyElapsedMs: evidence.gateway.readyElapsedMs,
+      clientLaunchElapsedMs: evidence.gateway.clientLaunchElapsedMs,
+      state: evidence.gateway.state
+    },
+    client: evidence.client
+      ? {
+          selectedAttempt: evidence.client.selectedAttempt,
+          completion: evidence.client.completion,
+          attempts: evidence.client.attempts.map((attempt) => ({
+            attempt: attempt.attempt,
+            outcome: attempt.outcome,
+            completion: attempt.completion,
+            code: attempt.result.code,
+            ok: attempt.result.ok,
+            stdoutBytes: Buffer.byteLength(attempt.result.stdout),
+            stderrBytes: Buffer.byteLength(attempt.result.stderr)
+          }))
+        }
+      : undefined
+  }));
 
   expect(evidence).toMatchObject({
     schemaVersion: 1,
