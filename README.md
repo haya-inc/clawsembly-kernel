@@ -6,8 +6,9 @@ artifact without BrowserPod.
 This repository starts below Node. Browser capabilities form the kernel;
 Node compatibility is a replaceable personality above it. The first vertical
 slice derives a synchronous `node:sqlite` contract from a pinned official
-OpenClaw artifact, then implements it on the official SQLite WebAssembly build
-and OPFS.
+OpenClaw artifact, implements it on the official SQLite WebAssembly build and
+OPFS, then registers the same capability as a core-module personality inside
+Edge.js.
 
 ## Milestone 0
 
@@ -49,13 +50,34 @@ For the interactive probe:
 npm run dev
 ```
 
+To run only the Edge.js/OpenClaw artifact proof:
+
+```bash
+npm run test:edgejs
+```
+
+That command downloads integrity-pinned Edge.js and OpenClaw archives, extracts
+only the OpenClaw dependencies reached by the state-chunk import graph from its
+own shrinkwrap, and runs two fresh Edge.js processes. Set
+`CLAWSEMBLY_ARTIFACT_CACHE` to retain verified downloads between runs.
+
 ## Status
 
-Experimental. This proves a browser-native SQLite capability; it does not yet
-run Edge.js or OpenClaw. See
+Experimental. Two execution layers are now proven:
+
+- Chromium executes the artifact-derived SQLite contract against official
+  SQLite Wasm with OPFS persistence.
+- Native Edge.js executes the exact unmodified OpenClaw state artifact through
+  the kernel `node:sqlite` personality and recovers its state in a fresh
+  Edge.js process.
+
+This does not yet claim complete OpenClaw startup. The pinned Edge.js runtime
+reports Node 24.13.2, below OpenClaw's Node 24.15.0 safety floor, and the current
+published WASIX artifact uses exception references that
+`@wasmer/sdk@0.10.0` cannot instantiate in a browser. See
 [the artifact-derived SQLite contract](docs/openclaw-sqlite-contract.md) and
-[the architecture note](docs/architecture.md) for the implemented and
-deliberately unsupported boundaries.
+[the Edge.js personality proof](docs/edgejs-node-sqlite-personality.md) for the
+implemented and deliberately unsupported boundaries.
 
 ## License
 

@@ -16,6 +16,12 @@ jobs:
         with:
           node-version: 24.18.0
           cache: npm
+      - uses: actions/cache@v4
+        with:
+          path: .cache/clawsembly-artifacts
+          key: clawsembly-artifacts-${{ runner.os }}-${{ hashFiles('contracts/*artifact.json') }}
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run check
+        env:
+          CLAWSEMBLY_ARTIFACT_CACHE: .cache/clawsembly-artifacts

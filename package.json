@@ -16,7 +16,8 @@
     "build": "npm run typecheck && vite build",
     "preview": "vite preview",
     "test:browser": "playwright test",
-    "check": "npm run contract:check && npm run build && npm run test:browser"
+    "test:edgejs": "node scripts/run-edgejs-openclaw-state-contract.mjs",
+    "check": "npm run contract:check && npm run build && npm run test:browser && npm run test:edgejs"
   },
   "dependencies": {
     "@sqlite.org/sqlite-wasm": "3.53.0-build1"

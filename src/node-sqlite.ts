@@ -84,6 +84,7 @@ export function createNodeSqliteModule(
     columns(): ColumnMetadata[] {
       const statement = this.#database.prepare(this.#sql);
       try {
+        if (statement.columnCount === 0) return [];
         return statement.getColumnNames().map((name) => ({
           column: name,
           database: null,

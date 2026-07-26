@@ -14,12 +14,13 @@ OpenClaw require("node:sqlite")
   -> Node core-module personality
   -> synchronous DatabaseSync / StatementSync adapter
   -> official SQLite Wasm
-  -> OPFS SAH-pool VFS
+  -> browser: OPFS SAH-pool VFS
+  -> Edge.js: nested POSIX/MEMFS plus capability-scoped atomic export
 ```
 
-The runtime and SQLite execute in one dedicated Worker. After asynchronous
-kernel initialization, database operations remain synchronous from the Node
-personality's point of view.
+In the browser path, the runtime and SQLite execute in one dedicated Worker.
+After asynchronous kernel initialization, database operations remain
+synchronous from the Node personality's point of view.
 
 ## Milestone 0 boundary
 
@@ -44,7 +45,36 @@ Deliberately unavailable:
 - complete OpenClaw backup archive and restore orchestration
 - multi-tab ownership handoff
 - full error-code normalization
-- Edge.js core-module registration
+
+## Edge.js personality slice
+
+Edge.js already resolves the public `node:sqlite` builtin name, but its pinned
+runtime does not register an `internalBinding("sqlite")`. The kernel installs a
+synchronous `module.registerHooks()` load hook before importing OpenClaw. Only
+the exact `node:sqlite` specifier is intercepted:
+
+```text
+Edge.js bootstrap
+  -> initialize official SQLite Wasm inside Edge.js/V8
+  -> create capability-scoped DatabaseSync personality
+  -> register node:sqlite load hook
+  -> import exact OpenClaw state chunk
+  -> OpenClaw calls require("node:sqlite")
+```
+
+OpenClaw package files are not rewritten. The runner verifies the npm artifact
+integrity and the state-chunk SHA-256 before executing it.
+
+The nested SQLite Wasm instance cannot directly open an Edge.js host path. For
+each granted database path, the personality imports existing bytes into a
+stable private MEMFS filename. At autocommit boundaries it checkpoints WAL,
+serializes the database, and atomically replaces the capability-granted host
+file with mode `0600`. A fresh Edge.js process repeats the import and proves
+that the OpenClaw-created state survived.
+
+This storage bridge is intentionally single-process and synchronous. It is an
+Edge.js personality proof, not the final browser persistence path; the browser
+kernel continues to use OPFS directly.
 
 Unsupported behavior throws instead of silently degrading.
 
@@ -68,3 +98,8 @@ One runtime Worker owns an OPFS database at a time. Later browser tabs will
 connect to that owner rather than opening competing SQLite handles. This
 matches OPFS synchronous access-handle exclusivity and gives the kernel one
 place to enforce capabilities, snapshots, and resource limits.
+
+The Edge.js personality independently requires one or more
+`allowedPathRoots`. `:memory:` is always available, while any file path escaping
+those roots throws `ERR_CLAWSEMBLY_CAPABILITY_DENIED`. Native SQLite extension
+loading is unavailable rather than silently bypassing the boundary.
