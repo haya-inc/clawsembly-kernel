@@ -93,19 +93,20 @@ async function runProbe(): Promise<void> {
     }
 
     const requiredNodeEngine = packageMetadata.engines.node;
-    const escapedEngine = requiredNodeEngine.replace(
-      /[.*+?^${}()|[\]\\]/gu,
-      "\\$&"
-    );
     const versionGate = new RegExp(
-      `^openclaw: Node\\.js ${escapedEngine} is required `
+      String.raw`^openclaw: Node\.js (.+) is required `
       + String.raw`\(current: (v[^)]+)\)\.`,
       "u"
     ).exec(output.stderr);
+    const launcherNodeRange = versionGate?.[1];
+    const normalizedLauncherNodeRange = launcherNodeRange
+      ?.replace(/, or /gu, " || ")
+      .replace(/, /gu, " || ");
     if (
       output.code === 1
       && output.stdout === ""
       && versionGate
+      && normalizedLauncherNodeRange === requiredNodeEngine
       && !output.stderr.includes("missing dist/entry")
     ) {
       const evidence = {
@@ -118,7 +119,8 @@ async function runProbe(): Promise<void> {
         launcherBytes: launcherBytes.byteLength,
         version: packageMetadata.version,
         requiredNodeEngine,
-        actualNodeVersion: versionGate[1],
+        launcherNodeRange,
+        actualNodeVersion: versionGate[2],
         stdout: output.stdout,
         stderr: output.stderr,
         exitCode: output.code

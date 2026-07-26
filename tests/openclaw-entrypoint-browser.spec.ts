@@ -22,6 +22,7 @@ type EntrypointEvidence = {
   crossOriginIsolated: boolean;
   executor: string;
   exitCode: number;
+  launcherNodeRange: string;
   launcherBytes: number;
   requiredNodeEngine: string;
   schemaVersion: number;
@@ -135,9 +136,14 @@ test("official OpenClaw launcher reaches its first honest browser boundary", asy
     stdout: ""
   });
   expect(evidence.stderr).toContain(
-    `openclaw: Node.js ${contract.nodeEngine} is required `
+    `openclaw: Node.js ${evidence.launcherNodeRange} is required `
     + `(current: ${evidence.actualNodeVersion}).`
   );
+  expect(
+    evidence.launcherNodeRange
+      .replace(/, or /gu, " || ")
+      .replace(/, /gu, " || ")
+  ).toBe(contract.nodeEngine);
   expect(evidence.stderr).not.toContain("missing dist/entry");
   expect(evidence.artifactBytes).toBeGreaterThan(1_000_000);
   expect(evidence.launcherBytes).toBe(launcherBytes.byteLength);
