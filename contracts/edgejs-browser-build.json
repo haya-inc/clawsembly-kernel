@@ -30,6 +30,10 @@
     {
       "path": "patches/edgejs/0006-link-wasix-nested-webassembly.patch",
       "sha256": "fa17022d41662febe88e9851327a6a7ab95721a3fb4b2500bdd1a98c83ef2628"
+    },
+    {
+      "path": "patches/edgejs/0007-keep-quickjs-weakref-targets-during-job.patch",
+      "sha256": "0029d44998faa5633a3fc2843a894346e7af04eeba27e545e1d3a833c67a7a5a"
     }
   ],
   "sqlite": {

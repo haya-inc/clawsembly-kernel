@@ -47,6 +47,7 @@ type BrowserEvidence = {
     marker: string;
     node: string;
     v8: string;
+    weakRefKeepsTargetDuringJob: boolean;
   };
   processExit: {
     code: number;
@@ -188,7 +189,10 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
       timerKeepAlive: true
     },
     exitCode: 0,
-    runtime: contract.expectedRuntime,
+    runtime: {
+      ...contract.expectedRuntime,
+      weakRefKeepsTargetDuringJob: true
+    },
     nestedWebAssembly: {
       available: true,
       implementation: "wasmi-c-api-static",

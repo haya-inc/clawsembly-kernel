@@ -4,6 +4,7 @@ type EdgeVersions = {
   edge: string;
   node: string;
   v8: string;
+  weakRefKeepsTargetDuringJob: boolean;
 };
 
 type EventLoopMarker = {
@@ -189,11 +190,14 @@ async function runProbe(): Promise<void> {
     const module = await WebAssembly.compile(bytes);
     status.textContent = "Starting Edge.js inside the browser…";
     const runtimeScript = [
+      "const weakRef=new WeakRef({marker:'clawsembly-weakref-job'});",
       `console.log(${JSON.stringify(markerPrefix)} + JSON.stringify({`,
       `marker: ${JSON.stringify(marker)},`,
       "edge: process.versions.edge,",
       "node: process.versions.node,",
-      "v8: process.versions.v8",
+      "v8: process.versions.v8,",
+      "weakRefKeepsTargetDuringJob:",
+      "weakRef.deref()?.marker==='clawsembly-weakref-job'",
       "}))"
     ].join("");
     const moduleWithBytes = { module, bytes } as unknown as WebAssembly.Module;
