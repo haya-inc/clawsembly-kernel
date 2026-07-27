@@ -1,9 +1,9 @@
 diff --git i/src/browser_network.rs w/src/browser_network.rs
 new file mode 100644
-index 0000000..0296429
+index 0000000..e2b2e28
 --- /dev/null
 +++ w/src/browser_network.rs
-@@ -0,0 +1,555 @@
+@@ -0,0 +1,569 @@
 +use std::{
 +    collections::{HashMap, HashSet},
 +    mem::MaybeUninit,
@@ -142,6 +142,17 @@ index 0000000..0296429
 +                })
 +        })
 +    }
++
++    fn is_resolved_address(&self, address: IpAddr) -> bool {
++        self.egress.as_ref().is_some_and(|egress| {
++            egress
++                .resolved
++                .lock()
++                .unwrap()
++                .values()
++                .any(|addresses| addresses.contains(&address))
++        })
++    }
 +}
 +
 +#[async_trait::async_trait]
@@ -231,6 +242,9 @@ index 0000000..0296429
 +                .connect_tcp(local_address, peer_address)
 +                .await;
 +            return result.map(connected_egress_socket);
++        }
++        if self.is_resolved_address(peer_address.ip()) {
++            return Err(NetworkError::PermissionDenied);
 +        }
 +        Err(NetworkError::ConnectionRefused)
 +    }

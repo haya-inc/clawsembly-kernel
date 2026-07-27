@@ -63,6 +63,7 @@ test("grants exact TCP egress without replacing browser-local loopback", async (
     await page.goto(
       "/network-egress-probe.html?artifact=/edgejs.wasm"
       + "&relay=ws%3A%2F%2F127.0.0.1%3A18792%2Fv1%2Fnetwork"
+      + "&debug=1"
       + `&token=${encodeURIComponent(relayToken)}`
     );
     const status = page.locator("#status");

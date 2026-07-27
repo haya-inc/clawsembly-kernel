@@ -71,7 +71,7 @@
       },
       {
         "path": "patches/wasmer-js/0002-add-capability-scoped-browser-loopback.patch",
-        "sha256": "7ecf5e90e86a39bba118945781a364d145ccbcf5a4dd3f8cb453662ccd31432c"
+        "sha256": "b13b2d59fc51b42ce6d9312f9c25d6d604e201f06c3451a8142391c016578183"
       },
       {
         "path": "patches/wasmer-js/0003-reserve-workers-for-pending-async-jobs.patch",
