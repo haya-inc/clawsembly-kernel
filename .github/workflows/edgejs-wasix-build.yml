@@ -746,8 +746,10 @@ jobs:
               break
             fi
           done < <(
-            find test-results -name openclaw-gateway-health-browser-evidence.json \
-              -type f
+            find artifacts/gateway-health-attempts \
+              -name 'gateway-health-attempt-*.json' \
+              -type f \
+              | sort
           )
           node_diagnostic_evidence="artifacts/edgejs-openclaw-node-floor-diagnostic.evidence.json"
           test -s "${browser_evidence}"
