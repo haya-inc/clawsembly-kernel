@@ -9,7 +9,12 @@ if (!artifactPath) {
 const bytes = readFileSync(artifactPath);
 const module = new WebAssembly.Module(bytes);
 const imports = WebAssembly.Module.imports(module);
-const expectedImports = new Set(["env.abort", "env.free", "env.malloc"]);
+const expectedImports = new Set([
+  "env.abort",
+  "env.free",
+  "env.malloc",
+  "env.memory"
+]);
 for (const entry of imports) {
   if (!expectedImports.delete(`${entry.module}.${entry.name}`)) {
     throw new Error(
@@ -27,6 +32,11 @@ if (expectedImports.size !== 0) {
 
 let allocationCursor = 2 * 65_536;
 let instance;
+const memory = new WebAssembly.Memory({
+  initial: 2,
+  maximum: 65_536,
+  shared: true
+});
 const align = (value, alignment) =>
   Math.ceil(value / alignment) * alignment;
 instance = new WebAssembly.Instance(module, {
@@ -38,13 +48,13 @@ instance = new WebAssembly.Instance(module, {
     malloc(size) {
       const pointer = align(allocationCursor, 16);
       allocationCursor = pointer + Math.max(Number(size), 1);
-      const memory = instance.exports.memory;
       const requiredPages = Math.ceil(
         (allocationCursor - memory.buffer.byteLength) / 65_536
       );
       if (requiredPages > 0) memory.grow(requiredPages);
       return pointer;
-    }
+    },
+    memory
   }
 });
 

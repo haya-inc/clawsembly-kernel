@@ -24,7 +24,7 @@ const nestedWasmLock = readFileSync(
   "utf8"
 );
 
-assert.equal(contract.schemaVersion, 8);
+assert.equal(contract.schemaVersion, 9);
 assert.equal(contract.runtimeProvider, "quickjs");
 assert.equal(contract.upstream.commit, edgeArtifact.source.commit);
 assert.equal(contract.upstream.repository, edgeArtifact.source.repository);
@@ -56,6 +56,11 @@ assert.deepEqual(contract.nestedWebAssembly, {
     "45e45f29eb7b0a2c0789c3c8075fc9c2c05182d6be2222702c6c848f72a2c2df",
   license: "MIT OR Apache-2.0",
   rustTarget: "wasm32-unknown-unknown",
+  rustTargetFeatures: [
+    "atomics",
+    "bulk-memory",
+    "mutable-globals"
+  ],
   archive: "nested-wasm/dist/lib/libwasmer.a",
   capabilities: "none-without-explicit-javascript-imports"
 });
@@ -153,6 +158,10 @@ const outputs = {
   emit_exnref: contract.toolchain.emitExceptionReferences ? "yes" : "no",
   nested_wasm_crate_checksum: contract.nestedWebAssembly.crateChecksum,
   nested_wasm_rust_target: contract.nestedWebAssembly.rustTarget,
+  nested_wasm_target_features:
+    contract.nestedWebAssembly.rustTargetFeatures
+      .map((feature) => `+${feature}`)
+      .join(","),
   nested_wasm_version: contract.nestedWebAssembly.version,
   quickjs_webassembly: contract.toolchain.quickjsWebAssembly ? "yes" : "no",
   runtime_provider: contract.runtimeProvider,

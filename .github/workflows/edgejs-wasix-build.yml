@@ -291,6 +291,8 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/clawsembly-nested-wasm-target
           NESTED_WASM_RUST_TARGET: ${{ steps.contract.outputs.nested_wasm_rust_target }}
+          NESTED_WASM_TARGET_FEATURES: ${{ steps.contract.outputs.nested_wasm_target_features }}
+          RUSTFLAGS: -C target-feature=${{ steps.contract.outputs.nested_wasm_target_features }}
           WASMER_RUST_TOOLCHAIN: ${{ steps.contract.outputs.wasmer_rust_toolchain }}
         run: |
           set -euo pipefail
@@ -330,6 +332,7 @@ jobs:
               --crate-type lib \
               --emit=obj \
               -C opt-level=z \
+              -C "target-feature=${NESTED_WASM_TARGET_FEATURES}" \
               nested-wasm/link-smoke.rs \
               -o nested-wasm/dist/link-smoke.o
           rust_sysroot="$(
@@ -348,6 +351,9 @@ jobs:
             --no-entry \
             --export=clawsembly_nested_link_probe \
             --allow-undefined \
+            --shared-memory \
+            --max-memory=4294967296 \
+            --import-memory \
             --gc-sections \
             nested-wasm/dist/link-smoke.o \
             nested-wasm/dist/lib/libwasmer.a \
@@ -658,6 +664,7 @@ jobs:
           set -euo pipefail
           destination="artifacts/agent-turn-attempt"
           mkdir -p "${destination}"
+          mkdir -p test-results
           evidence="$(
             find test-results \
               -name openclaw-agent-turn-browser-evidence.json \
@@ -709,6 +716,7 @@ jobs:
           EMIT_EXNREF: ${{ steps.contract.outputs.emit_exnref }}
           NESTED_WASM_CRATE_CHECKSUM: ${{ steps.contract.outputs.nested_wasm_crate_checksum }}
           NESTED_WASM_RUST_TARGET: ${{ steps.contract.outputs.nested_wasm_rust_target }}
+          NESTED_WASM_TARGET_FEATURES: ${{ steps.contract.outputs.nested_wasm_target_features }}
           NESTED_WASM_VERSION: ${{ steps.contract.outputs.nested_wasm_version }}
           QUICKJS_WEBASSEMBLY: ${{ steps.contract.outputs.quickjs_webassembly }}
           RUNTIME_PROVIDER: ${{ steps.contract.outputs.runtime_provider }}
@@ -772,6 +780,7 @@ jobs:
             --arg nestedWasmCrateChecksum "${NESTED_WASM_CRATE_CHECKSUM}" \
             --arg nestedWasmRustTarget "${NESTED_WASM_RUST_TARGET}" \
             --arg nestedWasmSha256 "${nested_wasm_sha256}" \
+            --arg nestedWasmTargetFeatures "${NESTED_WASM_TARGET_FEATURES}" \
             --arg nestedWasmVersion "${NESTED_WASM_VERSION}" \
             --arg quickjsWebAssembly "${QUICKJS_WEBASSEMBLY}" \
             --arg runtimeProvider "${RUNTIME_PROVIDER}" \
@@ -847,6 +856,11 @@ jobs:
                 version: $nestedWasmVersion,
                 crateChecksum: $nestedWasmCrateChecksum,
                 rustTarget: $nestedWasmRustTarget,
+                rustTargetFeatures: (
+                  $nestedWasmTargetFeatures
+                  | split(",")
+                  | map(ltrimstr("+"))
+                ),
                 archiveSha256: $nestedWasmSha256,
                 ambientCapabilities: "none-without-explicit-javascript-imports",
                 linkSmoke: $nestedWasmSmoke[0]

@@ -8,7 +8,9 @@ JavaScript `WebAssembly` global without importing a native host runtime.
 The crate is deliberately `no_std`. Its allocator delegates to the WASIX
 libc already linked by Edge.js. The pinned C API implementation is built
 without default features and interprets child WebAssembly modules inside the
-browser guest.
+browser guest. CI compiles the archive with the `atomics`, `bulk-memory`, and
+`mutable-globals` target features required by Edge.js's shared-memory WASIX
+link.
 
 This is an execution compatibility layer, not a capability grant. Nested
 modules inherit only the imports explicitly supplied by JavaScript and do not
