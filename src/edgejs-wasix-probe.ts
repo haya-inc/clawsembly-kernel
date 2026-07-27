@@ -51,6 +51,9 @@ const result = requiredElement<HTMLPreElement>("#result");
 const searchParams = new URLSearchParams(location.search);
 const artifactUrl = searchParams.get("artifact")
   ?? "/edgejs.wasm";
+const browserCpuThrottlingRate = Number(
+  searchParams.get("cpuThrottleRate") ?? "1"
+);
 const marker = "clawsembly-edgejs-wasix-browser";
 const markerPrefix = "CLAWSEMBLY_EDGE_WASIX=";
 const eventLoopMarkerPrefix = "CLAWSEMBLY_EDGE_EVENT_LOOP=";
@@ -148,6 +151,15 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 
 async function runProbe(): Promise<void> {
   try {
+    if (
+      !Number.isInteger(browserCpuThrottlingRate)
+      || browserCpuThrottlingRate < 1
+      || browserCpuThrottlingRate > 100
+    ) {
+      throw new Error(
+        `Invalid browser CPU throttling rate: ${browserCpuThrottlingRate}`
+      );
+    }
     if (!crossOriginIsolated) {
       throw new Error("Edge.js WASIX requires a cross-origin-isolated browser context");
     }
@@ -584,6 +596,9 @@ async function runProbe(): Promise<void> {
         },
         request: "ping",
         response: "pong",
+        schedulerStress: {
+          browserCpuThrottlingRate
+        },
         server: loopbackServer,
         client: loopbackClient
       },

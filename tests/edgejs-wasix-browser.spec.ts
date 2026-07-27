@@ -10,6 +10,9 @@ import path from "node:path";
 type BrowserBuildContract = {
   browserExecutor: {
     package: string;
+    schedulerStress: {
+      browserCpuThrottlingRate: number;
+    };
     version: string;
   };
   expectedRuntime: {
@@ -63,6 +66,9 @@ type BrowserEvidence = {
     port: number;
     request: string;
     response: string;
+    schedulerStress: {
+      browserCpuThrottlingRate: number;
+    };
     server: {
       code: number;
       ok: boolean;
@@ -138,8 +144,17 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
   page.on("console", (message) => {
     console.log(`[browser:${message.type()}] ${message.text()}`);
   });
+  const cpuThrottlingRate =
+    contract.browserExecutor.schedulerStress.browserCpuThrottlingRate;
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setCPUThrottlingRate", {
+    rate: cpuThrottlingRate
+  });
   const pageError = page.waitForEvent("pageerror");
-  await page.goto("/wasix-probe.html?artifact=/edgejs.wasm");
+  await page.goto(
+    "/wasix-probe.html?artifact=/edgejs.wasm"
+    + `&cpuThrottleRate=${cpuThrottlingRate}`
+  );
   const status = page.locator("#status");
   const outcome = await Promise.race([
     expect.poll(
@@ -186,6 +201,9 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
       },
       request: "ping",
       response: "pong",
+      schedulerStress: {
+        browserCpuThrottlingRate: cpuThrottlingRate
+      },
       server: {
         code: 0,
         ok: true

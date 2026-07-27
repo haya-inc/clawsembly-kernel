@@ -16,8 +16,11 @@ on:
       - package.json
       - patches/edgejs/**
       - patches/wasmer-js/**
+      - patches/wasmer-wasix/**
+      - patches/virtual-net/**
       - playwright.config.ts
       - scripts/verify-edgejs-browser-build-contract.mjs
+      - scripts/apply-wasmer-cargo-dependency-patches.mjs
       - scripts/build-openclaw-package-image.mjs
       - scripts/create-edgejs-node-version-diagnostic.mjs
       - scripts/generate-openclaw-package-contract.mjs
@@ -250,10 +253,14 @@ jobs:
       - name: Build patched Wasmer JS browser runtime
         shell: bash
         env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/clawsembly-wasmer-js-target
           WASMER_RUST_TOOLCHAIN: ${{ steps.contract.outputs.wasmer_rust_toolchain }}
         run: |
           set -euo pipefail
           npm --prefix wasmer-js ci --ignore-scripts
+          RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
+            node scripts/apply-wasmer-cargo-dependency-patches.mjs \
+              wasmer-js/Cargo.toml
           (
             cd wasmer-js
             RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
@@ -593,6 +600,10 @@ jobs:
                 sha256
               }]' contracts/edgejs-browser-build.json
             )" \
+            --argjson wasmerDependencyPatches "$(
+              jq '.browserExecutor.dependencyPatches' \
+                contracts/edgejs-browser-build.json
+            )" \
             '{
               schemaVersion: 1,
               edgeSourceCommit: $edgeSourceCommit,
@@ -605,6 +616,7 @@ jobs:
               browserExecutor: {
                 wasmerSourceCommit: $wasmerSourceCommit,
                 patches: $wasmerPatches,
+                dependencyPatches: $wasmerDependencyPatches,
                 indexMjsSha256: $wasmerJsSha256,
                 runtimeWasmSha256: $wasmerWasmSha256
               },

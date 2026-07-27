@@ -16,7 +16,7 @@ const edgeArtifact = readJson(
 );
 const packageLock = readJson(path.join(repositoryRoot, "package-lock.json"));
 
-assert.equal(contract.schemaVersion, 3);
+assert.equal(contract.schemaVersion, 4);
 assert.equal(contract.runtimeProvider, "quickjs");
 assert.equal(contract.upstream.commit, edgeArtifact.source.commit);
 assert.equal(contract.upstream.repository, edgeArtifact.source.repository);
@@ -64,6 +64,48 @@ for (const patch of contract.browserExecutor.patches) {
     `Wasmer JS patch integrity mismatch: ${patch.path}`
   );
 }
+
+for (const dependency of contract.browserExecutor.dependencyPatches) {
+  assert.match(dependency.package, /^[a-z0-9-]+$/u);
+  assert.match(dependency.version, /^\d+\.\d+\.\d+$/u);
+  assert.equal(
+    dependency.source,
+    "registry+https://github.com/rust-lang/crates.io-index"
+  );
+  assert.match(dependency.crateSha256, /^[0-9a-f]{64}$/u);
+  assert.ok(
+    ["clawsembly-fix", "upstream-backport"].includes(
+      dependency.provenance.kind
+    )
+  );
+  if (dependency.provenance.kind === "upstream-backport") {
+    assert.match(
+      dependency.provenance.pullRequest,
+      /^https:\/\/github\.com\//u
+    );
+    assert.match(dependency.provenance.commit, /^[0-9a-f]{40}$/u);
+  } else {
+    assert.ok(dependency.provenance.regression.length > 0);
+  }
+  assert.ok(dependency.verification.targetFile.length > 0);
+  assert.ok(dependency.verification.function.length > 0);
+  assert.ok(dependency.verification.expectedSnippet.length > 0);
+  const patchPath = path.join(repositoryRoot, dependency.patch.path);
+  const actualSha256 = createHash("sha256")
+    .update(readFileSync(patchPath))
+    .digest("hex");
+  assert.equal(
+    actualSha256,
+    dependency.patch.sha256,
+    `Wasmer Cargo dependency patch integrity mismatch: `
+    + dependency.patch.path
+  );
+}
+
+assert.equal(
+  contract.browserExecutor.schedulerStress.browserCpuThrottlingRate,
+  12
+);
 
 const sdk = packageLock.packages?.["node_modules/@wasmer/sdk"];
 assert.ok(sdk, "package-lock.json has no @wasmer/sdk entry");
@@ -113,6 +155,9 @@ console.log(
   + `self-built @wasmer/sdk@${sdk.version} from `
   + `${contract.browserExecutor.upstream.commit}, `
   + `${contract.browserExecutor.patches.length} Wasmer JS patches, `
+  + `${contract.browserExecutor.dependencyPatches.length} Cargo dependency patches, `
+  + `${contract.browserExecutor.schedulerStress.browserCpuThrottlingRate}x `
+  + "browser CPU stress, "
   + `quickjs-webassembly=${outputs.quickjs_webassembly}, `
   + `wasm-exceptions=${outputs.wasixcc_wasm_exceptions}, `
   + `wasixcc-wasm-opt=${outputs.wasixcc_run_wasm_opt}, `
