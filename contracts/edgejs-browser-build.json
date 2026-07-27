@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 7,
+  "schemaVersion": 8,
   "runtimeProvider": "quickjs",
   "upstream": {
     "repository": "https://github.com/wasmerio/edgejs",
@@ -26,6 +26,10 @@
     {
       "path": "patches/edgejs/0005-use-capability-resolver-without-udp-probe.patch",
       "sha256": "f58c437a7408d253d70634aa570c1aaea62850a8e5c47a498bdf5d8c0fe1b541"
+    },
+    {
+      "path": "patches/edgejs/0006-link-wasix-nested-webassembly.patch",
+      "sha256": "fa17022d41662febe88e9851327a6a7ab95721a3fb4b2500bdd1a98c83ef2628"
     }
   ],
   "sqlite": {
@@ -54,7 +58,17 @@
     "wasixccWasmExceptions": "legacy",
     "wasixccRunWasmOpt": false,
     "emitExceptionReferences": false,
-    "quickjsWebAssembly": false
+    "quickjsWebAssembly": true
+  },
+  "nestedWebAssembly": {
+    "implementation": "wasmi",
+    "package": "wasmi_c_api_impl",
+    "version": "0.40.0",
+    "crateChecksum": "45e45f29eb7b0a2c0789c3c8075fc9c2c05182d6be2222702c6c848f72a2c2df",
+    "license": "MIT OR Apache-2.0",
+    "rustTarget": "wasm32-unknown-unknown",
+    "archive": "nested-wasm/dist/lib/libwasmer.a",
+    "capabilities": "none-without-explicit-javascript-imports"
   },
   "browserExecutor": {
     "package": "@wasmer/sdk",
@@ -71,7 +85,7 @@
       },
       {
         "path": "patches/wasmer-js/0002-add-capability-scoped-browser-loopback.patch",
-        "sha256": "b13b2d59fc51b42ce6d9312f9c25d6d604e201f06c3451a8142391c016578183"
+        "sha256": "fc6d781d4dee81f814b0d38cfe3b030042e31552e1251df2f0eabcde9a1d03df"
       },
       {
         "path": "patches/wasmer-js/0003-reserve-workers-for-pending-async-jobs.patch",

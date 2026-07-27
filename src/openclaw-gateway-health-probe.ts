@@ -24,6 +24,16 @@ type HealthResponse = {
   };
 };
 
+type AgentTurnResponse = {
+  meta?: {
+    transport?: string;
+  };
+  payloads?: Array<{
+    text?: string;
+  }>;
+  result?: unknown;
+};
+
 type StreamCapture = {
   cancel: () => Promise<void>;
   done: Promise<void>;
@@ -209,11 +219,39 @@ function isHealthyResponse(value: unknown): value is HealthResponse {
     && candidate.plugins.errors.length === 0;
 }
 
+function containsAgentTurnMarker(value: unknown, marker: string): boolean {
+  if (typeof value === "string") return value.includes(marker);
+  if (Array.isArray(value)) {
+    return value.some((entry) => containsAgentTurnMarker(entry, marker));
+  }
+  if (typeof value !== "object" || value === null) return false;
+  return Object.values(value).some(
+    (entry) => containsAgentTurnMarker(entry, marker)
+  );
+}
+
+function isAgentTurnResponse(
+  value: unknown,
+  marker: string
+): value is AgentTurnResponse {
+  return typeof value === "object"
+    && value !== null
+    && !Array.isArray(value)
+    && containsAgentTurnMarker(value, marker);
+}
+
 const status = requiredElement<HTMLOutputElement>("#status");
 const result = requiredElement<HTMLPreElement>("#result");
 const searchParams = new URLSearchParams(location.search);
 const artifactUrl = searchParams.get("artifact") ?? "/edgejs.wasm";
 const imageUrl = searchParams.get("image") ?? "/openclaw.clawfs";
+const proofKind = searchParams.get("proof") === "agent-turn"
+  ? "agent-turn"
+  : "health";
+const relayUrl =
+  searchParams.get("relay") ?? "ws://127.0.0.1:18792/v1/network";
+const relayToken = searchParams.get("token");
+const diagnosticErrorDetail = searchParams.get("errorDetail") === "1";
 const requestedProofTimeoutMs = Number(searchParams.get("timeoutMs"));
 const proofTimeoutMs =
   Number.isSafeInteger(requestedProofTimeoutMs)
@@ -224,6 +262,9 @@ const proofTimeoutMs =
 const gatewayPort = 18_789;
 const gatewayUrl = `ws://127.0.0.1:${gatewayPort}`;
 const gatewayToken = "clawsembly-diagnostic-non-secret-token";
+const providerPort = 18_794;
+const providerModel = "clawsembly-proof";
+const agentTurnMarker = "CLAWSEMBLY_AGENT_TURN_OK";
 const readinessMarker = "http server listening";
 const clientLaunchMarker = "agent runtime plugins pre-warmed";
 const clientCompletionGraceMs = 10_000;
@@ -238,7 +279,26 @@ async function runProbe(): Promise<void> {
     const { Directory, init, Runtime, runWasix } =
       await import("@wasmer/sdk");
     await init();
-    const wasixRuntime = new Runtime({ registry: null });
+    if (proofKind === "agent-turn" && !relayToken) {
+      throw new Error("The agent-turn relay capability token is required");
+    }
+    const runtimeOptions = proofKind === "agent-turn"
+      ? {
+          registry: null,
+          networkEgress: {
+            gatewayUrl: relayUrl,
+            gatewayToken: relayToken!,
+            allow: [{
+              host: "localhost",
+              port: providerPort,
+              allowPrivateNetwork: true
+            }]
+          }
+        }
+      : { registry: null };
+    const wasixRuntime = new Runtime(
+      runtimeOptions as ConstructorParameters<typeof Runtime>[0]
+    );
 
     status.textContent = "Fetching Edge.js and the official package image…";
     const [edgeBytes, imageBytes] = await Promise.all([
@@ -299,10 +359,61 @@ async function runProbe(): Promise<void> {
       launcherSha256,
       entrySha256
     };
+    let packageFiles = parsed.files;
+    let diagnosticMutation:
+      | {
+          path: string;
+          purpose: string;
+        }
+      | undefined;
+    if (diagnosticErrorDetail) {
+      packageFiles = { ...parsed.files };
+      const needle = [
+        "`causeCode=${read(cause?.code)}`,",
+        "`message=${error instanceof Error ? error.message : read(record.message)}`"
+      ].join("\n\t\t\t");
+      const replacement = [
+        "`causeCode=${read(cause?.code)}`,",
+        "`causeMessage=${read(cause?.message)}`,",
+        "`causeStack=${read(cause?.stack)}`,",
+        "`message=${error instanceof Error ? error.message : read(record.message)}`"
+      ].join("\n\t\t\t");
+      for (const [filePath, fileBytes] of Object.entries(packageFiles)) {
+        if (!filePath.startsWith("/dist/stream-")) continue;
+        const source = new TextDecoder().decode(fileBytes);
+        if (!source.includes(needle)) continue;
+        packageFiles[filePath] = new TextEncoder().encode(
+          source.replace(needle, replacement)
+        );
+        diagnosticMutation = {
+          path: filePath,
+          purpose:
+            "Expose the nested model-fetch cause message and stack in logs"
+        };
+        break;
+      }
+      if (!diagnosticMutation) {
+        throw new Error("Could not install the error-detail diagnostic");
+      }
+    }
     const networkEvidence = {
-      namespace: "browser-local-loopback",
+      namespace: proofKind === "agent-turn"
+        ? "browser-local-loopback+capability-egress"
+        : "browser-local-loopback",
       url: gatewayUrl,
-      externalEgress: "denied-by-default"
+      externalEgress: proofKind === "agent-turn"
+        ? {
+            allow: [{
+              host: "localhost",
+              port: providerPort,
+              allowPrivateNetwork: true
+            }],
+            credentialTransport: "Sec-WebSocket-Protocol",
+            relayUrl,
+            tokenRecorded: false,
+            transport: "self-hosted-virtual-net-websocket-relay"
+          }
+        : "denied-by-default"
     };
     const isolationEvidence = {
       sharedRuntimeNetworkNamespace: true,
@@ -311,13 +422,19 @@ async function runProbe(): Promise<void> {
       gatewayStateRoot: "/openclaw/.clawsembly-gateway-state",
       clientStateRootPattern: "/openclaw/.clawsembly-client-state-{attempt}"
     };
-    const notNorthStarCompletion =
-      "This uses an auditably relabeled diagnostic Node version and does "
-      + "not replace the required genuine Node compatibility profile or "
-      + "real agent-turn proof.";
+    const notNorthStarCompletion = proofKind === "agent-turn"
+      ? "This proves the real unmodified OpenClaw agent path against a "
+        + "deterministic OpenAI-compatible fixture, but still uses an "
+        + "auditably relabeled diagnostic Node version and does not replace "
+        + "the required genuine Node compatibility profile or live-provider "
+        + "TLS proof."
+      : "This uses an auditably relabeled diagnostic Node version and does "
+        + "not replace the required genuine Node compatibility profile or "
+        + "real agent-turn proof.";
     const launchHarnessEvidence = {
       officialEntrypoint: "/openclaw/dist/entry.js",
-      openclawPackageFilesMutated: false,
+      openclawPackageFilesMutated: diagnosticMutation !== undefined,
+      ...(diagnosticMutation ? { diagnosticMutation } : {}),
       clientCompletionGraceMs,
       clientLaunchMarker,
       gateway:
@@ -330,9 +447,9 @@ async function runProbe(): Promise<void> {
         + "output-drain grace once its dynamic import settles."
     };
 
-    const maxClientAttempts = 3;
-    const gatewayOpenclaw = new Directory(parsed.files);
-    const clientOpenclaw = new Directory(parsed.files);
+    const maxClientAttempts = proofKind === "agent-turn" ? 1 : 3;
+    const gatewayOpenclaw = new Directory(packageFiles);
+    const clientOpenclaw = new Directory(packageFiles);
     const gatewayWorkspace = "/openclaw/.clawsembly-gateway-workspace";
     await gatewayOpenclaw.createDir("/.clawsembly-gateway-state");
     await gatewayOpenclaw.createDir("/.clawsembly-gateway-workspace");
@@ -346,9 +463,43 @@ async function runProbe(): Promise<void> {
         agents: {
           defaults: {
             workspace: gatewayWorkspace,
-            skipBootstrap: true
+            skipBootstrap: true,
+            ...(proofKind === "agent-turn"
+              ? {
+                  model: {
+                    primary: `clawsembly/${providerModel}`
+                  }
+                }
+              : {})
           }
-        }
+        },
+        ...(proofKind === "agent-turn"
+          ? {
+              models: {
+                providers: {
+                  clawsembly: {
+                    api: "openai-completions",
+                    apiKey: "clawsembly-fixture-key",
+                    baseUrl: `http://localhost:${providerPort}/v1`,
+                    models: [{
+                      id: providerModel,
+                      name: "Clawsembly deterministic proof fixture",
+                      reasoning: false,
+                      input: ["text"],
+                      cost: {
+                        input: 0,
+                        output: 0,
+                        cacheRead: 0,
+                        cacheWrite: 0
+                      },
+                      contextWindow: 32768,
+                      maxTokens: 256
+                    }]
+                  }
+                }
+              }
+            }
+          : {})
       }, null, 2))
     );
     const module = await WebAssembly.compile(edgeBytes);
@@ -507,21 +658,36 @@ async function runProbe(): Promise<void> {
     const clientLaunchElapsedMs = Math.round(
       performance.now() - startedAt
     );
-    status.textContent =
-      "Gateway ready; starting the official OpenClaw health client…";
-    const clientArgs = [
-      "/openclaw/dist/entry.js",
-      "gateway",
-      "call",
-      "health",
-      "--url",
-      gatewayUrl,
-      "--token",
-      gatewayToken,
-      "--timeout",
-      "60000",
-      "--json"
-    ];
+    status.textContent = proofKind === "agent-turn"
+      ? "Gateway ready; starting an official OpenClaw agent turn…"
+      : "Gateway ready; starting the official OpenClaw health client…";
+    const clientArgs = proofKind === "agent-turn"
+      ? [
+          "/openclaw/dist/entry.js",
+          "agent",
+          "--agent",
+          "main",
+          "--message",
+          `Reply exactly: ${agentTurnMarker}`,
+          "--thinking",
+          "off",
+          "--timeout",
+          "60",
+          "--json"
+        ]
+      : [
+          "/openclaw/dist/entry.js",
+          "gateway",
+          "call",
+          "health",
+          "--url",
+          gatewayUrl,
+          "--token",
+          gatewayToken,
+          "--timeout",
+          "60000",
+          "--json"
+        ];
     const clientArgv = ["/bin/edge", ...clientArgs];
     const clientProofTimeoutMs = Math.min(75_000, proofTimeoutMs);
     const clientTimeoutMarker =
@@ -586,13 +752,18 @@ async function runProbe(): Promise<void> {
         })),
         clientStdout.waitUntil((captured) => {
           try {
-            return isHealthyResponse(parseJsonOutput(captured));
+            const parsedOutput = parseJsonOutput(captured);
+            return proofKind === "agent-turn"
+              ? isAgentTurnResponse(parsedOutput, agentTurnMarker)
+              : isHealthyResponse(parsedOutput);
           } catch {
             return false;
           }
-        }, "a complete healthy Gateway JSON response", remainingMs).then(
+        }, proofKind === "agent-turn"
+          ? "a complete OpenClaw agent-turn JSON response"
+          : "a complete healthy Gateway JSON response", remainingMs).then(
           () => ({
-            kind: "client-health-output" as const
+              kind: "client-proof-output" as const
           }),
           () => new Promise<never>(() => {})
         ),
@@ -623,7 +794,7 @@ async function runProbe(): Promise<void> {
             stdout: clientStdout.snapshot(),
             stderr: clientStderr.snapshot()
           }
-        : outcome.kind === "client-health-output"
+        : outcome.kind === "client-proof-output"
           ? {
               code: null,
               ok: true,
@@ -637,18 +808,20 @@ async function runProbe(): Promise<void> {
               stderr: clientStderr.snapshot()
                 + `CLAWSEMBLY_CLIENT_${outcome.kind.toUpperCase().replaceAll("-", "_")}\n`
             };
-      let attemptHealth: unknown;
-      let healthParseError: string | undefined;
+      let attemptResponse: unknown;
+      let responseParseError: string | undefined;
       if (attemptResult.stdout.trim()) {
         try {
-          attemptHealth = parseJsonOutput(attemptResult.stdout);
+          attemptResponse = parseJsonOutput(attemptResult.stdout);
         } catch (error) {
-          healthParseError = error instanceof Error
+          responseParseError = error instanceof Error
             ? error.message
             : String(error);
         }
       }
-      const attemptPassed = isHealthyResponse(attemptHealth);
+      const attemptPassed = proofKind === "agent-turn"
+        ? isAgentTurnResponse(attemptResponse, agentTurnMarker)
+        : isHealthyResponse(attemptResponse);
       return {
         attempt,
         stateRoot: clientStateRoot,
@@ -656,11 +829,15 @@ async function runProbe(): Promise<void> {
         completion: attemptPassed
           ? outcome.kind === "client-exit" && attemptResult.code === 0
             ? "client-exit-zero"
-            : "health-output-observed"
+            : proofKind === "agent-turn"
+              ? "agent-turn-output-observed"
+              : "health-output-observed"
           : outcome.kind,
         result: attemptResult,
-        health: attemptHealth,
-        ...(healthParseError ? { healthParseError } : {}),
+        health: attemptResponse,
+        ...(responseParseError
+          ? { healthParseError: responseParseError }
+          : {}),
         passed: attemptPassed,
         retryableTransportError:
           outcome.kind === "client-exit"
@@ -678,7 +855,9 @@ async function runProbe(): Promise<void> {
     > = [];
     for (let attempt = 1; attempt <= maxClientAttempts; attempt += 1) {
       status.textContent =
-        `Gateway ready; running official health client (${attempt}/${maxClientAttempts})…`;
+        `Gateway ready; running official ${
+          proofKind === "agent-turn" ? "agent-turn" : "health"
+        } client (${attempt}/${maxClientAttempts})…`;
       const clientAttempt = await runClientAttempt(attempt);
       clientAttempts.push(clientAttempt);
       if (clientAttempt.passed) break;
@@ -699,7 +878,7 @@ async function runProbe(): Promise<void> {
     if (!selectedClient) {
       throw new Error("No official OpenClaw client attempt was executed");
     }
-    const healthPassed = successfulClient !== undefined;
+    const proofPassed = successfulClient !== undefined;
     const gatewayExitedDuringClient = clientAttempts.some(
       (attempt) => attempt.outcome === "gateway-exit"
     );
@@ -708,18 +887,27 @@ async function runProbe(): Promise<void> {
     )?.gatewayOutput;
     const evidence = {
       schemaVersion: 1,
-      status: healthPassed ? "gateway-health-pass" : "blocked",
-      ...(healthPassed
+      status: proofPassed
+        ? proofKind === "agent-turn"
+          ? "agent-turn-pass"
+          : "gateway-health-pass"
+        : "blocked",
+      ...(proofPassed
         ? {}
         : {
             blocker: selectedClient.retryableTransportError
               ? "gateway-client-transport-error"
               : selectedClient.outcome
           }),
-      claim: healthPassed
-        ? "A second browser guest executed the exact official OpenClaw CLI "
-          + "and completed an authenticated health RPC against the real "
-          + "unmodified Gateway over browser-local loopback."
+      claim: proofPassed
+        ? proofKind === "agent-turn"
+          ? "A second browser guest executed the exact official OpenClaw CLI, "
+            + "submitted a real agent turn through the unmodified Gateway, "
+            + "and received the deterministic model reply through the "
+            + "capability-scoped TCP relay."
+          : "A second browser guest executed the exact official OpenClaw CLI "
+            + "and completed an authenticated health RPC against the real "
+            + "unmodified Gateway over browser-local loopback."
         : "The real Gateway reached readiness, but its official client did "
           + "not complete a valid authenticated health RPC.",
       notNorthStarCompletion,
@@ -738,10 +926,14 @@ async function runProbe(): Promise<void> {
         clientLaunchElapsedMs,
         readyElapsedMs,
         state: gatewayExitedDuringClient
-          ? healthPassed
-            ? "exited-after-health-output"
+          ? proofPassed
+            ? proofKind === "agent-turn"
+              ? "exited-after-agent-turn-output"
+              : "exited-after-health-output"
             : "exited-before-health-completed"
-          : "running-at-health-proof",
+          : proofKind === "agent-turn"
+            ? "running-at-agent-turn-proof"
+            : "running-at-health-proof",
         ...(gatewayOutput
           ? {
               result: {
@@ -754,6 +946,16 @@ async function runProbe(): Promise<void> {
         stdout: gatewayStdout.snapshot(),
         stderr: gatewayStderr.snapshot()
       },
+      ...(proofKind === "agent-turn"
+        ? {
+            providerFixture: {
+              api: "openai-completions",
+              baseUrl: `http://localhost:${providerPort}/v1`,
+              expectedMarker: agentTurnMarker,
+              model: `clawsembly/${providerModel}`
+            }
+          }
+        : {}),
       client: {
         args: clientArgs.slice(1),
         distinctGuestProcess: true,
@@ -779,8 +981,10 @@ async function runProbe(): Promise<void> {
       }
     };
     status.dataset.state = "pass";
-    status.textContent = healthPassed
-      ? "PASS · Official OpenClaw client completed Gateway health RPC"
+    status.textContent = proofPassed
+      ? proofKind === "agent-turn"
+        ? "PASS · Unmodified OpenClaw completed a real agent turn"
+        : "PASS · Official OpenClaw client completed Gateway health RPC"
       : "MILESTONE · Gateway client blocker captured";
     result.textContent = JSON.stringify(evidence, null, 2);
   } catch (error) {

@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000..e2b2e28
 --- /dev/null
 +++ w/src/browser_network.rs
-@@ -0,0 +1,569 @@
+@@ -0,0 +1,587 @@
 +use std::{
 +    collections::{HashMap, HashSet},
 +    mem::MaybeUninit,
@@ -112,6 +112,19 @@ index 0000000..e2b2e28
 +        remote: Arc<dyn VirtualNetworking>,
 +        rules: Vec<NetworkEgressRule>,
 +    ) -> Self {
++        let resolved = rules
++            .iter()
++            .filter(|rule| rule.host == "localhost" && rule.allow_private_network)
++            .map(|rule| {
++                (
++                    (rule.host.clone(), rule.port),
++                    HashSet::from([
++                        IpAddr::V4(Ipv4Addr::LOCALHOST),
++                        IpAddr::V6(Ipv6Addr::LOCALHOST),
++                    ]),
++                )
++            })
++            .collect();
 +        let rules = rules
 +            .into_iter()
 +            .map(|rule| ((rule.host.clone(), rule.port), rule))
@@ -120,7 +133,7 @@ index 0000000..e2b2e28
 +            egress: Some(BrowserEgress {
 +                remote,
 +                rules: Arc::new(rules),
-+                resolved: Arc::default(),
++                resolved: Arc::new(Mutex::new(resolved)),
 +            }),
 +            ..Self::default()
 +        }
@@ -280,7 +293,12 @@ index 0000000..e2b2e28
 +        let matching_rules = egress
 +            .rules
 +            .iter()
-+            .filter(|((allowed_host, _), _)| *allowed_host == normalized)
++            .filter(|((allowed_host, allowed_port), _)| {
++                *allowed_host == normalized
++                    && port.map_or(true, |requested_port| {
++                        requested_port == *allowed_port
++                    })
++            })
 +            .collect::<Vec<_>>();
 +        if normalized == "localhost" && matching_rules.is_empty() {
 +            return Ok(vec![

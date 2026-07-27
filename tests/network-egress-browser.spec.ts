@@ -27,6 +27,102 @@ const artifactPath = process.env.CLAWSEMBLY_EDGE_WASIX;
 const relayPath = process.env.CLAWSEMBLY_NETWORK_RELAY;
 const relayToken = "clawsembly-browser-egress-proof";
 
+test.describe.configure({ mode: "serial" });
+
+test("reports the Edge.js globals required by Undici", async ({ page }) => {
+  test.skip(
+    artifactPath === undefined || !existsSync(artifactPath),
+    "Set CLAWSEMBLY_EDGE_WASIX"
+  );
+  test.setTimeout(120_000);
+  await page.route((url) => url.pathname === "/edgejs.wasm", async (route) => {
+    await route.fulfill({
+      contentType: "application/wasm",
+      path: path.resolve(artifactPath!)
+    });
+  });
+  await page.goto(
+    "/network-egress-probe.html?artifact=/edgejs.wasm"
+    + "&mode=http-globals"
+    + `&token=${encodeURIComponent(relayToken)}`
+  );
+  const status = page.locator("#status");
+  await expect.poll(
+    () => status.getAttribute("data-state"),
+    { timeout: 90_000 }
+  ).toBe("pass");
+  const evidence = JSON.parse(await page.locator("#result").innerText()) as {
+    output: {
+      ok: boolean;
+      stdout: string;
+    };
+    status: string;
+  };
+  expect(evidence.status).toBe("http-globals-inspected");
+  expect(evidence.output.ok).toBe(true);
+  expect(evidence.output.stdout).toContain("CLAWSEMBLY_HTTP_GLOBALS=");
+  console.info(evidence.output.stdout);
+});
+
+test("captures the Edge.js HTTP fetch diagnostic", async ({ page }) => {
+  test.skip(
+    artifactPath === undefined
+      || relayPath === undefined
+      || !existsSync(artifactPath)
+      || !existsSync(relayPath),
+    "Set CLAWSEMBLY_EDGE_WASIX and CLAWSEMBLY_NETWORK_RELAY"
+  );
+  test.setTimeout(120_000);
+  const fixture = await startFixture();
+  let relay: ChildProcessWithoutNullStreams | undefined;
+  try {
+    relay = await startRelay(path.resolve(relayPath!));
+    await page.route((url) => url.pathname === "/edgejs.wasm", async (route) => {
+      await route.fulfill({
+        contentType: "application/wasm",
+        path: path.resolve(artifactPath!)
+      });
+    });
+    await page.goto(
+      "/network-egress-probe.html?artifact=/edgejs.wasm"
+      + "&mode=http-fetch-diagnostic"
+      + `&token=${encodeURIComponent(relayToken)}`
+    );
+    const status = page.locator("#status");
+    await expect.poll(
+      () => status.getAttribute("data-state"),
+      { timeout: 90_000 }
+    ).toBe("pass");
+    const evidence = JSON.parse(await page.locator("#result").innerText()) as {
+      status: string;
+      stderr: string;
+      stdout: string;
+    };
+    expect(evidence.status).toBe("http-fetch-pass");
+    const combined = `${evidence.stdout}\n${evidence.stderr}`;
+    const marker = combined
+      .split(/\r?\n/u)
+      .find((line) => line.startsWith(
+        "CLAWSEMBLY_HTTP_FETCH_DIAGNOSTIC="
+      ));
+    expect(marker).toBeDefined();
+    expect(JSON.parse(
+      marker!.slice("CLAWSEMBLY_HTTP_FETCH_DIAGNOSTIC=".length)
+    )).toEqual({
+      ok: true,
+      value: {
+        body: "egress-http-pong",
+        ok: true,
+        status: 200
+      }
+    });
+    console.info(combined);
+  } finally {
+    relay?.kill("SIGTERM");
+    await new Promise<void>((resolve) => fixture.close(() => resolve()));
+  }
+});
+
 test("grants exact TCP egress without replacing browser-local loopback", async ({
   page
 }, testInfo) => {
@@ -138,6 +234,17 @@ async function startFixture(): Promise<Server> {
     let request = "";
     socket.on("data", (chunk: string) => {
       request += chunk;
+      if (request.startsWith("GET /fixture-http ")) {
+        socket.end([
+          "HTTP/1.1 200 OK",
+          "Connection: close",
+          "Content-Length: 16",
+          "Content-Type: text/plain",
+          "",
+          "egress-http-pong"
+        ].join("\r\n"));
+        return;
+      }
       if (request === "egress-ping") {
         socket.end("egress-pong");
       }

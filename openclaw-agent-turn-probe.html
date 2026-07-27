@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Clawsembly Kernel · OpenClaw agent-turn proof</title>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Clawsembly Kernel · Real agent turn</p>
+      <h1>Unmodified OpenClaw agent execution, inside Chromium</h1>
+      <p>
+        This proof starts the exact official Gateway, invokes OpenClaw's own
+        agent CLI from a second browser guest, and reaches a deterministic
+        OpenAI-compatible model fixture through the capability-scoped relay.
+      </p>
+      <output id="status" data-state="running">Initializing Wasmer…</output>
+      <pre id="result" aria-live="polite"></pre>
+    </main>
+    <script
+      type="module"
+      src="/src/openclaw-gateway-health-probe.ts"
+    ></script>
+  </body>
+</html>

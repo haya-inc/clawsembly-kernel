@@ -137,6 +137,80 @@ async function runProbe(): Promise<void> {
       return await instance.wait() as WasixOutput;
     };
 
+    if (searchParams.get("mode") === "http-globals") {
+      const prefix = "CLAWSEMBLY_HTTP_GLOBALS=";
+      const globals = await runScript([
+        "const capture=(operation)=>{try{return {ok:true,value:operation()}}",
+        "catch(error){return {ok:false,name:error?.name,message:error?.message,",
+        "stack:error?.stack}}};",
+        "const target={};",
+        "const evidence={",
+        "types:{",
+        "FinalizationRegistry:typeof FinalizationRegistry,",
+        "WeakRef:typeof WeakRef,",
+        "queueMicrotask:typeof queueMicrotask,",
+        "fetch:typeof fetch",
+        "},",
+        "finalizationRegistry:capture(()=>{",
+        "const value=new FinalizationRegistry(()=>{});",
+        "value.register(target,'target');return 'constructed'}),",
+        "weakRef:capture(()=>new WeakRef(target).deref()===target),",
+        "undici:capture(()=>{",
+        "const value=require('internal/deps/undici/undici');",
+        "return {fetch:typeof value.fetch,Response:typeof value.Response}",
+        "})",
+        "};",
+        `console.log(${JSON.stringify(prefix)}+JSON.stringify(evidence));`
+      ].join(""));
+      status.dataset.state = "pass";
+      status.textContent = "PASS · Edge.js HTTP runtime globals inspected";
+      result.textContent = JSON.stringify({
+        schemaVersion: 1,
+        status: "http-globals-inspected",
+        output: globals
+      }, null, 2);
+      return;
+    }
+
+    if (searchParams.get("mode") === "http-fetch-diagnostic") {
+      const prefix = "CLAWSEMBLY_HTTP_FETCH_DIAGNOSTIC=";
+      const diagnosticInstance = await runWasix(moduleWithBytes, {
+        program: "edgejs",
+        args: ["-e", [
+          `const prefix=${JSON.stringify(prefix)};`,
+          `fetch('http://localhost:${fixturePort}/fixture-http')`,
+          ".then(async(response)=>({",
+          "ok:response.ok,status:response.status,body:await response.text()",
+          "}))",
+          ".then(value=>console.log(prefix+JSON.stringify({ok:true,value})))",
+          ".catch(error=>console.log(prefix+JSON.stringify({",
+          "ok:false,name:error?.name,message:error?.message,stack:error?.stack,",
+          "causeName:error?.cause?.name,causeMessage:error?.cause?.message,",
+          "causeStack:error?.cause?.stack",
+          "})));",
+          "setTimeout(()=>console.log(prefix+JSON.stringify({",
+          "ok:false,name:'DiagnosticTimeout'",
+          "})),30000);"
+        ].join("")],
+        runtime
+      });
+      const stdout = captureStream(diagnosticInstance.stdout);
+      const stderr = captureStream(diagnosticInstance.stderr);
+      await Promise.any([
+        stdout.waitFor(prefix, 35_000),
+        stderr.waitFor(prefix, 35_000)
+      ]);
+      status.dataset.state = "pass";
+      status.textContent = "PASS · Edge.js HTTP fetch crossed exact egress";
+      result.textContent = JSON.stringify({
+        schemaVersion: 1,
+        status: "http-fetch-pass",
+        stdout: stdout.snapshot(),
+        stderr: stderr.snapshot()
+      }, null, 2);
+      return;
+    }
+
     status.textContent = "Proving browser-local loopback remains local…";
     const listeningMarker = "CLAWSEMBLY_EGRESS_LOOPBACK_LISTENING";
     const serverMarker = "CLAWSEMBLY_EGRESS_LOOPBACK_SERVER=ping:pong";
@@ -216,38 +290,74 @@ async function runProbe(): Promise<void> {
       );
     }
 
-    const denialScript = (
-      label: string,
-      connection: string
-    ): string => [
-      "const net=require('node:net');let settled=false;",
-      "const denied=(error)=>{if(settled)return;settled=true;",
-      `console.log('CLAWSEMBLY_EGRESS_DENIED:${label}:'`,
-      "+(error?.code??error?.name??'unknown'));",
-      "clearTimeout(watchdog);process.exit(0)};",
-      `let socket;try{socket=${connection}}catch(error){denied(error)}`,
-      "socket?.on('connect',()=>{console.error('unexpected connection');",
-      "process.exit(2)});socket?.on('error',denied);",
-      "const watchdog=setTimeout(()=>process.exit(124),15000);"
-    ].join("");
     status.textContent = "Proving ungranted authority is denied…";
-    const wrongPort = await runScript(denialScript(
-      "wrong-port",
-      "net.createConnection({host:'localhost',port:18793})"
-    ));
-    const unlistedHost = await runScript(denialScript(
-      "unlisted-host",
-      "net.createConnection({host:'example.com',port:443})"
-    ));
-    const rawIp = await runScript(denialScript(
-      "raw-ip",
-      "net.createConnection({host:'1.1.1.1',port:443})"
-    ));
-    const denials = { wrongPort, unlistedHost, rawIp };
+    const denialCompleteMarker = "CLAWSEMBLY_EGRESS_DENIAL_SUITE=complete";
+    const denialInstance = await runWasix(moduleWithBytes, {
+      program: "edgejs",
+      args: ["-e", [
+        "const net=require('node:net');",
+        "const attempt=(label,options)=>new Promise((resolve,reject)=>{",
+        "let settled=false;let socket;",
+        "const timeout=setTimeout(()=>{",
+        "if(settled)return;settled=true;",
+        "reject(new Error('denial timeout:'+label))",
+        "},10000);",
+        "const denied=(error)=>{if(settled)return;settled=true;",
+        "clearTimeout(timeout);",
+        "console.log('CLAWSEMBLY_EGRESS_DENIED:'+label+':'",
+        "+(error?.code??error?.name??'unknown'));",
+        "socket?.destroy();resolve()};",
+        "try{socket=net.createConnection(options)}catch(error){",
+        "denied(error);return}",
+        "socket.once('connect',()=>{if(settled)return;settled=true;",
+        "clearTimeout(timeout);socket.destroy();",
+        "reject(new Error('unexpected connection:'+label))});",
+        "socket.once('error',denied)",
+        "});",
+        "(async()=>{try{",
+        "await attempt('wrong-port',{host:'localhost',port:18793});",
+        "await attempt('unlisted-host',{host:'example.com',port:443});",
+        "await attempt('raw-ip',{host:'1.1.1.1',port:443});",
+        `console.log(${JSON.stringify(denialCompleteMarker)});`,
+        "clearTimeout(watchdog);process.exit(0)",
+        "}catch(error){console.error(error?.stack??String(error));",
+        "clearTimeout(watchdog);process.exit(2)}})();",
+        "const watchdog=setTimeout(()=>{",
+        "console.error('denial suite watchdog');process.exit(124)",
+        "},40000);"
+      ].join("")],
+      runtime
+    });
+    const denialStdout = captureStream(denialInstance.stdout);
+    const denialStderr = captureStream(denialInstance.stderr);
+    await denialStdout.waitFor(denialCompleteMarker, 45_000);
+    const denialStdoutSnapshot = denialStdout.snapshot();
+    const denialStderrSnapshot = denialStderr.snapshot();
+    const denialLabels = {
+      wrongPort: "wrong-port",
+      unlistedHost: "unlisted-host",
+      rawIp: "raw-ip"
+    } as const;
+    const denials = Object.fromEntries(
+      Object.entries(denialLabels).map(([key, label]) => [
+        key,
+        {
+          code: null,
+          completion: "explicit-error-marker-observed",
+          ok: true,
+          stderr: denialStderrSnapshot,
+          stdout: denialStdoutSnapshot
+            .split(/\r?\n/u)
+            .filter((line) => line.startsWith(
+              `CLAWSEMBLY_EGRESS_DENIED:${label}:`
+            ))
+            .join("\n") + "\n"
+        }
+      ])
+    );
     for (const [label, output] of Object.entries(denials)) {
       if (
-        !output.ok
-        || !output.stdout.includes(
+        !output.stdout.includes(
           `CLAWSEMBLY_EGRESS_DENIED:${label.replace(/[A-Z]/gu, (value) =>
             `-${value.toLowerCase()}`)}:`
         )

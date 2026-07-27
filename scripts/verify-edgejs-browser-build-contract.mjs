@@ -15,15 +15,23 @@ const edgeArtifact = readJson(
   path.join(repositoryRoot, "contracts/edgejs-artifact.json")
 );
 const packageLock = readJson(path.join(repositoryRoot, "package-lock.json"));
+const nestedWasmManifest = readFileSync(
+  path.join(repositoryRoot, "nested-wasm/Cargo.toml"),
+  "utf8"
+);
+const nestedWasmLock = readFileSync(
+  path.join(repositoryRoot, "nested-wasm/Cargo.lock"),
+  "utf8"
+);
 
-assert.equal(contract.schemaVersion, 7);
+assert.equal(contract.schemaVersion, 8);
 assert.equal(contract.runtimeProvider, "quickjs");
 assert.equal(contract.upstream.commit, edgeArtifact.source.commit);
 assert.equal(contract.upstream.repository, edgeArtifact.source.repository);
 assert.equal(contract.toolchain.emitExceptionReferences, false);
 assert.equal(contract.toolchain.wasixccWasmExceptions, "legacy");
 assert.equal(contract.toolchain.wasixccRunWasmOpt, false);
-assert.equal(contract.toolchain.quickjsWebAssembly, false);
+assert.equal(contract.toolchain.quickjsWebAssembly, true);
 assert.equal(contract.toolchain.sysrootAsset, "sysroot-eh.tar.gz");
 assert.match(contract.toolchain.sysrootAssetSha256, /^[0-9a-f]{64}$/u);
 assert.equal(contract.sqlite.version, "3.53.4");
@@ -40,6 +48,25 @@ assert.deepEqual(
   ["sqlite3.c", "sqlite3.h", "sqlite3ext.h"]
 );
 assert.equal(contract.sqlite.extensionLoading, false);
+assert.deepEqual(contract.nestedWebAssembly, {
+  implementation: "wasmi",
+  package: "wasmi_c_api_impl",
+  version: "0.40.0",
+  crateChecksum:
+    "45e45f29eb7b0a2c0789c3c8075fc9c2c05182d6be2222702c6c848f72a2c2df",
+  license: "MIT OR Apache-2.0",
+  rustTarget: "wasm32-unknown-unknown",
+  archive: "nested-wasm/dist/lib/libwasmer.a",
+  capabilities: "none-without-explicit-javascript-imports"
+});
+assert.match(
+  nestedWasmManifest,
+  /package = "wasmi_c_api_impl", version = "=0\.40\.0"/u
+);
+assert.match(
+  nestedWasmLock,
+  /name = "wasmi_c_api_impl"\nversion = "0\.40\.0"\nsource = "[^"]+"\nchecksum = "45e45f29eb7b0a2c0789c3c8075fc9c2c05182d6be2222702c6c848f72a2c2df"/u
+);
 
 for (const patch of contract.patches) {
   const patchPath = path.join(repositoryRoot, patch.path);
@@ -124,6 +151,9 @@ const outputs = {
   edge_source_commit: contract.upstream.commit,
   edge_source_repository: contract.upstream.repository,
   emit_exnref: contract.toolchain.emitExceptionReferences ? "yes" : "no",
+  nested_wasm_crate_checksum: contract.nestedWebAssembly.crateChecksum,
+  nested_wasm_rust_target: contract.nestedWebAssembly.rustTarget,
+  nested_wasm_version: contract.nestedWebAssembly.version,
   quickjs_webassembly: contract.toolchain.quickjsWebAssembly ? "yes" : "no",
   runtime_provider: contract.runtimeProvider,
   rust_version: contract.toolchain.rustVersion,

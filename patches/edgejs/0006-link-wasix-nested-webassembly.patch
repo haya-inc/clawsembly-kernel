@@ -1,0 +1,74 @@
+diff --git i/CMakeLists.txt w/CMakeLists.txt
+index 795985c3..50389761 100644
+--- i/CMakeLists.txt
++++ w/CMakeLists.txt
+@@ -292,7 +292,6 @@ if(EDGE_QUICKJS_WEBASSEMBLY_ENABLED)
+   target_link_libraries(edge_runtime PRIVATE edge_quickjs_wasmer_c_api)
+   target_compile_definitions(edge_runtime PRIVATE
+     EDGE_QUICKJS_WEBASSEMBLY=1
+-    $<$<BOOL:${EDGE_IS_WASIX_TARGET}>:EDGE_QUICKJS_WEBASSEMBLY_IMPORTS=1>
+   )
+ endif()
+ if(EDGE_NAPI_PROVIDER STREQUAL "bundled-v8")
+diff --git i/cmake/EdgeWasmer.cmake w/cmake/EdgeWasmer.cmake
+index 107b4058..cd5032d6 100644
+--- i/cmake/EdgeWasmer.cmake
++++ w/cmake/EdgeWasmer.cmake
+@@ -35,7 +35,6 @@ function(edge_quickjs_wasmer_find_dist_root candidate out_var)
+   set(_edge_wasmer_found "")
+   if(candidate AND
+      EXISTS "${candidate}/include/wasm.h" AND
+-     EXISTS "${candidate}/include/wasmer.h" AND
+      EXISTS "${candidate}/lib/libwasmer.a")
+     set(_edge_wasmer_found "${candidate}")
+   endif()
+@@ -123,22 +122,31 @@ function(edge_configure_quickjs_webassembly)
+ 
+   set(_edge_wasmer_root "")
+   edge_quickjs_wasmer_find_dist_root("${EDGE_QUICKJS_WASMER_DIST_ROOT}" _edge_wasmer_root)
+-  if(NOT _edge_wasmer_root AND DEFINED ENV{HOME})
+-    edge_quickjs_wasmer_find_dist_root("$ENV{HOME}/.wasmer" _edge_wasmer_root)
+-  endif()
+-  if(NOT _edge_wasmer_root)
+-    edge_quickjs_wasmer_asset_name(_edge_wasmer_asset_name)
+-    edge_quickjs_wasmer_download("${_edge_wasmer_version}" "${_edge_wasmer_asset_name}" _edge_wasmer_root)
++  if(EDGE_IS_WASIX_TARGET)
++    if(NOT _edge_wasmer_root)
++      message(FATAL_ERROR
++        "WASIX QuickJS WebAssembly requires "
++        "EDGE_QUICKJS_WASMER_DIST_ROOT with include/wasm.h and "
++        "a WASIX-linkable lib/libwasmer.a")
++    endif()
++  else()
++    if(NOT _edge_wasmer_root AND DEFINED ENV{HOME})
++      edge_quickjs_wasmer_find_dist_root("$ENV{HOME}/.wasmer" _edge_wasmer_root)
++    endif()
++    if(NOT _edge_wasmer_root)
++      edge_quickjs_wasmer_asset_name(_edge_wasmer_asset_name)
++      edge_quickjs_wasmer_download("${_edge_wasmer_version}" "${_edge_wasmer_asset_name}" _edge_wasmer_root)
++    endif()
+   endif()
+ 
+   add_library(edge_quickjs_wasmer_c_api INTERFACE)
+   target_include_directories(edge_quickjs_wasmer_c_api INTERFACE
+     "${_edge_wasmer_root}/include"
+   )
++  target_link_libraries(edge_quickjs_wasmer_c_api INTERFACE
++    "${_edge_wasmer_root}/lib/libwasmer.a"
++  )
+   if(NOT EDGE_IS_WASIX_TARGET)
+-    target_link_libraries(edge_quickjs_wasmer_c_api INTERFACE
+-      "${_edge_wasmer_root}/lib/libwasmer.a"
+-    )
+     if(APPLE)
+       target_link_libraries(edge_quickjs_wasmer_c_api INTERFACE
+         "-framework CoreFoundation"
+@@ -151,7 +159,7 @@ function(edge_configure_quickjs_webassembly)
+     endif()
+   endif()
+ 
+-  message(STATUS "EDGE: QuickJS WebAssembly enabled using Wasmer C API at ${_edge_wasmer_root}")
++  message(STATUS "EDGE: QuickJS WebAssembly enabled using WebAssembly C API at ${_edge_wasmer_root}")
+   set(EDGE_QUICKJS_WEBASSEMBLY_ENABLED ON PARENT_SCOPE)
+   set(EDGE_QUICKJS_WASMER_DIST_ROOT_RESOLVED "${_edge_wasmer_root}" PARENT_SCOPE)
+ endfunction()

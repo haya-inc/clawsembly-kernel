@@ -33,9 +33,11 @@ on:
       - src/openclaw-gateway-health-probe.ts
       - src/openclaw-package-runtime-probe.ts
       - src/package-image-probe.ts
+      - nested-wasm/**
       - tests/clawsemblyfs.test.ts
       - tests/edgejs-wasix-browser.spec.ts
       - tests/network-egress-browser.spec.ts
+      - tests/openclaw-agent-turn-browser.spec.ts
       - tests/openclaw-entrypoint-browser.spec.ts
       - tests/openclaw-gateway-health-browser.spec.ts
       - tests/openclaw-package-image-browser.spec.ts
@@ -43,6 +45,7 @@ on:
       - tsconfig.app.json
       - vite.config.ts
       - openclaw-probe.html
+      - openclaw-agent-turn-probe.html
       - openclaw-gateway-health-probe.html
       - network-egress-probe.html
       - package-image-probe.html
@@ -283,6 +286,83 @@ jobs:
           test -s wasmer-js/dist/index.mjs
           test -s wasmer-js/dist/wasmer_js_bg.wasm
 
+      - name: Build browser-local nested WebAssembly interpreter
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/clawsembly-nested-wasm-target
+          NESTED_WASM_RUST_TARGET: ${{ steps.contract.outputs.nested_wasm_rust_target }}
+          WASMER_RUST_TOOLCHAIN: ${{ steps.contract.outputs.wasmer_rust_toolchain }}
+        run: |
+          set -euo pipefail
+          RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
+            cargo build \
+              --locked \
+              --release \
+              --target "${NESTED_WASM_RUST_TARGET}" \
+              --manifest-path nested-wasm/Cargo.toml
+          archive="$(
+            find "${CARGO_TARGET_DIR}/${NESTED_WASM_RUST_TARGET}/release" \
+              -maxdepth 1 \
+              -name 'libclawsembly_nested_wasm.a' \
+              -type f \
+              -print \
+              -quit
+          )"
+          test -s "${archive}"
+          for symbol in \
+            wasm_engine_new \
+            wasm_func_new \
+            wasm_instance_new \
+            wasm_memory_data \
+            wasm_module_new
+          do
+            strings "${archive}" | grep -qx "${symbol}"
+          done
+          mkdir -p nested-wasm/dist/include nested-wasm/dist/lib
+          cp "${archive}" nested-wasm/dist/lib/libwasmer.a
+          cp edgejs/deps/v8/third_party/wasm-api/wasm.h \
+            nested-wasm/dist/include/wasm.h
+          test -s nested-wasm/dist/include/wasm.h
+          test -s nested-wasm/dist/lib/libwasmer.a
+          RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
+            rustc \
+              --target "${NESTED_WASM_RUST_TARGET}" \
+              --crate-type lib \
+              --emit=obj \
+              -C opt-level=z \
+              nested-wasm/link-smoke.rs \
+              -o nested-wasm/dist/link-smoke.o
+          rust_sysroot="$(
+            RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" rustc --print sysroot
+          )"
+          rust_lld="$(
+            find "${rust_sysroot}/lib/rustlib" \
+              -path '*/bin/rust-lld' \
+              -type f \
+              -print \
+              -quit
+          )"
+          test -x "${rust_lld}"
+          "${rust_lld}" \
+            -flavor wasm \
+            --no-entry \
+            --export=clawsembly_nested_link_probe \
+            --allow-undefined \
+            --gc-sections \
+            nested-wasm/dist/link-smoke.o \
+            nested-wasm/dist/lib/libwasmer.a \
+            -o nested-wasm/dist/link-smoke.wasm
+          wasm-tools validate nested-wasm/dist/link-smoke.wasm
+          node nested-wasm/run-link-smoke.mjs \
+            nested-wasm/dist/link-smoke.wasm \
+            > nested-wasm/dist/link-smoke-evidence.json
+          jq -e \
+            '.status == "pass"
+              and .answer == 1
+              and (.resolvedCapiCalls | sort)
+                == (["wasm_engine_delete", "wasm_engine_new"] | sort)' \
+            nested-wasm/dist/link-smoke-evidence.json
+
       - name: Check and build the self-hostable network relay
         shell: bash
         run: |
@@ -299,6 +379,7 @@ jobs:
         env:
           EDGE_WASIX_EMIT_EXNREF: ${{ steps.contract.outputs.emit_exnref }}
           EDGE_QUICKJS_WEBASSEMBLY: ${{ steps.contract.outputs.quickjs_webassembly }}
+          EDGE_QUICKJS_WASMER_DIST_ROOT: ${{ github.workspace }}/nested-wasm/dist
           EDGE_SQLITE_AMALGAMATION_DIR: ${{ steps.sqlite.outputs.path }}
           WASIXCC_SYSROOT: ${{ steps.legacy_sysroot.outputs.path }}
           WASIXCC_RUN_WASM_OPT: ${{ steps.contract.outputs.wasixcc_run_wasm_opt }}
@@ -336,6 +417,7 @@ jobs:
             edgejs/build-quickjs-wasix/edgejs.wasm
             edgejs/edge-quickjs-wasix-browser-compatible.zip
             legacy-validation-error.txt
+            nested-wasm/dist/
             relay/target/release/clawsembly-network-relay
             wasmer-js/dist/
           if-no-files-found: error
@@ -558,11 +640,76 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Prove an official OpenClaw agent turn through capability egress
+        env:
+          CLAWSEMBLY_EDGE_WASIX: ${{ steps.diagnostic_node.outputs.path }}
+          CLAWSEMBLY_NETWORK_RELAY: ${{ github.workspace }}/relay/target/release/clawsembly-network-relay
+          CLAWSEMBLY_OPENCLAW_AGENT_TURN_PROOF: "1"
+          CLAWSEMBLY_OPENCLAW_AGENT_TURN_TIMEOUT_MS: "240000"
+          CLAWSEMBLY_OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
+        run: |
+          npx playwright test tests/openclaw-agent-turn-browser.spec.ts
+
+      - name: Preserve OpenClaw agent-turn attempt evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="artifacts/agent-turn-attempt"
+          mkdir -p "${destination}"
+          evidence="$(
+            find test-results \
+              -name openclaw-agent-turn-browser-evidence.json \
+              -type f \
+              -print \
+              | head -n 1
+          )"
+          if test -n "${evidence}"; then
+            cp "${evidence}" \
+              artifacts/openclaw-agent-turn-browser-evidence.json
+            cp "${evidence}" "${destination}/"
+          fi
+          while IFS= read -r context; do
+            cp "${context}" \
+              "${destination}/error-context-$(
+                basename "$(dirname "${context}")"
+              ).md"
+          done < <(
+            find test-results -name error-context.md -type f -print | sort
+          )
+          jq -n \
+            --arg evidence "${evidence}" \
+            --argjson errorContexts "$(
+              find "${destination}" \
+                -name 'error-context-*.md' \
+                -type f \
+                | sort \
+                | jq -Rsc 'split("\n") | map(select(length > 0))'
+            )" \
+            '{
+              schemaVersion: 1,
+              evidence: (if $evidence == "" then null else $evidence end),
+              errorContexts: $errorContexts
+            }' > "${destination}/manifest.json"
+
+      - name: Upload OpenClaw agent-turn diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: edgejs-wasix-agent-turn-diagnostics
+          path: artifacts/agent-turn-attempt/
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Assemble build evidence
         shell: bash
         env:
           EDGE_SOURCE_COMMIT: ${{ steps.contract.outputs.edge_source_commit }}
           EMIT_EXNREF: ${{ steps.contract.outputs.emit_exnref }}
+          NESTED_WASM_CRATE_CHECKSUM: ${{ steps.contract.outputs.nested_wasm_crate_checksum }}
+          NESTED_WASM_RUST_TARGET: ${{ steps.contract.outputs.nested_wasm_rust_target }}
+          NESTED_WASM_VERSION: ${{ steps.contract.outputs.nested_wasm_version }}
           QUICKJS_WEBASSEMBLY: ${{ steps.contract.outputs.quickjs_webassembly }}
           RUNTIME_PROVIDER: ${{ steps.contract.outputs.runtime_provider }}
           SYSROOT_ASSET_SHA256: ${{ steps.contract.outputs.sysroot_asset_sha256 }}
@@ -582,6 +729,8 @@ jobs:
           package_build_evidence="artifacts/openclaw-package-image-build-evidence.json"
           package_mount_evidence="artifacts/openclaw-package-image-browser-evidence.json"
           gateway_evidence="artifacts/openclaw-gateway-runtime-browser-evidence.json"
+          agent_turn_evidence="artifacts/openclaw-agent-turn-browser-evidence.json"
+          nested_wasm_smoke_evidence="nested-wasm/dist/link-smoke-evidence.json"
           gateway_health_evidence=""
           while IFS= read -r candidate; do
             if jq -e '.status == "gateway-health-pass"' "${candidate}" >/dev/null; then
@@ -599,14 +748,19 @@ jobs:
           test -s "${package_build_evidence}"
           test -s "${package_mount_evidence}"
           test -s "${gateway_evidence}"
+          test -s "${agent_turn_evidence}"
           test -n "${gateway_health_evidence}"
           test -s "${node_diagnostic_evidence}"
+          test -s "${nested_wasm_smoke_evidence}"
           cp "${gateway_health_evidence}" \
             artifacts/openclaw-gateway-health-browser-evidence.json
           wasm_sha256="$(sha256sum edgejs/build-quickjs-wasix/edgejs.wasm | awk '{print $1}')"
           archive_sha256="$(sha256sum edgejs/edge-quickjs-wasix-browser-compatible.zip | awk '{print $1}')"
           wasmer_js_sha256="$(sha256sum wasmer-js/dist/index.mjs | awk '{print $1}')"
           wasmer_wasm_sha256="$(sha256sum wasmer-js/dist/wasmer_js_bg.wasm | awk '{print $1}')"
+          nested_wasm_sha256="$(
+            sha256sum nested-wasm/dist/lib/libwasmer.a | awk '{print $1}'
+          )"
           relay_sha256="$(
             sha256sum relay/target/release/clawsembly-network-relay \
               | awk '{print $1}'
@@ -615,6 +769,10 @@ jobs:
             --arg archiveSha256 "${archive_sha256}" \
             --arg edgeSourceCommit "${EDGE_SOURCE_COMMIT}" \
             --arg emitExnref "${EMIT_EXNREF}" \
+            --arg nestedWasmCrateChecksum "${NESTED_WASM_CRATE_CHECKSUM}" \
+            --arg nestedWasmRustTarget "${NESTED_WASM_RUST_TARGET}" \
+            --arg nestedWasmSha256 "${nested_wasm_sha256}" \
+            --arg nestedWasmVersion "${NESTED_WASM_VERSION}" \
             --arg quickjsWebAssembly "${QUICKJS_WEBASSEMBLY}" \
             --arg runtimeProvider "${RUNTIME_PROVIDER}" \
             --arg relaySha256 "${relay_sha256}" \
@@ -636,7 +794,9 @@ jobs:
             --slurpfile packageMount "${package_mount_evidence}" \
             --slurpfile gateway "${gateway_evidence}" \
             --slurpfile gatewayHealth "${gateway_health_evidence}" \
+            --slurpfile agentTurn "${agent_turn_evidence}" \
             --slurpfile nodeDiagnostic "${node_diagnostic_evidence}" \
+            --slurpfile nestedWasmSmoke "${nested_wasm_smoke_evidence}" \
             --argjson edgePatches "$(
               jq '[.patches[] | {
                 path,
@@ -682,6 +842,15 @@ jobs:
                 emitExnref: $emitExnref,
                 quickjsWebAssembly: $quickjsWebAssembly
               },
+              nestedWebAssembly: {
+                implementation: "wasmi_c_api_impl",
+                version: $nestedWasmVersion,
+                crateChecksum: $nestedWasmCrateChecksum,
+                rustTarget: $nestedWasmRustTarget,
+                archiveSha256: $nestedWasmSha256,
+                ambientCapabilities: "none-without-explicit-javascript-imports",
+                linkSmoke: $nestedWasmSmoke[0]
+              },
               artifact: {
                 wasmSha256: $wasmSha256,
                 archiveSha256: $archiveSha256
@@ -700,7 +869,8 @@ jobs:
               gatewayDiagnostic: {
                 nodeVersionEvidence: $nodeDiagnostic[0],
                 browser: $gateway[0],
-                healthRpc: $gatewayHealth[0]
+                healthRpc: $gatewayHealth[0],
+                agentTurn: $agentTurn[0]
               }
             }' > artifacts/edgejs-wasix-build-evidence.json
           cat artifacts/edgejs-wasix-build-evidence.json
