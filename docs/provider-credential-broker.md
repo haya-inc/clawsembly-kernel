@@ -73,3 +73,18 @@ with only the opaque operation capability, and observe all of the following:
    uploaded artifacts; and
 5. wrong capability, model, endpoint, request budget, and ambient network
    authority denied independently of OpenClaw.
+
+The assistant marker is not searched recursively. OpenClaw retains the input
+under metadata such as `finalPromptText`, so recursive matching can falsely
+accept a provider timeout that merely echoes the requested marker. The
+`strict-assistant-payload-v1` validator instead requires all of the following:
+
+- top-level `status: "ok"` and `summary: "completed"`;
+- `aborted: false`, `replayInvalid: false`, and `stopReason: "stop"`;
+- a successful assistant-stage execution with no fallback;
+- the exact marker in `result.payloads[].text`; and
+- the same exact text in both final-assistant fields.
+
+A unit regression test rejects prompt-only echoes, timeouts, aborted results,
+fallbacks, and marker substrings. The final public artifact-binding step
+rechecks the same fields with `jq` before publishing the proof.

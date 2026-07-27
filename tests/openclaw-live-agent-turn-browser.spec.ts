@@ -2,12 +2,21 @@ import { expect, test } from "@playwright/test";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { isCompletedAgentTurnResponse } from
+  "../src/openclaw-agent-turn-response";
 
 type LiveAgentTurnEvidence = {
+  agentResponseValidation: {
+    arbitraryMetadataSearched: boolean;
+    contract: string;
+    promptEchoesAccepted: boolean;
+  };
   claim: string;
   client: {
     args: string[];
+    completion: string;
     distinctGuestProcess: boolean;
+    health: unknown;
     result: {
       stderr: string;
       stdout: string;
@@ -155,6 +164,11 @@ test("unmodified OpenClaw completes a live model turn over guest TLS", async ({
     expect(evidence).toMatchObject({
       schemaVersion: 1,
       status: "live-agent-turn-pass",
+      agentResponseValidation: {
+        arbitraryMetadataSearched: false,
+        contract: "strict-assistant-payload-v1",
+        promptEchoesAccepted: false
+      },
       liveProvider: {
         api: "openai-completions",
         authentication: {
@@ -218,6 +232,7 @@ test("unmodified OpenClaw completes a live model turn over guest TLS", async ({
           "60",
           "--json"
         ],
+        completion: "agent-turn-output-observed",
         distinctGuestProcess: true
       },
       launchHarness: {
@@ -225,7 +240,9 @@ test("unmodified OpenClaw completes a live model turn over guest TLS", async ({
       }
     });
     expect(evidence.claim).toContain("live GitHub Models reply");
-    expect(evidence.client.result.stdout).toContain(responseMarker);
+    expect(
+      isCompletedAgentTurnResponse(evidence.client.health, responseMarker)
+    ).toBe(true);
     expect(evidence.gateway.stdout).toContain("[ws] ← req agent");
     expect(evidence.gateway.stdout).toContain("[ws] → res ✓ agent");
     expect([

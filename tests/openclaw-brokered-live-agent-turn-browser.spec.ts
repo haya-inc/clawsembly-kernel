@@ -2,14 +2,23 @@ import { expect, test } from "@playwright/test";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { isCompletedAgentTurnResponse } from
+  "../src/openclaw-agent-turn-response";
 
 type JsonRecord = Record<string, unknown>;
 
 type BrokeredLiveAgentTurnEvidence = {
+  agentResponseValidation: {
+    arbitraryMetadataSearched: boolean;
+    contract: string;
+    promptEchoesAccepted: boolean;
+  };
   claim: string;
   client: {
     args: string[];
+    completion: string;
     distinctGuestProcess: boolean;
+    health: unknown;
     result: {
       stderr: string;
       stdout: string;
@@ -309,6 +318,11 @@ function jsonLines(value: string): JsonRecord[] {
       expect(browserEvidence).toMatchObject({
         schemaVersion: 1,
         status: "brokered-live-agent-turn-pass",
+        agentResponseValidation: {
+          arbitraryMetadataSearched: false,
+          contract: "strict-assistant-payload-v1",
+          promptEchoesAccepted: false
+        },
         credentialBroker: {
           api: "openai-completions",
           browserReceivesProviderCredential: false,
@@ -391,6 +405,7 @@ function jsonLines(value: string): JsonRecord[] {
             "60",
             "--json"
           ],
+          completion: "agent-turn-output-observed",
           distinctGuestProcess: true
         },
         launchHarness: {
@@ -400,7 +415,12 @@ function jsonLines(value: string): JsonRecord[] {
       expect(browserEvidence.claim).toContain(
         "provider credential remained in the OSS host broker"
       );
-      expect(browserEvidence.client.result.stdout).toContain(responseMarker);
+      expect(
+        isCompletedAgentTurnResponse(
+          browserEvidence.client.health,
+          responseMarker
+        )
+      ).toBe(true);
       expect(browserEvidence.gateway.stdout).toContain("[ws] ← req agent");
       expect(browserEvidence.gateway.stdout).toContain("[ws] → res ✓ agent");
       expect([

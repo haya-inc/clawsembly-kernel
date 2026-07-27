@@ -8,6 +8,7 @@
     "src/clawsemblyfs.ts",
     "src/edgejs-wasix-probe.ts",
     "src/main.ts",
+    "src/openclaw-agent-turn-response.ts",
     "src/openclaw-entrypoint-probe.ts",
     "src/openclaw-gateway-health-probe.ts",
     "src/openclaw-install-lifecycle-probe.ts",

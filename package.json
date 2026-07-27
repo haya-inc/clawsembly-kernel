@@ -19,11 +19,12 @@
     "build": "npm run typecheck && vite build",
     "preview": "vite preview",
     "test:clawsemblyfs": "node --test tests/clawsemblyfs.test.ts",
+    "test:agent-turn-response": "node --test tests/openclaw-agent-turn-response.test.ts",
     "test:browser": "playwright test",
     "test:edgejs": "node scripts/run-edgejs-openclaw-state-contract.mjs",
     "relay:check": "cargo fmt --manifest-path relay/Cargo.toml -- --check && cargo check --locked --manifest-path relay/Cargo.toml && cargo test --locked --manifest-path relay/Cargo.toml",
     "broker:check": "cargo fmt --manifest-path provider-broker/Cargo.toml -- --check && cargo check --locked --manifest-path provider-broker/Cargo.toml && cargo test --locked --manifest-path provider-broker/Cargo.toml",
-    "check": "npm run contract:check && npm run build && npm run relay:check && npm run broker:check && npm run test:clawsemblyfs && npm run test:browser && npm run test:edgejs"
+    "check": "npm run contract:check && npm run build && npm run relay:check && npm run broker:check && npm run test:clawsemblyfs && npm run test:agent-turn-response && npm run test:browser && npm run test:edgejs"
   },
   "dependencies": {
     "@sqlite.org/sqlite-wasm": "3.53.0-build1"

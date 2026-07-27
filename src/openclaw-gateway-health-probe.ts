@@ -4,6 +4,8 @@ import {
   inspectOpenClawInstallState,
   runOpenClawInstallLifecycle
 } from "./openclaw-install-lifecycle";
+import { isCompletedAgentTurnResponse } from
+  "./openclaw-agent-turn-response";
 import { restoreDirectoryTreeFromOpfs } from "./opfs-directory-store";
 
 type OpenClawPackage = {
@@ -27,16 +29,6 @@ type HealthResponse = {
     errors: unknown[];
     loaded: unknown[];
   };
-};
-
-type AgentTurnResponse = {
-  meta?: {
-    transport?: string;
-  };
-  payloads?: Array<{
-    text?: string;
-  }>;
-  result?: unknown;
 };
 
 type LiveProviderCapability = {
@@ -228,27 +220,6 @@ function isHealthyResponse(value: unknown): value is HealthResponse {
     && Array.isArray(candidate.plugins?.loaded)
     && Array.isArray(candidate.plugins?.errors)
     && candidate.plugins.errors.length === 0;
-}
-
-function containsAgentTurnMarker(value: unknown, marker: string): boolean {
-  if (typeof value === "string") return value.includes(marker);
-  if (Array.isArray(value)) {
-    return value.some((entry) => containsAgentTurnMarker(entry, marker));
-  }
-  if (typeof value !== "object" || value === null) return false;
-  return Object.values(value).some(
-    (entry) => containsAgentTurnMarker(entry, marker)
-  );
-}
-
-function isAgentTurnResponse(
-  value: unknown,
-  marker: string
-): value is AgentTurnResponse {
-  return typeof value === "object"
-    && value !== null
-    && !Array.isArray(value)
-    && containsAgentTurnMarker(value, marker);
 }
 
 function consumeLiveProviderCapability(): LiveProviderCapability | undefined {
@@ -983,7 +954,7 @@ async function runProbe(): Promise<void> {
           try {
             const parsedOutput = parseJsonOutput(captured);
             return agentTurnProof
-              ? isAgentTurnResponse(parsedOutput, agentTurnMarker)
+              ? isCompletedAgentTurnResponse(parsedOutput, agentTurnMarker)
               : isHealthyResponse(parsedOutput);
           } catch {
             return false;
@@ -1049,7 +1020,7 @@ async function runProbe(): Promise<void> {
         }
       }
       const attemptPassed = agentTurnProof
-        ? isAgentTurnResponse(attemptResponse, agentTurnMarker)
+        ? isCompletedAgentTurnResponse(attemptResponse, agentTurnMarker)
         : isHealthyResponse(attemptResponse);
       return {
         attempt,
@@ -1168,6 +1139,25 @@ async function runProbe(): Promise<void> {
       network: networkEvidence,
       isolation: isolationEvidence,
       launchHarness: launchHarnessEvidence,
+      ...(agentTurnProof
+        ? {
+            agentResponseValidation: {
+              contract: "strict-assistant-payload-v1",
+              expectedText: agentTurnMarker,
+              acceptedTextSources: [
+                "result.payloads[].text",
+                "result.meta.finalAssistantVisibleText",
+                "result.meta.finalAssistantRawText"
+              ],
+              requiredOutcome:
+                "status=ok; summary=completed; aborted=false; "
+                + "stopReason=stop; fallbackUsed=false; "
+                + "assistant-stage success",
+              arbitraryMetadataSearched: false,
+              promptEchoesAccepted: false
+            }
+          }
+        : {}),
       gateway: {
         args: gatewayArgs,
         readinessMarker,

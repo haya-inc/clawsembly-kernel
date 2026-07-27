@@ -30,6 +30,7 @@ on:
       - src/clawsemblyfs.ts
       - src/edgejs-wasix-probe.ts
       - src/network-egress-probe.ts
+      - src/openclaw-agent-turn-response.ts
       - src/openclaw-entrypoint-probe.ts
       - src/openclaw-gateway-health-probe.ts
       - src/openclaw-package-runtime-probe.ts
@@ -39,6 +40,7 @@ on:
       - tests/edgejs-wasix-browser.spec.ts
       - tests/network-egress-browser.spec.ts
       - tests/openclaw-agent-turn-browser.spec.ts
+      - tests/openclaw-agent-turn-response.test.ts
       - tests/openclaw-brokered-live-agent-turn-browser.spec.ts
       - tests/openclaw-entrypoint-browser.spec.ts
       - tests/openclaw-gateway-health-browser.spec.ts
@@ -990,7 +992,7 @@ jobs:
     permissions:
       models: read
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Download live-proof inputs
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
@@ -1031,7 +1033,9 @@ jobs:
           CLAWSEMBLY_OPENCLAW_LIVE_AGENT_TURN_TIMEOUT_MS: "240000"
           CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/live-inputs/wasmer-sdk
         run: |
-          npx playwright test tests/openclaw-live-agent-turn-browser.spec.ts
+          npx playwright test \
+            --retries=1 \
+            tests/openclaw-live-agent-turn-browser.spec.ts
 
       - name: Preserve the raw guest-TLS proof before the next browser run
         shell: bash
@@ -1061,6 +1065,7 @@ jobs:
           CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/live-inputs/wasmer-sdk
         run: |
           npx playwright test \
+            --retries=1 \
             tests/openclaw-brokered-live-agent-turn-browser.spec.ts
 
       - name: Preserve live OpenClaw agent-turn attempt evidence
@@ -1166,10 +1171,58 @@ jobs:
           test -s "${brokered}"
           test -s "${broker_binary}"
           jq -e '.schemaVersion == 4' "${base}" >/dev/null
-          jq -e '.status == "live-agent-turn-pass"' "${live}" >/dev/null
-          jq -e \
-            '.status == "brokered-live-agent-turn-pass"' \
-            "${brokered}" >/dev/null
+          jq -e '
+            . as $proof
+            | .status == "live-agent-turn-pass"
+            and .agentResponseValidation.contract
+              == "strict-assistant-payload-v1"
+            and .agentResponseValidation.arbitraryMetadataSearched == false
+            and .agentResponseValidation.promptEchoesAccepted == false
+            and .client.health.status == "ok"
+            and .client.health.summary == "completed"
+            and .client.health.result.meta.aborted == false
+            and .client.health.result.meta.replayInvalid == false
+            and .client.health.result.meta.stopReason == "stop"
+            and .client.health.result.meta.executionTrace.fallbackUsed == false
+            and any(
+              .client.health.result.meta.executionTrace.attempts[]?;
+              .result == "success" and .stage == "assistant"
+            )
+            and any(
+              .client.health.result.payloads[]?;
+              .text == $proof.liveProvider.expectedMarker
+            )
+            and .client.health.result.meta.finalAssistantVisibleText
+              == $proof.liveProvider.expectedMarker
+            and .client.health.result.meta.finalAssistantRawText
+              == $proof.liveProvider.expectedMarker
+          ' "${live}" >/dev/null
+          jq -e '
+            . as $proof
+            | .status == "brokered-live-agent-turn-pass"
+            and .agentResponseValidation.contract
+              == "strict-assistant-payload-v1"
+            and .agentResponseValidation.arbitraryMetadataSearched == false
+            and .agentResponseValidation.promptEchoesAccepted == false
+            and .client.health.status == "ok"
+            and .client.health.summary == "completed"
+            and .client.health.result.meta.aborted == false
+            and .client.health.result.meta.replayInvalid == false
+            and .client.health.result.meta.stopReason == "stop"
+            and .client.health.result.meta.executionTrace.fallbackUsed == false
+            and any(
+              .client.health.result.meta.executionTrace.attempts[]?;
+              .result == "success" and .stage == "assistant"
+            )
+            and any(
+              .client.health.result.payloads[]?;
+              .text == $proof.credentialBroker.expectedMarker
+            )
+            and .client.health.result.meta.finalAssistantVisibleText
+              == $proof.credentialBroker.expectedMarker
+            and .client.health.result.meta.finalAssistantRawText
+              == $proof.credentialBroker.expectedMarker
+          ' "${brokered}" >/dev/null
           jq -e --slurpfile base "${base}" '
             .artifact.sha256 == $base[0].artifact.wasmSha256
             and .image.sha256 == $base[0].packageImage.build.image.sha256
@@ -1228,6 +1281,12 @@ jobs:
               == "live-agent-turn-pass"
             and .openclawRuntimeProof.brokeredLiveAgentTurn.status
               == "brokered-live-agent-turn-pass"
+            and .openclawRuntimeProof.liveAgentTurn
+              .agentResponseValidation.contract
+              == "strict-assistant-payload-v1"
+            and .openclawRuntimeProof.brokeredLiveAgentTurn
+              .agentResponseValidation.contract
+              == "strict-assistant-payload-v1"
             and .providerCredentialBroker.browserReceivesProviderCredential
               == false
             and .providerCredentialBroker.providerCredentialRecorded == false
