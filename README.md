@@ -172,13 +172,13 @@ Experimental. Current execution milestones:
   official postinstall SQLite registry without re-running installation. A
   second restored directory then starts the unmodified Gateway and completes
   its authenticated health RPC.
-- The public source-build lane also runs a separate live-provider compatibility
-  proof. The unmodified OpenClaw CLI asks the unmodified Gateway for an agent
-  turn; guest Node TLS validates `models.github.ai`, while the raw-TCP relay
-  grants only that exact DNS name on port 443 and cannot terminate or inspect
-  TLS. A separate GitHub Actions job has `models: read` but no repository
-  contents permission and supplies its short-lived token without placing it in
-  URLs, logs, or evidence artifacts.
+- The public source-build lane also runs an actual self-hosted model proof.
+  A checksum-pinned llama.cpp release loads the Apache-2.0 Qwen2.5 0.5B
+  Instruct GGUF on host loopback. The unmodified OpenClaw CLI asks the
+  unmodified Gateway for one agent turn and receives the strict assistant
+  marker. Only a one-request operation capability enters the browser; the
+  GGUF, inference process, and model-service API key remain outside both WASIX
+  guests. The proof job has no repository or external AI-service permission.
 
 This does not yet claim the North Star is complete. The source-built runtime now
 has an explicit, workload-scoped Node compatibility profile: it transparently
@@ -187,18 +187,19 @@ version exposed to OpenClaw, and proves why that floor is safe for this workload
 instead of claiming general Node conformance. SQLite WAL-reset safety is pinned
 to 3.53.4 and its compiled browser binding is proven. Nested JavaScript
 WebAssembly, the deterministic Gateway-backed agent path, durable state, and a
-live TLS provider path are also proven. The remaining security gate is an
-opaque provider-credential broker: the live compatibility proof currently
-hands a short-lived job token to the guest and narrows its usable network path,
-whereas production credentials must remain outside it and be represented only
-by revocable capabilities.
+real self-hosted OSS model turn are also proven. This closes the model-service
+credential boundary for the demonstrated path. It does not yet claim complete
+compatibility for every OpenClaw plugin, tool, channel, or hostile multi-tenant
+deployment.
 See
 [the artifact-derived SQLite contract](docs/openclaw-sqlite-contract.md) and
 [the Node compatibility profile](docs/node-compatibility-profile.md). The
 [install lifecycle contract](docs/openclaw-install-lifecycle.md) records the
 executed effects and deliberately unauthorized native build. The
 [OPFS directory store](docs/opfs-directory-store.md) records the commit,
-integrity, recovery, and browser-restart contract.
+integrity, recovery, and browser-restart contract. The
+[model capability broker](docs/model-capability-broker.md) records the
+self-hosted inference and credential boundary.
 
 ## License
 

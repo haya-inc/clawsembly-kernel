@@ -11,9 +11,6 @@ export default defineConfig({
   },
   webServer: {
     command: `npm run dev -- --host 127.0.0.1 --port ${port}`,
-    env: {
-      CLAWSEMBLY_LIVE_PROVIDER_API_KEY: ""
-    },
     url: baseURL,
     reuseExistingServer: false
   }

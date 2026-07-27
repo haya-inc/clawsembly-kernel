@@ -134,11 +134,11 @@ This still does not satisfy the North Star:
   contract. The generation-addressed OPFS store separately proves recovery of
   that official state after a complete browser restart. The deterministic
   browser fixture proves the unmodified Gateway-backed agent path and its
-  capability-authorized TCP transport. A separate lane proves a live model
-  response over guest-validated TLS. That compatibility lane still injects a
-  short-lived job token into guest memory and relies on a DNS-derived TCP
-  restriction, so an opaque provider-credential broker remains unproven.
+  capability-authorized TCP transport. A separate lane proves an actual model
+  response from checksum-pinned llama.cpp and Qwen processes. The guest
+  receives only a one-request operation capability; the model-service
+  credential, GGUF, and inference process stay on host loopback.
 
-This remaining credential-boundary gate stays explicit in the evidence;
-Gateway health or a raw-token TLS proof cannot silently turn it into a
-completion claim.
+This proof remains scoped to the pinned OpenClaw workload; it does not turn
+Gateway health or one model response into a claim of complete Node or plugin
+compatibility.

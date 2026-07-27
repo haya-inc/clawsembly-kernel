@@ -316,21 +316,23 @@ returns the assistant marker to the CLI. The fixture records the request
 method, path, authorization, model, streaming flag, message roles, and
 instruction without receiving relay credentials or any wider guest authority.
 
-A separate live-provider lane replaces the fixture grant with exactly
-`models.github.ai:443`. The relay remains an opaque raw-TCP carrier: the
-unmodified guest's Node TLS stack sends SNI, validates the public certificate,
-and exchanges the streaming chat-completion response end to end. The source
-build job exports only integrity-addressed runtime inputs and a `git archive`
-proof runner. A separate job has `models: read` and no repository contents
-permission; its guest network capability allows the Models DNS endpoint but
-not GitHub's repository API. The browser harness injects that short-lived token
-outside the URL, the probe deletes the injection point after consuming it, and
-recursive redaction plus test assertions prevent the token from entering
-published evidence. This establishes live TLS and provider compatibility, but
-deliberately does not claim the final credential boundary: the token still
-exists inside the guest's in-memory OpenClaw configuration.
-Production use needs an opaque broker that holds provider credentials outside
-the guest and exposes only the authorized inference operation.
+A separate self-hosted-model lane replaces the deterministic fixture with an
+actual OSS inference stack. The job downloads llama.cpp release `b9637` and
+Qwen2.5 0.5B Instruct Q4_K_M from immutable public revisions, verifies the
+release archive, executable, GGUF SHA-256, and GGUF byte length, and then binds
+both processes to host loopback. The model runs with its full 32K context so
+OpenClaw completes the requested turn without widening the one-request
+capability for automatic compaction.
+
+An OSS broker is the only inference endpoint visible to the browser kernel.
+The browser receives a bearer token authorizing one streaming completion for
+one exact model. The broker validates that request, replaces the bearer with a
+different host-local llama.cpp API key, and forwards it only to
+`127.0.0.1:18795`. Allowing plaintext upstream transport requires the explicit
+`--allow-loopback-http-upstream` flag and still rejects non-loopback hosts,
+implicit ports, query strings, redirects, and system proxies. Thus the GGUF,
+model-service credential, inference process, and arbitrary host networking
+never enter either WASIX guest.
 
 The Edge.js implementation baseline and compatibility claim remain distinct.
 `edgejs --version` reports the source identity `v24.13.2-pre`, while
@@ -345,10 +347,9 @@ affected by the WAL-reset corruption bug. This kernel queries the loaded SQLite
 library and proves 3.53.4, above OpenClaw's 3.51.3 safe floor, before the
 unmodified Gateway uses state. The required install lifecycle effects execute
 on the same filesystem before Gateway startup. The deterministic fixture proves
-the real OpenClaw agent code path and capability transport. The live lane proves
-model inference and Internet TLS. Durable recovery is separately proven through
-a complete browser restart. An opaque provider-credential broker remains the
-final capability-boundary gate.
+the real OpenClaw agent code path and capability transport. The self-hosted lane
+proves actual inference through a one-request opaque capability. Durable
+recovery is separately proven through a complete browser restart.
 
 Model-provider traffic can use this separately authorized self-hostable
 transport, but it cannot substitute for local Gateway loopback. Browser-local
@@ -385,10 +386,11 @@ loopback exchange described above. The evidence pins:
   `sha512-ycF3yPcbjN6bUPeaUx6Mh6vze1hQWoD3CT/wWcmD7a8xaHHHRUaAlaq+lFxMHf1ssEgODVAwjlzYqp2twkYZ7g==`
 
 The same workflow extends the lane through Gateway readiness, authenticated
-client RPC, the deterministic agent turn, fresh-browser OPFS recovery, and a
-live authorized TLS agent turn. It does not yet satisfy the complete North Star
-because the compatibility proof supplies its short-lived provider credential
-to the guest rather than resolving an opaque inference capability outside it.
+client RPC, the deterministic agent turn, fresh-browser OPFS recovery, and an
+actual Qwen turn through an opaque inference capability. The demonstrated
+model path no longer depends on a proprietary hosted API or places its
+model-service credential in the guest. Complete compatibility across every
+OpenClaw plugin, tool, and channel remains outside this proof's current scope.
 
 ## OPFS WAL precondition
 

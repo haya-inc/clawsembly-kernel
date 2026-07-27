@@ -33,8 +33,7 @@ use zeroize::Zeroize;
 
 const BROKER_PATH: &str = "/v1/chat/completions";
 const DEFAULT_LISTEN: &str = "127.0.0.1:18794";
-const DEFAULT_MODEL: &str = "openai/gpt-4o";
-const DEFAULT_UPSTREAM: &str = "https://models.github.ai/inference/chat/completions";
+const DEFAULT_MODEL: &str = "qwen2.5-0.5b-instruct";
 const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
@@ -53,6 +52,7 @@ impl Drop for Secret {
 }
 
 struct Config {
+    allow_loopback_http_upstream: bool,
     broker_token: Secret,
     listen: SocketAddr,
     max_requests: u64,
@@ -63,14 +63,18 @@ struct Config {
 
 impl Config {
     fn parse() -> anyhow::Result<Self> {
+        let mut allow_loopback_http_upstream = false;
         let mut listen = SocketAddr::from_str(DEFAULT_LISTEN).unwrap();
         let mut max_requests = 100_u64;
         let mut model = DEFAULT_MODEL.to_string();
-        let mut upstream = Url::parse(DEFAULT_UPSTREAM).unwrap();
+        let mut upstream = None;
         let mut args = env::args().skip(1);
 
         while let Some(argument) = args.next() {
             match argument.as_str() {
+                "--allow-loopback-http-upstream" => {
+                    allow_loopback_http_upstream = true;
+                }
                 "--listen" => {
                     listen = args
                         .next()
@@ -89,18 +93,21 @@ impl Config {
                     model = args.next().context("--model requires a value")?;
                 }
                 "--upstream" => {
-                    upstream = Url::parse(&args.next().context("--upstream requires a URL")?)
-                        .context("--upstream must be an absolute URL")?;
+                    upstream = Some(
+                        Url::parse(&args.next().context("--upstream requires a URL")?)
+                            .context("--upstream must be an absolute URL")?,
+                    );
                 }
                 "--help" | "-h" => {
                     println!(
                         "Usage: clawsembly-provider-broker \\
                          [--listen 127.0.0.1:18794] \\
                          [--upstream HTTPS_URL] [--model MODEL_ID] \\
-                         [--max-requests COUNT]\n\n\
+                         [--max-requests COUNT] \\
+                         [--allow-loopback-http-upstream]\n\n\
                          Set CLAWSEMBLY_PROVIDER_BROKER_TOKEN to the opaque \\
                          guest capability and CLAWSEMBLY_PROVIDER_API_KEY to \\
-                         the provider credential."
+                         the model-service credential."
                     );
                     std::process::exit(0);
                 }
@@ -108,8 +115,9 @@ impl Config {
             }
         }
 
+        let upstream = upstream.context("--upstream is required")?;
         validate_listen(listen)?;
-        validate_upstream(&upstream)?;
+        validate_upstream(&upstream, allow_loopback_http_upstream)?;
         validate_model(&model)?;
         if !(1..=10_000).contains(&max_requests) {
             bail!("--max-requests must be between 1 and 10000");
@@ -122,6 +130,7 @@ impl Config {
         validate_provider_api_key(&provider_api_key)?;
 
         Ok(Self {
+            allow_loopback_http_upstream,
             broker_token: Secret(broker_token),
             listen,
             max_requests,
@@ -147,8 +156,9 @@ struct BrokerState {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = Config::parse()?;
+    let upstream_uses_https = config.upstream.scheme() == "https";
     let client = Client::builder()
-        .https_only(true)
+        .https_only(upstream_uses_https)
         .min_tls_version(tls::Version::TLS_1_2)
         .connect_timeout(Duration::from_secs(10))
         .read_timeout(Duration::from_secs(90))
@@ -163,6 +173,7 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to build provider HTTPS client")?;
     let listen = config.listen;
     let authority = upstream_authority(&config.upstream);
+    let upstream_scheme = config.upstream.scheme().to_string();
     let model = config.model.clone();
     let max_requests = config.max_requests;
     let state = Arc::new(BrokerState {
@@ -197,6 +208,8 @@ async fn main() -> anyhow::Result<()> {
             "maxResponseBytes": MAX_RESPONSE_BYTES,
             "maxRequests": max_requests,
             "maxConcurrency": 1,
+            "upstreamScheme": upstream_scheme,
+            "loopbackHttpExplicitlyAllowed": config.allow_loopback_http_upstream,
             "providerCredentialRecorded": false
         })
     );
@@ -386,10 +399,7 @@ fn validate_listen(listen: SocketAddr) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_upstream(upstream: &Url) -> anyhow::Result<()> {
-    if upstream.scheme() != "https" {
-        bail!("--upstream must use https");
-    }
+fn validate_upstream(upstream: &Url, allow_loopback_http_upstream: bool) -> anyhow::Result<()> {
     if !upstream.username().is_empty()
         || upstream.password().is_some()
         || upstream.query().is_some()
@@ -397,19 +407,42 @@ fn validate_upstream(upstream: &Url) -> anyhow::Result<()> {
     {
         bail!("--upstream may not contain credentials, query, or fragment");
     }
-    if upstream.port_or_known_default() != Some(443) {
-        bail!("--upstream must use port 443");
-    }
     let Some(host) = upstream.host_str() else {
-        bail!("--upstream must use an exact DNS name");
+        bail!("--upstream must name a host");
     };
-    if host.is_empty() || host.parse::<IpAddr>().is_ok() {
-        bail!("--upstream must use an exact DNS name");
-    }
     if upstream.path() == "/" || upstream.path().ends_with('/') {
         bail!("--upstream must name one exact completion endpoint");
     }
-    Ok(())
+    match upstream.scheme() {
+        "https" => {
+            if upstream.port_or_known_default() != Some(443) {
+                bail!("HTTPS --upstream must use port 443");
+            }
+            if host.is_empty() || host.parse::<IpAddr>().is_ok() {
+                bail!("HTTPS --upstream must use an exact DNS name");
+            }
+            Ok(())
+        }
+        "http" if allow_loopback_http_upstream => {
+            let ip_host = host
+                .strip_prefix('[')
+                .and_then(|value| value.strip_suffix(']'))
+                .unwrap_or(host);
+            let loopback_host = host.eq_ignore_ascii_case("localhost")
+                || ip_host
+                    .parse::<IpAddr>()
+                    .is_ok_and(|address| address.is_loopback());
+            if !loopback_host {
+                bail!("HTTP --upstream must use a loopback host");
+            }
+            if upstream.port().is_none_or(|port| port == 0) {
+                bail!("HTTP --upstream must name an explicit nonzero port");
+            }
+            Ok(())
+        }
+        "http" => bail!("HTTP --upstream requires --allow-loopback-http-upstream"),
+        _ => bail!("--upstream must use https or explicitly allowed loopback http"),
+    }
 }
 
 fn upstream_authority(upstream: &Url) -> String {
@@ -489,15 +522,37 @@ mod tests {
 
     #[test]
     fn upstream_must_be_one_https_dns_endpoint() {
-        assert!(validate_upstream(&Url::parse(DEFAULT_UPSTREAM).unwrap()).is_ok());
+        let valid = "https://inference.example/v1/chat/completions";
+        assert!(validate_upstream(&Url::parse(valid).unwrap(), false).is_ok());
         for denied in [
-            "http://models.github.ai/inference/chat/completions",
+            "http://inference.example/v1/chat/completions",
             "https://127.0.0.1/inference/chat/completions",
-            "https://token@models.github.ai/inference/chat/completions",
-            "https://models.github.ai/inference/chat/completions?target=other",
-            "https://models.github.ai/",
+            "https://token@inference.example/v1/chat/completions",
+            "https://inference.example/v1/chat/completions?target=other",
+            "https://inference.example/",
         ] {
-            assert!(validate_upstream(&Url::parse(denied).unwrap()).is_err());
+            assert!(validate_upstream(&Url::parse(denied).unwrap(), false).is_err());
+        }
+    }
+
+    #[test]
+    fn loopback_http_requires_an_explicit_narrow_exception() {
+        for allowed in [
+            "http://127.0.0.1:18795/v1/chat/completions",
+            "http://[::1]:18795/v1/chat/completions",
+            "http://localhost:18795/v1/chat/completions",
+        ] {
+            let upstream = Url::parse(allowed).unwrap();
+            assert!(validate_upstream(&upstream, true).is_ok());
+            assert!(validate_upstream(&upstream, false).is_err());
+        }
+        for denied in [
+            "http://inference.example:18795/v1/chat/completions",
+            "http://127.0.0.1/v1/chat/completions",
+            "http://token@127.0.0.1:18795/v1/chat/completions",
+            "http://127.0.0.1:18795/v1/chat/completions?target=other",
+        ] {
+            assert!(validate_upstream(&Url::parse(denied).unwrap(), true).is_err());
         }
     }
 
@@ -570,12 +625,16 @@ mod tests {
             provider_api_key: Secret("host-provider-secret".to_string()),
             request_count: AtomicU64::new(0),
             request_sequence: AtomicU64::new(0),
-            upstream: Url::parse(DEFAULT_UPSTREAM).unwrap(),
+            upstream: Url::parse("https://inference.example/v1/chat/completions").unwrap(),
         };
-        let body =
-            Bytes::from_static(br#"{"model":"openai/gpt-4o","stream":true,"messages":[{}]}"#);
+        let body = Bytes::from_static(
+            br#"{"model":"qwen2.5-0.5b-instruct","stream":true,"messages":[{}]}"#,
+        );
         let request = build_provider_request(&state, body.clone()).unwrap();
-        assert_eq!(request.url().as_str(), DEFAULT_UPSTREAM);
+        assert_eq!(
+            request.url().as_str(),
+            "https://inference.example/v1/chat/completions"
+        );
         assert_eq!(
             request.headers().get(AUTHORIZATION).unwrap(),
             "Bearer host-provider-secret"

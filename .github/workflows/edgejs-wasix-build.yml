@@ -13,7 +13,7 @@ on:
       - contracts/edgejs-browser-build.json
       - contracts/openclaw-artifact.json
       - contracts/openclaw-package.generated.json
-      - docs/provider-credential-broker.md
+      - docs/model-capability-broker.md
       - package-lock.json
       - package.json
       - patches/edgejs/**
@@ -41,10 +41,9 @@ on:
       - tests/network-egress-browser.spec.ts
       - tests/openclaw-agent-turn-browser.spec.ts
       - tests/openclaw-agent-turn-response.test.ts
-      - tests/openclaw-brokered-live-agent-turn-browser.spec.ts
       - tests/openclaw-entrypoint-browser.spec.ts
       - tests/openclaw-gateway-health-browser.spec.ts
-      - tests/openclaw-live-agent-turn-browser.spec.ts
+      - tests/openclaw-self-hosted-agent-turn-browser.spec.ts
       - tests/openclaw-package-image-browser.spec.ts
       - tests/openclaw-package-runtime-browser.spec.ts
       - tsconfig.app.json
@@ -385,7 +384,7 @@ jobs:
           cargo build --locked --release --manifest-path relay/Cargo.toml
           test -x relay/target/release/clawsembly-network-relay
 
-      - name: Check and build the self-hostable provider credential broker
+      - name: Check and build the self-hostable model capability broker
         shell: bash
         run: |
           set -euo pipefail
@@ -962,13 +961,13 @@ jobs:
           path: artifacts/
           if-no-files-found: error
 
-      - name: Prepare least-privilege live-proof inputs
+      - name: Prepare least-privilege self-hosted-proof inputs
         shell: bash
         env:
           OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
         run: |
           set -euo pipefail
-          destination="${RUNNER_TEMP}/clawsembly-live-proof-inputs"
+          destination="${RUNNER_TEMP}/clawsembly-self-hosted-proof-inputs"
           mkdir -p "${destination}/wasmer-sdk"
           git archive --format=tar HEAD > "${destination}/runner.tar"
           cp edgejs/build-quickjs-wasix/edgejs.wasm \
@@ -981,133 +980,125 @@ jobs:
             "${destination}/clawsembly-provider-broker"
           cp -R wasmer-js/dist/. "${destination}/wasmer-sdk/"
 
-      - name: Upload least-privilege live-proof inputs
+      - name: Upload least-privilege self-hosted-proof inputs
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: edgejs-wasix-live-proof-inputs
-          path: ${{ runner.temp }}/clawsembly-live-proof-inputs/
+          name: edgejs-wasix-self-hosted-proof-inputs
+          path: ${{ runner.temp }}/clawsembly-self-hosted-proof-inputs/
           if-no-files-found: error
           retention-days: 1
 
-  prove-live-provider:
+  prove-self-hosted-model:
     needs: build-and-prove
-    permissions:
-      models: read
+    permissions: {}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 50
     steps:
-      - name: Download live-proof inputs
+      - name: Download self-hosted-proof inputs
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
         with:
-          name: edgejs-wasix-live-proof-inputs
-          path: live-inputs
+          name: edgejs-wasix-self-hosted-proof-inputs
+          path: proof-inputs
 
       - name: Materialize the proof runner without repository authority
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p live-runner
-          tar -xf live-inputs/runner.tar -C live-runner
-          chmod +x live-inputs/clawsembly-network-relay
-          chmod +x live-inputs/clawsembly-provider-broker
+          mkdir -p proof-runner
+          tar -xf proof-inputs/runner.tar -C proof-runner
+          chmod +x proof-inputs/clawsembly-network-relay
+          chmod +x proof-inputs/clawsembly-provider-broker
+
+      - name: Acquire pinned OSS inference runtime and model
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p self-hosted-model
+          llama_archive="self-hosted-model/llama-b9637-ubuntu-x64.tar.gz"
+          llama_url="$(
+            printf '%s' \
+              'https://github.com/ggml-org/llama.cpp/releases/download/' \
+              'b9637/llama-b9637-bin-ubuntu-x64.tar.gz'
+          )"
+          curl --fail --location --retry 3 \
+            --output "${llama_archive}" "${llama_url}"
+          printf '%s  %s\n' \
+            a50ee14f021a9d8e92e30f622f7e3be1318ee1125bb9a9ba8d2025388df48743 \
+            "${llama_archive}" \
+            | sha256sum --check
+          tar -xzf "${llama_archive}" -C self-hosted-model
+          llama_server="self-hosted-model/llama-b9637/llama-server"
+          printf '%s  %s\n' \
+            77eb1229a117e3034b873a46382bffcecc0f9815bd14e825a0706f8fc0b07564 \
+            "${llama_server}" \
+            | sha256sum --check
+          model="self-hosted-model/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+          model_url="$(
+            printf '%s' \
+              'https://huggingface.co/Qwen/' \
+              'Qwen2.5-0.5B-Instruct-GGUF/resolve/' \
+              'd78c9c2baefc6237025b685bb0d6db90288ef3d6/' \
+              'qwen2.5-0.5b-instruct-q4_k_m.gguf?download=true'
+          )"
+          curl --fail --location --retry 3 \
+            --output "${model}" "${model_url}"
+          printf '%s  %s\n' \
+            74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db \
+            "${model}" \
+            | sha256sum --check
+          test "$(stat --format='%s' "${model}")" = 491400032
 
       - name: Set up Node
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 24.18.0
           cache: npm
-          cache-dependency-path: live-runner/package-lock.json
+          cache-dependency-path: proof-runner/package-lock.json
 
       - name: Install browser proof dependencies
-        working-directory: live-runner
+        working-directory: proof-runner
         run: |
           npm ci
           npx playwright install --with-deps chromium
 
-      - name: Prove a live OpenClaw agent turn over guest-validated TLS
-        working-directory: live-runner
+      - name: Prove OpenClaw against the pinned self-hosted OSS model
+        working-directory: proof-runner
         env:
-          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/live-inputs/edgejs.wasm
-          CLAWSEMBLY_LIVE_PROVIDER_API_KEY: ${{ secrets.GITHUB_TOKEN }}
-          CLAWSEMBLY_NETWORK_RELAY: ${{ github.workspace }}/live-inputs/clawsembly-network-relay
-          CLAWSEMBLY_OPENCLAW_IMAGE: ${{ github.workspace }}/live-inputs/openclaw.clawfs
-          CLAWSEMBLY_OPENCLAW_LIVE_AGENT_TURN_PROOF: "1"
-          CLAWSEMBLY_OPENCLAW_LIVE_AGENT_TURN_TIMEOUT_MS: "300000"
-          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/live-inputs/wasmer-sdk
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/proof-inputs/edgejs.wasm
+          CLAWSEMBLY_LLAMA_SERVER: ${{ github.workspace }}/self-hosted-model/llama-b9637/llama-server
+          CLAWSEMBLY_LLAMA_SERVER_SHA256: 77eb1229a117e3034b873a46382bffcecc0f9815bd14e825a0706f8fc0b07564
+          CLAWSEMBLY_NETWORK_RELAY: ${{ github.workspace }}/proof-inputs/clawsembly-network-relay
+          CLAWSEMBLY_OPENCLAW_IMAGE: ${{ github.workspace }}/proof-inputs/openclaw.clawfs
+          CLAWSEMBLY_OPENCLAW_SELF_HOSTED_AGENT_TURN_PROOF: "1"
+          CLAWSEMBLY_OPENCLAW_SELF_HOSTED_AGENT_TURN_TIMEOUT_MS: "300000"
+          CLAWSEMBLY_PROVIDER_BROKER: ${{ github.workspace }}/proof-inputs/clawsembly-provider-broker
+          CLAWSEMBLY_SELF_HOSTED_MODEL: ${{ github.workspace }}/self-hosted-model/qwen2.5-0.5b-instruct-q4_k_m.gguf
+          CLAWSEMBLY_SELF_HOSTED_MODEL_BYTES: "491400032"
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/proof-inputs/wasmer-sdk
         run: |
           npx playwright test \
             --retries=1 \
-            tests/openclaw-live-agent-turn-browser.spec.ts
+            tests/openclaw-self-hosted-agent-turn-browser.spec.ts
 
-      - name: Preserve the raw guest-TLS proof before the next browser run
-        shell: bash
-        run: |
-          set -euo pipefail
-          evidence="$(
-            find test-results \
-              -name openclaw-live-agent-turn-browser-evidence.json \
-              -type f \
-              -print \
-              | head -n 1
-          )"
-          test -n "${evidence}"
-          cp "${evidence}" \
-            ../openclaw-live-agent-turn-browser-evidence.json
-
-      - name: Prove a live OpenClaw turn through the opaque credential broker
-        working-directory: live-runner
-        env:
-          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/live-inputs/edgejs.wasm
-          CLAWSEMBLY_LIVE_PROVIDER_API_KEY: ${{ secrets.GITHUB_TOKEN }}
-          CLAWSEMBLY_NETWORK_RELAY: ${{ github.workspace }}/live-inputs/clawsembly-network-relay
-          CLAWSEMBLY_OPENCLAW_BROKERED_LIVE_AGENT_TURN_PROOF: "1"
-          CLAWSEMBLY_OPENCLAW_IMAGE: ${{ github.workspace }}/live-inputs/openclaw.clawfs
-          CLAWSEMBLY_OPENCLAW_LIVE_AGENT_TURN_TIMEOUT_MS: "300000"
-          CLAWSEMBLY_PROVIDER_BROKER: ${{ github.workspace }}/live-inputs/clawsembly-provider-broker
-          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/live-inputs/wasmer-sdk
-        run: |
-          npx playwright test \
-            --retries=1 \
-            tests/openclaw-brokered-live-agent-turn-browser.spec.ts
-
-      - name: Preserve live OpenClaw agent-turn attempt evidence
+      - name: Preserve self-hosted OpenClaw attempt evidence
         if: ${{ always() }}
         shell: bash
         run: |
           set -euo pipefail
-          destination="live-agent-turn-diagnostics"
+          destination="self-hosted-agent-turn-diagnostics"
           mkdir -p "${destination}"
-          mkdir -p live-runner/test-results
-          raw_evidence="openclaw-live-agent-turn-browser-evidence.json"
-          if ! test -s "${raw_evidence}"; then
-            raw_evidence="$(
-              find live-runner/test-results \
-                -name openclaw-live-agent-turn-browser-evidence.json \
-                -type f \
-                -print \
-                | head -n 1
-            )"
-          fi
-          if test -n "${raw_evidence}" && test -s "${raw_evidence}"; then
-            if test "${raw_evidence}" \
-              != "openclaw-live-agent-turn-browser-evidence.json"
-            then
-              cp "${raw_evidence}" \
-                openclaw-live-agent-turn-browser-evidence.json
-            fi
-            cp "${raw_evidence}" "${destination}/"
-          fi
-          brokered_evidence="$(
-            find live-runner/test-results \
-              -name openclaw-brokered-live-agent-turn-browser-evidence.json \
+          mkdir -p proof-runner/test-results
+          evidence="$(
+            find proof-runner/test-results \
+              -name openclaw-self-hosted-agent-turn-browser-evidence.json \
               -type f \
               -print \
               | head -n 1
           )"
-          if test -n "${brokered_evidence}"; then
-            cp "${brokered_evidence}" \
-              openclaw-brokered-live-agent-turn-browser-evidence.json
-            cp "${brokered_evidence}" "${destination}/"
+          if test -n "${evidence}" && test -s "${evidence}"; then
+            cp "${evidence}" \
+              openclaw-self-hosted-agent-turn-browser-evidence.json
+            cp "${evidence}" "${destination}/"
           fi
           while IFS= read -r context; do
             cp "${context}" \
@@ -1115,15 +1106,14 @@ jobs:
                 basename "$(dirname "${context}")"
               ).md"
           done < <(
-            find live-runner/test-results \
+            find proof-runner/test-results \
               -name error-context.md \
               -type f \
               -print \
               | sort
           )
           jq -n \
-            --arg rawEvidence "${raw_evidence}" \
-            --arg brokeredEvidence "${brokered_evidence}" \
+            --arg evidence "${evidence}" \
             --argjson errorContexts "$(
               find "${destination}" \
                 -name 'error-context-*.md' \
@@ -1133,24 +1123,18 @@ jobs:
             )" \
             '{
               schemaVersion: 1,
-              rawEvidence: (
-                if $rawEvidence == "" then null else $rawEvidence end
-              ),
-              brokeredEvidence: (
-                if $brokeredEvidence == ""
-                then null
-                else $brokeredEvidence
-                end
+              evidence: (
+                if $evidence == "" then null else $evidence end
               ),
               errorContexts: $errorContexts
             }' > "${destination}/manifest.json"
 
-      - name: Upload live OpenClaw agent-turn diagnostics
+      - name: Upload self-hosted OpenClaw diagnostics
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: edgejs-wasix-live-agent-turn-diagnostics
-          path: live-agent-turn-diagnostics/
+          name: edgejs-wasix-self-hosted-agent-turn-diagnostics
+          path: self-hosted-agent-turn-diagnostics/
           if-no-files-found: error
           retention-days: 7
 
@@ -1160,22 +1144,20 @@ jobs:
           name: edgejs-wasix-browser-compatible-base
           path: final-artifacts
 
-      - name: Bind both live-provider proofs to the source-built artifact
+      - name: Bind the self-hosted model proof to the source-built artifact
         shell: bash
         run: |
           set -euo pipefail
           base="final-artifacts/edgejs-wasix-build-evidence.json"
-          live="openclaw-live-agent-turn-browser-evidence.json"
-          brokered="openclaw-brokered-live-agent-turn-browser-evidence.json"
+          self_hosted="openclaw-self-hosted-agent-turn-browser-evidence.json"
           broker_binary="final-artifacts/clawsembly-provider-broker"
           test -s "${base}"
-          test -s "${live}"
-          test -s "${brokered}"
+          test -s "${self_hosted}"
           test -s "${broker_binary}"
           jq -e '.schemaVersion == 4' "${base}" >/dev/null
           jq -e '
             . as $proof
-            | .status == "live-agent-turn-pass"
+            | .status == "self-hosted-agent-turn-pass"
             and .agentResponseValidation.contract
               == "strict-assistant-payload-v1"
             and .agentResponseValidation.arbitraryMetadataSearched == false
@@ -1192,66 +1174,69 @@ jobs:
             )
             and any(
               .client.health.result.payloads[]?;
-              .text == $proof.liveProvider.expectedMarker
+              .text == $proof.selfHostedModel.expectedMarker
             )
             and .client.health.result.meta.finalAssistantVisibleText
-              == $proof.liveProvider.expectedMarker
+              == $proof.selfHostedModel.expectedMarker
             and .client.health.result.meta.finalAssistantRawText
-              == $proof.liveProvider.expectedMarker
-          ' "${live}" >/dev/null
-          jq -e '
+              == $proof.selfHostedModel.expectedMarker
+          ' "${self_hosted}" >/dev/null
+          jq -e --slurpfile base "${base}" '
             . as $proof
-            | .status == "brokered-live-agent-turn-pass"
-            and .agentResponseValidation.contract
-              == "strict-assistant-payload-v1"
-            and .agentResponseValidation.arbitraryMetadataSearched == false
-            and .agentResponseValidation.promptEchoesAccepted == false
-            and .client.health.status == "ok"
-            and .client.health.summary == "completed"
-            and .client.health.result.meta.aborted == false
-            and .client.health.result.meta.replayInvalid == false
-            and .client.health.result.meta.stopReason == "stop"
-            and .client.health.result.meta.executionTrace.fallbackUsed == false
-            and any(
-              .client.health.result.meta.executionTrace.attempts[]?;
-              .result == "success" and .stage == "assistant"
-            )
-            and any(
-              .client.health.result.payloads[]?;
-              .text == $proof.credentialBroker.expectedMarker
-            )
-            and .client.health.result.meta.finalAssistantVisibleText
-              == $proof.credentialBroker.expectedMarker
-            and .client.health.result.meta.finalAssistantRawText
-              == $proof.credentialBroker.expectedMarker
-          ' "${brokered}" >/dev/null
-          jq -e --slurpfile base "${base}" '
-            .artifact.sha256 == $base[0].artifact.wasmSha256
+            | .artifact.sha256 == $base[0].artifact.wasmSha256
             and .image.sha256 == $base[0].packageImage.build.image.sha256
-          ' "${live}" >/dev/null
-          jq -e --slurpfile base "${base}" '
-            .artifact.sha256 == $base[0].artifact.wasmSha256
-            and .image.sha256 == $base[0].packageImage.build.image.sha256
-            and .credentialBroker.browserReceivesProviderCredential == false
-            and .credentialBroker.provider.authentication.recorded == false
-            and .credentialBroker.provider.tls.visibleToGuest == false
-            and .credentialBroker.hostProcess.ready
+            and .selfHostedModel.browserReceivesModelServiceCredential
+              == false
+            and .selfHostedModel.runtime.authentication.recorded == false
+            and .selfHostedModel.runtime.authentication.visibleToGuest
+              == false
+            and .selfHostedModel.runtime.release == "b9637"
+            and .selfHostedModel.runtime.sourceCommit
+              == "aedb2a5e9ca3d4064148bbb919e0ddc0c1b70ab3"
+            and .selfHostedModel.runtime.distribution.sha256
+              == "a50ee14f021a9d8e92e30f622f7e3be1318ee1125bb9a9ba8d2025388df48743"
+            and .selfHostedModel.runtime.model.sha256
+              == "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db"
+            and .selfHostedModel.hostProcess.inferenceRuntime.binarySha256
+              == "77eb1229a117e3034b873a46382bffcecc0f9815bd14e825a0706f8fc0b07564"
+            and .selfHostedModel.hostProcess.inferenceRuntime
+              .distributionSha256
+              == .selfHostedModel.runtime.distribution.sha256
+            and .selfHostedModel.hostProcess.inferenceRuntime.sourceCommit
+              == .selfHostedModel.runtime.sourceCommit
+            and .selfHostedModel.hostProcess.inferenceRuntime.health.status
+              == "ok"
+            and any(
+              .selfHostedModel.hostProcess.inferenceRuntime
+                .modelList.data[]?;
+              .id == $proof.selfHostedModel.runtime.model.id
+              and .owned_by == "llamacpp"
+              and .meta.n_ctx == 32768
+            )
+            and .selfHostedModel.hostProcess.model.sha256
+              == .selfHostedModel.runtime.model.sha256
+            and .selfHostedModel.hostProcess.model.bytes == 491400032
+            and .selfHostedModel.capabilityBroker.hostProcess.ready
+              .upstreamScheme == "http"
+            and .selfHostedModel.capabilityBroker.hostProcess.ready
+              .loopbackHttpExplicitlyAllowed == true
+            and .selfHostedModel.capabilityBroker.hostProcess.ready
               .providerCredentialRecorded == false
-            and .credentialBroker.hostProcess.upstreamResponse
+            and .selfHostedModel.capabilityBroker.hostProcess.upstreamResponse
+              .httpStatus == 200
+            and .selfHostedModel.capabilityBroker.hostProcess.upstreamResponse
               .providerCredentialRecorded == false
-            and .credentialBroker.hostProcess.upstreamResponse
+            and .selfHostedModel.capabilityBroker.hostProcess.upstreamResponse
               .requestBodyRecorded == false
-          ' "${brokered}" >/dev/null
-          cp "${live}" \
-            final-artifacts/openclaw-live-agent-turn-browser-evidence.json
-          cp "${brokered}" \
-            final-artifacts/openclaw-brokered-live-agent-turn-browser-evidence.json
+          ' "${self_hosted}" >/dev/null
+          cp "${self_hosted}" \
+            final-artifacts/openclaw-self-hosted-agent-turn-browser-evidence.json
           broker_binary_sha256="$(
             sha256sum "${broker_binary}" | awk '{print $1}'
           )"
           broker_source_sha256="$(
             (
-              cd live-runner
+              cd proof-runner
               sha256sum \
                 provider-broker/Cargo.toml \
                 provider-broker/Cargo.lock \
@@ -1261,40 +1246,43 @@ jobs:
           jq \
             --arg brokerBinarySha256 "${broker_binary_sha256}" \
             --arg brokerSourceSha256 "${broker_source_sha256}" \
-            --slurpfile brokered "${brokered}" \
-            --slurpfile live "${live}" '
+            --slurpfile selfHosted "${self_hosted}" '
             .schemaVersion = 6
-            | .openclawRuntimeProof.liveAgentTurn = $live[0]
-            | .openclawRuntimeProof.brokeredLiveAgentTurn = $brokered[0]
-            | .providerCredentialBroker = {
+            | .openclawRuntimeProof.selfHostedAgentTurn = $selfHosted[0]
+            | .selfHostedInference = {
+                runtime: $selfHosted[0].selfHostedModel.runtime,
+                model: $selfHosted[0].selfHostedModel.runtime.model,
+                hostProcess: $selfHosted[0].selfHostedModel.hostProcess,
+                browserReceivesModelServiceCredential: false,
+                proof: $selfHosted[0]
+              }
+            | .modelCapabilityBroker = {
                 implementation: "clawsembly-provider-broker",
                 license: "MIT",
                 sourceFilesSha256: $brokerSourceSha256,
                 binarySha256: $brokerBinarySha256,
-                browserReceivesProviderCredential: false,
-                providerCredentialRecorded: false,
-                proof: $brokered[0].credentialBroker
+                browserReceivesModelServiceCredential: false,
+                modelServiceCredentialRecorded: false,
+                proof: $selfHosted[0].selfHostedModel.capabilityBroker
               }
           ' "${base}" > "${base}.next"
           mv "${base}.next" "${base}"
           jq -e '
             .schemaVersion == 6
-            and .openclawRuntimeProof.liveAgentTurn.status
-              == "live-agent-turn-pass"
-            and .openclawRuntimeProof.brokeredLiveAgentTurn.status
-              == "brokered-live-agent-turn-pass"
-            and .openclawRuntimeProof.liveAgentTurn
+            and .openclawRuntimeProof.selfHostedAgentTurn.status
+              == "self-hosted-agent-turn-pass"
+            and .openclawRuntimeProof.selfHostedAgentTurn
               .agentResponseValidation.contract
               == "strict-assistant-payload-v1"
-            and .openclawRuntimeProof.brokeredLiveAgentTurn
-              .agentResponseValidation.contract
-              == "strict-assistant-payload-v1"
-            and .providerCredentialBroker.browserReceivesProviderCredential
+            and .selfHostedInference.runtime.implementation == "llama.cpp"
+            and .selfHostedInference.model.license == "Apache-2.0"
+            and .modelCapabilityBroker
+              .browserReceivesModelServiceCredential
               == false
-            and .providerCredentialBroker.providerCredentialRecorded == false
+            and .modelCapabilityBroker.modelServiceCredentialRecorded == false
           ' "${base}" >/dev/null
 
-      - name: Upload live-proven browser runtime and evidence
+      - name: Upload self-hosted-model-proven browser runtime and evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: edgejs-wasix-browser-compatible

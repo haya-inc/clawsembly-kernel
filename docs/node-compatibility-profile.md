@@ -46,9 +46,9 @@ passes all of these checks:
    completes an authenticated health RPC.
 6. The unmodified Gateway completes an agent turn through the explicit outbound
    TCP capability.
-7. A separate lane replaces the deterministic fixture with a live provider;
-   the guest validates `models.github.ai` over TLS and receives the requested
-   assistant marker.
+7. A separate lane replaces the deterministic fixture with checksum-pinned
+   llama.cpp and Qwen GGUF processes on host loopback; the guest receives only
+   a one-request capability and returns the requested assistant marker.
 
 The machine-readable definition is
 `contracts/edgejs-browser-build.json#nodeCompatibility`. The public workflow
@@ -66,7 +66,7 @@ It also does not complete Clawsembly's North Star by itself. The required
 install lifecycle effects are now independently proven by the
 [install lifecycle contract](openclaw-install-lifecycle.md), and the
 [OPFS directory store](opfs-directory-store.md) proves recovery of that state
-after a complete browser restart. A live authorized TLS model-provider exchange
-is also proven separately. The remaining security gate is an opaque
-provider-credential broker that prevents production credentials from entering
+after a complete browser restart. An actual self-hosted OSS model exchange is
+also proven separately, including the opaque capability boundary that prevents
+its model-service credential, GGUF weights, and inference process from entering
 the untrusted guest.

@@ -482,8 +482,8 @@ test("official OpenClaw state survives a complete browser restart through OPFS",
     restoredGatewayHealth: gatewayHealthEvidence,
     notNorthStarCompletion:
       "This closes the durable fresh-session OPFS recovery gate for the "
-      + "pinned OpenClaw release; live authorized TLS provider inference "
-      + "remains a separate gate."
+      + "pinned OpenClaw release; actual self-hosted model inference remains "
+      + "a separate gate."
   };
   writeFileSync(
     testInfo.outputPath(

@@ -109,8 +109,8 @@ async function runProbe(): Promise<void> {
       lifecycle,
       notNorthStarCompletion:
         "This closes the required package lifecycle-effect gate for the "
-        + "pinned release; live-provider TLS and durable fresh-session OPFS "
-        + "recovery remain separate gates."
+        + "pinned release; self-hosted model inference and durable "
+        + "fresh-session OPFS recovery remain separate gates."
     };
     status.dataset.state = "pass";
     status.textContent =
