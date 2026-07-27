@@ -6,6 +6,7 @@ on:
       - agent/edgejs-wasix-build
       - agent/openclaw-entrypoint
       - agent/openclaw-package-image
+      - agent/openclaw-agent-turn
     paths:
       - .github/workflows/edgejs-wasix-build.yml
       - contracts/edgejs-artifact.json
@@ -17,19 +18,24 @@ on:
       - patches/edgejs/**
       - patches/wasmer-js/**
       - patches/wasmer-wasix/**
+      - patches/virtual-net/**
       - playwright.config.ts
+      - relay/**
+      - scripts/apply-cargo-dependency-patches.mjs
       - scripts/verify-edgejs-browser-build-contract.mjs
       - scripts/build-openclaw-package-image.mjs
       - scripts/create-edgejs-node-version-diagnostic.mjs
       - scripts/generate-openclaw-package-contract.mjs
       - src/clawsemblyfs.ts
       - src/edgejs-wasix-probe.ts
+      - src/network-egress-probe.ts
       - src/openclaw-entrypoint-probe.ts
       - src/openclaw-gateway-health-probe.ts
       - src/openclaw-package-runtime-probe.ts
       - src/package-image-probe.ts
       - tests/clawsemblyfs.test.ts
       - tests/edgejs-wasix-browser.spec.ts
+      - tests/network-egress-browser.spec.ts
       - tests/openclaw-entrypoint-browser.spec.ts
       - tests/openclaw-gateway-health-browser.spec.ts
       - tests/openclaw-package-image-browser.spec.ts
@@ -38,6 +44,7 @@ on:
       - vite.config.ts
       - openclaw-probe.html
       - openclaw-gateway-health-probe.html
+      - network-egress-probe.html
       - package-image-probe.html
       - package-runtime-probe.html
       - wasix-probe.html
@@ -260,41 +267,10 @@ jobs:
             cd wasmer-js
             RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
               cargo fetch --locked --target wasm32-unknown-unknown
-            while IFS=$'\t' read -r package_name package_version dependency_patch; do
-              dependency_source="$(
-                RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
-                  cargo metadata \
-                    --locked \
-                    --format-version 1 \
-                    --filter-platform wasm32-unknown-unknown \
-                  | jq -r \
-                    --arg name "${package_name}" \
-                    --arg version "${package_version}" \
-                    '.packages[]
-                      | select(.name == $name and .version == $version)
-                      | .manifest_path
-                      | sub("/Cargo.toml$"; "")'
-              )"
-              test -n "${dependency_source}"
-              test -d "${dependency_source}"
-              patch \
-                --dry-run \
-                --silent \
-                -d "${dependency_source}" \
-                -p1 \
-                < "../${dependency_patch}"
-              patch \
-                --silent \
-                -d "${dependency_source}" \
-                -p1 \
-                < "../${dependency_patch}"
-            done < <(
-              jq -r \
-                '.browserExecutor.dependencyPatches[]
-                  | [.package, .version, .path]
-                  | @tsv' \
-                ../contracts/edgejs-browser-build.json
-            )
+            RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
+              node ../scripts/apply-cargo-dependency-patches.mjs \
+                --manifest Cargo.toml \
+                --target wasm32-unknown-unknown
             RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
               ../tools/wasm-pack/wasm-pack build \
                 --release \
@@ -305,6 +281,17 @@ jobs:
           )
           test -s wasmer-js/dist/index.mjs
           test -s wasmer-js/dist/wasmer_js_bg.wasm
+
+      - name: Check and build the self-hostable network relay
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/apply-cargo-dependency-patches.mjs \
+            --manifest relay/Cargo.toml \
+            --package virtual-net
+          npm run relay:check
+          cargo build --locked --release --manifest-path relay/Cargo.toml
+          test -x relay/target/release/clawsembly-network-relay
 
       - name: Build self-contained QuickJS Edge.js WASIX
         shell: bash
@@ -348,6 +335,7 @@ jobs:
             edgejs/build-quickjs-wasix/edgejs.wasm
             edgejs/edge-quickjs-wasix-browser-compatible.zip
             legacy-validation-error.txt
+            relay/target/release/clawsembly-network-relay
             wasmer-js/dist/
           if-no-files-found: error
           retention-days: 7
@@ -404,6 +392,25 @@ jobs:
           cp "${edge_evidence}" artifacts/edgejs-wasix-browser-evidence.json
           cp "${launcher_evidence}" \
             artifacts/openclaw-entrypoint-browser-evidence.json
+
+      - name: Prove capability-scoped TCP egress in Chromium
+        env:
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
+          CLAWSEMBLY_NETWORK_RELAY: ${{ github.workspace }}/relay/target/release/clawsembly-network-relay
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
+        run: npx playwright test tests/network-egress-browser.spec.ts
+
+      - name: Preserve network capability evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          network_evidence="$(
+            find test-results -name network-egress-browser-evidence.json \
+              -type f | head -n 1
+          )"
+          test -n "${network_evidence}"
+          cp "${network_evidence}" \
+            artifacts/network-egress-browser-evidence.json
 
       - name: Build complete integrity-pinned OpenClaw package image
         id: package_image
@@ -567,7 +574,9 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts
           cp edgejs/edge-quickjs-wasix-browser-compatible.zip artifacts/
+          cp relay/target/release/clawsembly-network-relay artifacts/
           browser_evidence="artifacts/edgejs-wasix-browser-evidence.json"
+          network_evidence="artifacts/network-egress-browser-evidence.json"
           openclaw_evidence="artifacts/openclaw-entrypoint-browser-evidence.json"
           package_build_evidence="artifacts/openclaw-package-image-build-evidence.json"
           package_mount_evidence="artifacts/openclaw-package-image-browser-evidence.json"
@@ -584,6 +593,7 @@ jobs:
           )
           node_diagnostic_evidence="artifacts/edgejs-openclaw-node-floor-diagnostic.evidence.json"
           test -s "${browser_evidence}"
+          test -s "${network_evidence}"
           test -s "${openclaw_evidence}"
           test -s "${package_build_evidence}"
           test -s "${package_mount_evidence}"
@@ -596,12 +606,17 @@ jobs:
           archive_sha256="$(sha256sum edgejs/edge-quickjs-wasix-browser-compatible.zip | awk '{print $1}')"
           wasmer_js_sha256="$(sha256sum wasmer-js/dist/index.mjs | awk '{print $1}')"
           wasmer_wasm_sha256="$(sha256sum wasmer-js/dist/wasmer_js_bg.wasm | awk '{print $1}')"
+          relay_sha256="$(
+            sha256sum relay/target/release/clawsembly-network-relay \
+              | awk '{print $1}'
+          )"
           jq -n \
             --arg archiveSha256 "${archive_sha256}" \
             --arg edgeSourceCommit "${EDGE_SOURCE_COMMIT}" \
             --arg emitExnref "${EMIT_EXNREF}" \
             --arg quickjsWebAssembly "${QUICKJS_WEBASSEMBLY}" \
             --arg runtimeProvider "${RUNTIME_PROVIDER}" \
+            --arg relaySha256 "${relay_sha256}" \
             --arg sysrootAssetSha256 "${SYSROOT_ASSET_SHA256}" \
             --arg sysrootTag "${SYSROOT_TAG}" \
             --arg sqliteSha256 "${SQLITE_SHA256}" \
@@ -614,6 +629,7 @@ jobs:
             --arg wasixccWasmExceptions "${{ steps.contract.outputs.wasixcc_wasm_exceptions }}" \
             --arg wasixccVersion "${WASIXCC_VERSION}" \
             --slurpfile browser "${browser_evidence}" \
+            --slurpfile network "${network_evidence}" \
             --slurpfile openclaw "${openclaw_evidence}" \
             --slurpfile packageBuild "${package_build_evidence}" \
             --slurpfile packageMount "${package_mount_evidence}" \
@@ -634,6 +650,10 @@ jobs:
             )" \
             --argjson wasmerDependencyPatches "$(
               jq '.browserExecutor.dependencyPatches' \
+                contracts/edgejs-browser-build.json
+            )" \
+            --argjson networkContract "$(
+              jq '.browserExecutor.networkCapability' \
                 contracts/edgejs-browser-build.json
             )" \
             '{
@@ -666,6 +686,11 @@ jobs:
                 archiveSha256: $archiveSha256
               },
               browser: $browser[0],
+              networkCapability: {
+                contract: $networkContract,
+                relaySha256: $relaySha256,
+                browser: $network[0]
+              },
               openclaw: $openclaw[0],
               packageImage: {
                 build: $packageBuild[0],

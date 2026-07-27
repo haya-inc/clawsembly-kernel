@@ -1,0 +1,20 @@
+diff --git a/src/server.rs b/src/server.rs
+index 816ac49..c27146e 100644
+--- a/src/server.rs
++++ b/src/server.rs
+@@ -1457,7 +1457,14 @@ impl RemoteAdapterSocket {
+                     let mut chunk: [MaybeUninit<u8>; 10240] =
+                         unsafe { MaybeUninit::uninit().assume_init() };
+                     match this.try_recv(&mut chunk, false) {
+-                        Ok(0) => {}
++                        Ok(0) => {
++                            if let Some(task) = common.send(MessageResponse::Recv {
++                                socket_id,
++                                data: Vec::new(),
++                            }) {
++                                ret.push_back(task);
++                            }
++                        }
+                         Ok(amt) => {
+                             let chunk_unsafe: &mut [MaybeUninit<u8>] = &mut chunk[..amt];
+                             let chunk_unsafe: &mut [u8] =

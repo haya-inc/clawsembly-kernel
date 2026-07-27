@@ -1,0 +1,20 @@
+diff --git a/deps/libuv-wasix/src/unix/getaddrinfo.c b/deps/libuv-wasix/src/unix/getaddrinfo.c
+index b707534..e613a7c 100644
+--- a/deps/libuv-wasix/src/unix/getaddrinfo.c
++++ b/deps/libuv-wasix/src/unix/getaddrinfo.c
+@@ -191,6 +191,15 @@ int uv_getaddrinfo(uv_loop_t* loop,
+ 
+   if (hints) {
+     req->hints = memcpy(buf + len, hints, sizeof(*hints));
++#if defined(__wasi__)
++    /*
++     * musl implements AI_ADDRCONFIG by opening and connecting UDP sockets.
++     * The WASIX virtual network may intentionally grant DNS and outbound TCP
++     * without granting UDP. Its resolve syscall already returns only the
++     * address families available through the capability-scoped network.
++     */
++    req->hints->ai_flags &= ~AI_ADDRCONFIG;
++#endif
+     len += sizeof(*hints);
+   }
+ 

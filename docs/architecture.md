@@ -209,7 +209,7 @@ not the final efficiency design. A browser-native wake bridge may replace it
 once it preserves the same Node lifecycle behavior without starving embedder
 tasks.
 
-### Browser-local virtual networking
+### Browser-local loopback and capability egress
 
 The runtime now contains a browser-local virtual network namespace rather than
 delegating OpenClaw execution to a remote machine. The patched Wasmer JS
@@ -235,6 +235,45 @@ loopback sub-gate, including:
 - explicit listen, connect, listener-lifetime, and denied-egress behavior; and
 - ordinary Node `net` callback completion over synchronous WASIX virtual TCP.
 
+External TCP is a separate, optional capability on that same runtime object.
+Without `networkEgress`, every non-loopback route still fails with
+`PermissionDenied`. When granted, the browser accepts only an absolute relay
+`ws:` URL on loopback or a `wss:` URL elsewhere, a capability token, and an
+allowlist of exact DNS names and ports. Wildcards, numeric external IPs,
+unlisted ports, duplicate grants, and private or special-use addresses are
+denied by default. A private-network grant is explicit and exists primarily so
+the deterministic test fixture can remain local.
+
+The relay in `relay/` is MIT-licensed, self-hostable Rust. It authenticates the
+capability token with a constant-time comparison in
+`Sec-WebSocket-Protocol`, so credentials do not enter the relay URL. It exposes
+only DNS resolution and outbound TCP through `virtual-net`; it provides no
+remote shell, filesystem, process execution, UDP, inbound listener, or remote
+operating system. The relay independently enforces the same DNS-name, port,
+and private-address policy, making a compromised guest insufficient to widen
+the grant.
+
+The grant is deliberately described as a DNS-derived TCP endpoint capability.
+At the TCP layer, multiple DNS names can share one IP address; HTTPS authority
+and server identity therefore remain enforced by the guest's normal TLS/SNI
+and certificate validation. A future hostile-guest use case requiring
+isolation between virtual hosts on one shared IP would need a name-preserving
+TLS or HTTP relay rather than claiming that property from raw TCP.
+
+Node normally asks `getaddrinfo` for `AI_ADDRCONFIG`. The WASIX musl
+implementation probes address-family availability with UDP sockets, but this
+kernel intentionally grants DNS and TCP without UDP. The Edge.js/libuv patch
+clears only that redundant flag on WASI and still invokes the ordinary WASIX
+resolver. Browser evidence therefore exercises an unmodified
+`net.createConnection({host, port})`, not a custom JavaScript lookup shim.
+
+Two transport adapters close upstream lifecycle gaps. `virtual-net@0.601.0`
+does not forward a remote TCP EOF frame, so the audited dependency patch
+forwards an empty receive response. Its remote client also reports writable
+readiness continuously after connection; the capability socket emits the
+single initial completion required by libuv and waits for real backpressure
+before signaling another writable event.
+
 The same namespace now carries the real OpenClaw protocol. The
 diagnostic-only Node-floor artifact starts the exact unmodified
 `openclaw@2026.7.1-2` Gateway in normal local mode. After the Gateway emits its
@@ -252,10 +291,11 @@ and offsets. Genuine Node 24.15 compatibility, authorized model-provider
 egress, a real agent turn, and persistent recovery in a fresh browser session
 remain separate gates.
 
-External model-provider traffic may later use a separately authorized
-self-hostable transport, but it cannot substitute for local Gateway loopback.
-The virtual network must fail unsupported routes explicitly and must never
-turn a requested loopback bind into a wildcard host bind.
+Model-provider traffic can use this separately authorized self-hostable
+transport, but it cannot substitute for local Gateway loopback. Browser-local
+listeners always win over an egress resolution, unsupported routes fail
+explicitly, and a requested loopback bind is never turned into a wildcard host
+bind.
 
 The Edge.js compiler sysroot is pinned to wasix-libc `v2025-12-10.1`, the last
 release using the `proc_exec3`/`proc_spawn2` ABI implemented by Wasmer JS

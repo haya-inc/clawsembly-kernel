@@ -16,7 +16,7 @@ const edgeArtifact = readJson(
 );
 const packageLock = readJson(path.join(repositoryRoot, "package-lock.json"));
 
-assert.equal(contract.schemaVersion, 6);
+assert.equal(contract.schemaVersion, 7);
 assert.equal(contract.runtimeProvider, "quickjs");
 assert.equal(contract.upstream.commit, edgeArtifact.source.commit);
 assert.equal(contract.upstream.repository, edgeArtifact.source.repository);
@@ -69,7 +69,10 @@ assert.deepEqual(
   contract.browserExecutor.dependencyPatches.map(
     ({ package: packageName, version }) => ({ package: packageName, version })
   ),
-  [{ package: "wasmer-wasix", version: "0.601.0" }]
+  [
+    { package: "wasmer-wasix", version: "0.601.0" },
+    { package: "virtual-net", version: "0.601.0" }
+  ]
 );
 for (const patch of contract.browserExecutor.dependencyPatches) {
   const patchPath = path.join(repositoryRoot, patch.path);
@@ -85,6 +88,23 @@ for (const patch of contract.browserExecutor.dependencyPatches) {
 assert.deepEqual(contract.browserExecutor.threadExitPolicy, {
   successfulSpawnedThreadExit: "thread-local",
   nonzeroSpawnedThreadExit: "process-terminating"
+});
+assert.deepEqual(contract.browserExecutor.networkCapability, {
+  default: "deny",
+  loopback: {
+    scope: "runtime-object",
+    transport: "browser-local"
+  },
+  egress: {
+    transport: "virtual-net-over-websocket",
+    relayImplementation: "relay/",
+    relayLicense: "MIT",
+    credentialTransport: "Sec-WebSocket-Protocol",
+    authority: "dns-derived-ip-and-port",
+    rawIp: "deny",
+    privateNetwork: "deny-unless-explicit",
+    exposes: ["dns-resolution", "outbound-tcp"]
+  }
 });
 
 assert.equal(

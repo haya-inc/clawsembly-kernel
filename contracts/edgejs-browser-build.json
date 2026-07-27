@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 6,
+  "schemaVersion": 7,
   "runtimeProvider": "quickjs",
   "upstream": {
     "repository": "https://github.com/wasmerio/edgejs",
@@ -22,6 +22,10 @@
     {
       "path": "patches/edgejs/0004-pump-embedder-tasks-during-node-keepalive.patch",
       "sha256": "1beb40c6ba52e5f2a3a5fe13d6ae4f3b8d7450650cc4921def95c381946a20c5"
+    },
+    {
+      "path": "patches/edgejs/0005-use-capability-resolver-without-udp-probe.patch",
+      "sha256": "f58c437a7408d253d70634aa570c1aaea62850a8e5c47a498bdf5d8c0fe1b541"
     }
   ],
   "sqlite": {
@@ -67,7 +71,7 @@
       },
       {
         "path": "patches/wasmer-js/0002-add-capability-scoped-browser-loopback.patch",
-        "sha256": "1c2e76f13ed50fefc00454d6c9a35e0a4334d22889a44dee51449945a07dd42b"
+        "sha256": "7ecf5e90e86a39bba118945781a364d145ccbcf5a4dd3f8cb453662ccd31432c"
       },
       {
         "path": "patches/wasmer-js/0003-reserve-workers-for-pending-async-jobs.patch",
@@ -80,8 +84,34 @@
         "version": "0.601.0",
         "path": "patches/wasmer-wasix/0001-keep-successful-child-thread-exit-local.patch",
         "sha256": "6d507c0920c8f2778cd88468684b6126decad70e60a276345222810d0c217d2e"
+      },
+      {
+        "package": "virtual-net",
+        "version": "0.601.0",
+        "path": "patches/virtual-net/0001-forward-remote-tcp-eof.patch",
+        "sha256": "63786a70e2912bafa4c2b85d2d653617e0c36736afd721a78190b9f64a2ef3ef"
       }
     ],
+    "networkCapability": {
+      "default": "deny",
+      "loopback": {
+        "scope": "runtime-object",
+        "transport": "browser-local"
+      },
+      "egress": {
+        "transport": "virtual-net-over-websocket",
+        "relayImplementation": "relay/",
+        "relayLicense": "MIT",
+        "credentialTransport": "Sec-WebSocket-Protocol",
+        "authority": "dns-derived-ip-and-port",
+        "rawIp": "deny",
+        "privateNetwork": "deny-unless-explicit",
+        "exposes": [
+          "dns-resolution",
+          "outbound-tcp"
+        ]
+      }
+    },
     "threadExitPolicy": {
       "successfulSpawnedThreadExit": "thread-local",
       "nonzeroSpawnedThreadExit": "process-terminating"

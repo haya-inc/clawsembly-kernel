@@ -1,57 +1,172 @@
-diff --git a/src/browser_loopback.rs b/src/browser_loopback.rs
+diff --git i/src/browser_network.rs w/src/browser_network.rs
 new file mode 100644
-index 0000000..f4c1a81
+index 0000000..0296429
 --- /dev/null
-+++ b/src/browser_loopback.rs
-@@ -0,0 +1,173 @@
++++ w/src/browser_network.rs
+@@ -0,0 +1,555 @@
 +use std::{
-+    collections::HashSet,
++    collections::{HashMap, HashSet},
++    mem::MaybeUninit,
 +    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
 +    sync::{Arc, Mutex},
 +    task::{Context, Poll},
++    time::Duration,
 +};
 +
++use serde::Deserialize;
 +use virtual_net::{
-+    InterestHandler, IpCidr, LoopbackNetworking, NetworkError, VirtualIoSource, VirtualNetworking,
-+    VirtualTcpListener, VirtualTcpSocket,
++    InterestHandler, IpCidr, LoopbackNetworking, NetworkError, SocketStatus,
++    VirtualConnectedSocket, VirtualIoSource, VirtualNetworking, VirtualSocket, VirtualTcpListener,
++    VirtualTcpSocket,
 +};
 +
-+/// A browser-local TCP namespace with no ambient external network authority.
++/// A browser-local TCP namespace plus optional, explicitly-scoped egress.
 +#[derive(Clone, Debug, Default)]
-+pub(crate) struct BrowserLoopbackNetworking {
-+    inner: LoopbackNetworking,
++pub(crate) struct BrowserNetworking {
++    loopback: LoopbackNetworking,
 +    listeners: Arc<Mutex<HashSet<SocketAddr>>>,
++    egress: Option<BrowserEgress>,
 +}
 +
-+impl BrowserLoopbackNetworking {
-+    fn is_allowed_address(address: SocketAddr) -> bool {
++#[derive(Clone, Debug)]
++struct BrowserEgress {
++    remote: Arc<dyn VirtualNetworking>,
++    rules: Arc<HashMap<(String, u16), NetworkEgressRule>>,
++    resolved: Arc<Mutex<HashMap<(String, u16), HashSet<IpAddr>>>>,
++}
++
++#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++pub(crate) struct NetworkEgressCapability {
++    pub(crate) gateway_url: String,
++    pub(crate) gateway_token: String,
++    pub(crate) allow: Vec<NetworkEgressRule>,
++}
++
++#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++pub(crate) struct NetworkEgressRule {
++    pub(crate) host: String,
++    pub(crate) port: u16,
++    #[serde(default)]
++    pub(crate) allow_private_network: bool,
++}
++
++impl NetworkEgressCapability {
++    pub(crate) fn validate(mut self) -> anyhow::Result<Self> {
++        let gateway = url::Url::parse(&self.gateway_url)?;
++        let is_loopback_gateway = match gateway.host() {
++            Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
++            Some(url::Host::Ipv4(address)) => address.is_loopback(),
++            Some(url::Host::Ipv6(address)) => address.is_loopback(),
++            None => false,
++        };
++        if !matches!(gateway.scheme(), "ws" | "wss")
++            || gateway.host_str().is_none()
++            || gateway.cannot_be_a_base()
++            || !gateway.username().is_empty()
++            || gateway.password().is_some()
++            || gateway.query().is_some()
++            || gateway.fragment().is_some()
++        {
++            anyhow::bail!(
++                "networkEgress.gatewayUrl must be an absolute ws: or wss: URL without credentials, query, or fragment"
++            );
++        }
++        if gateway.scheme() == "ws" && !is_loopback_gateway {
++            anyhow::bail!("networkEgress.gatewayUrl must use wss: unless the relay is on loopback");
++        }
++        if self.gateway_token.is_empty()
++            || self.gateway_token.len() > 128
++            || !self
++                .gateway_token
++                .bytes()
++                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
++        {
++            anyhow::bail!("networkEgress.gatewayToken must be 1-128 URL-safe protocol characters");
++        }
++        if self.allow.is_empty() {
++            anyhow::bail!("networkEgress.allow must contain at least one host and port");
++        }
++
++        let mut unique = HashSet::new();
++        for rule in &mut self.allow {
++            rule.host = normalize_hostname(&rule.host)?;
++            if rule.port == 0 {
++                anyhow::bail!("networkEgress.allow ports must be between 1 and 65535");
++            }
++            if !unique.insert((rule.host.clone(), rule.port)) {
++                anyhow::bail!(
++                    "networkEgress.allow contains a duplicate host and port: {}:{}",
++                    rule.host,
++                    rule.port
++                );
++            }
++        }
++        Ok(self)
++    }
++}
++
++impl BrowserNetworking {
++    pub(crate) fn with_egress(
++        remote: Arc<dyn VirtualNetworking>,
++        rules: Vec<NetworkEgressRule>,
++    ) -> Self {
++        let rules = rules
++            .into_iter()
++            .map(|rule| ((rule.host.clone(), rule.port), rule))
++            .collect();
++        Self {
++            egress: Some(BrowserEgress {
++                remote,
++                rules: Arc::new(rules),
++                resolved: Arc::default(),
++            }),
++            ..Self::default()
++        }
++    }
++
++    fn is_loopback(address: SocketAddr) -> bool {
 +        address.ip().is_loopback()
++    }
++
++    fn is_resolved_egress(&self, peer_address: SocketAddr) -> bool {
++        self.egress.as_ref().is_some_and(|egress| {
++            egress
++                .resolved
++                .lock()
++                .unwrap()
++                .iter()
++                .any(|((_, port), addresses)| {
++                    *port == peer_address.port() && addresses.contains(&peer_address.ip())
++                })
++        })
 +    }
 +}
 +
 +#[async_trait::async_trait]
-+impl VirtualNetworking for BrowserLoopbackNetworking {
++impl VirtualNetworking for BrowserNetworking {
 +    async fn dhcp_acquire(&self) -> virtual_net::Result<Vec<IpAddr>> {
-+        self.inner.dhcp_acquire().await
++        self.loopback.dhcp_acquire().await
 +    }
 +
 +    async fn ip_add(&self, ip: IpAddr, prefix: u8) -> virtual_net::Result<()> {
 +        if !ip.is_loopback() {
 +            return Err(NetworkError::PermissionDenied);
 +        }
-+        self.inner.ip_add(ip, prefix).await
++        self.loopback.ip_add(ip, prefix).await
 +    }
 +
 +    async fn ip_remove(&self, ip: IpAddr) -> virtual_net::Result<()> {
-+        self.inner.ip_remove(ip).await
++        self.loopback.ip_remove(ip).await
 +    }
 +
 +    async fn ip_clear(&self) -> virtual_net::Result<()> {
-+        self.inner.ip_clear().await
++        self.loopback.ip_clear().await
 +    }
 +
 +    async fn ip_list(&self) -> virtual_net::Result<Vec<IpCidr>> {
-+        self.inner.ip_list().await
++        self.loopback.ip_list().await
 +    }
 +
 +    async fn listen_tcp(
@@ -61,7 +176,7 @@ index 0000000..f4c1a81
 +        reuse_port: bool,
 +        reuse_addr: bool,
 +    ) -> virtual_net::Result<Box<dyn VirtualTcpListener + Sync>> {
-+        if !Self::is_allowed_address(address) {
++        if !Self::is_loopback(address) {
 +            return Err(NetworkError::PermissionDenied);
 +        }
 +        {
@@ -71,7 +186,7 @@ index 0000000..f4c1a81
 +            }
 +        }
 +        match self
-+            .inner
++            .loopback
 +            .listen_tcp(address, only_v6, reuse_port, reuse_addr)
 +            .await
 +        {
@@ -92,34 +207,301 @@ index 0000000..f4c1a81
 +        local_address: SocketAddr,
 +        peer_address: SocketAddr,
 +    ) -> virtual_net::Result<Box<dyn VirtualTcpSocket + Sync>> {
-+        if !Self::is_allowed_address(peer_address) {
-+            return Err(NetworkError::PermissionDenied);
++        if !Self::is_loopback(peer_address) {
++            let egress = self.egress.as_ref().ok_or(NetworkError::PermissionDenied)?;
++            if !self.is_resolved_egress(peer_address) {
++                return Err(NetworkError::PermissionDenied);
++            }
++            let result = egress.remote.connect_tcp(local_address, peer_address).await;
++            return result.map(connected_egress_socket);
 +        }
-+        if !self.listeners.lock().unwrap().contains(&peer_address) {
-+            return Err(NetworkError::ConnectionRefused);
++        if self.listeners.lock().unwrap().contains(&peer_address) {
++            return self
++                .loopback
++                .loopback_connect_to(local_address, peer_address)
++                .map(|socket| Box::new(socket) as Box<dyn VirtualTcpSocket + Sync>)
++                .ok_or(NetworkError::ConnectionRefused);
 +        }
-+        self.inner
-+            .loopback_connect_to(local_address, peer_address)
-+            .map(|socket| Box::new(socket) as Box<dyn VirtualTcpSocket + Sync>)
-+            .ok_or(NetworkError::ConnectionRefused)
++        if self.is_resolved_egress(peer_address) {
++            let result = self
++                .egress
++                .as_ref()
++                .unwrap()
++                .remote
++                .connect_tcp(local_address, peer_address)
++                .await;
++            return result.map(connected_egress_socket);
++        }
++        Err(NetworkError::ConnectionRefused)
 +    }
 +
 +    async fn resolve(
 +        &self,
 +        host: &str,
-+        _port: Option<u16>,
-+        _dns_server: Option<IpAddr>,
++        port: Option<u16>,
++        dns_server: Option<IpAddr>,
 +    ) -> virtual_net::Result<Vec<IpAddr>> {
-+        if host.eq_ignore_ascii_case("localhost") {
++        if dns_server.is_some() {
++            return Err(NetworkError::PermissionDenied);
++        }
++        if let Ok(ip) = host.parse::<IpAddr>() {
++            return if ip.is_loopback() {
++                Ok(vec![ip])
++            } else {
++                Err(NetworkError::PermissionDenied)
++            };
++        }
++
++        let normalized = normalize_hostname(host).map_err(|_| NetworkError::InvalidInput)?;
++        let Some(egress) = self.egress.as_ref() else {
++            return if normalized == "localhost" {
++                Ok(vec![
++                    IpAddr::V4(Ipv4Addr::LOCALHOST),
++                    IpAddr::V6(Ipv6Addr::LOCALHOST),
++                ])
++            } else {
++                Err(NetworkError::PermissionDenied)
++            };
++        };
++        let matching_rules = egress
++            .rules
++            .iter()
++            .filter(|((allowed_host, _), _)| *allowed_host == normalized)
++            .collect::<Vec<_>>();
++        if normalized == "localhost" && matching_rules.is_empty() {
 +            return Ok(vec![
 +                IpAddr::V4(Ipv4Addr::LOCALHOST),
 +                IpAddr::V6(Ipv6Addr::LOCALHOST),
 +            ]);
 +        }
-+        match host.parse::<IpAddr>() {
-+            Ok(ip) if ip.is_loopback() => Ok(vec![ip]),
-+            Ok(_) => Err(NetworkError::PermissionDenied),
-+            Err(_) => Err(NetworkError::Unsupported),
++        if matching_rules.is_empty() {
++            return Err(NetworkError::PermissionDenied);
++        }
++        let addresses = egress.remote.resolve(&normalized, port, None).await?;
++        let mut returned = HashSet::new();
++        let mut resolved = egress.resolved.lock().unwrap();
++        for (key, rule) in matching_rules {
++            let allowed = addresses
++                .iter()
++                .copied()
++                .filter(|address| rule.allow_private_network || is_public_address(*address))
++                .collect::<HashSet<_>>();
++            returned.extend(allowed.iter().copied());
++            resolved.insert(key.clone(), allowed);
++        }
++        if returned.is_empty() {
++            return Err(NetworkError::PermissionDenied);
++        }
++        Ok(returned.into_iter().collect())
++    }
++}
++
++fn connected_egress_socket(
++    inner: Box<dyn VirtualTcpSocket + Sync>,
++) -> Box<dyn VirtualTcpSocket + Sync> {
++    Box::new(ConnectedEgressTcpSocket {
++        inner,
++        initial_write_ready: true,
++        write_blocked: false,
++        eof: false,
++    })
++}
++
++#[derive(Debug)]
++struct ConnectedEgressTcpSocket {
++    inner: Box<dyn VirtualTcpSocket + Sync>,
++    initial_write_ready: bool,
++    write_blocked: bool,
++    eof: bool,
++}
++
++impl VirtualIoSource for ConnectedEgressTcpSocket {
++    fn remove_handler(&mut self) {
++        self.inner.remove_handler();
++    }
++
++    fn poll_read_ready(&mut self, context: &mut Context<'_>) -> Poll<virtual_net::Result<usize>> {
++        let result = self.inner.poll_read_ready(context);
++        if matches!(result, Poll::Ready(Ok(0))) {
++            self.eof = true;
++        }
++        result
++    }
++
++    fn poll_write_ready(&mut self, context: &mut Context<'_>) -> Poll<virtual_net::Result<usize>> {
++        if self.initial_write_ready {
++            self.initial_write_ready = false;
++            return Poll::Ready(Ok(64 * 1024));
++        }
++        if !self.write_blocked {
++            return Poll::Pending;
++        }
++        let result = self.inner.poll_write_ready(context);
++        if result.is_ready() {
++            self.write_blocked = false;
++        }
++        result
++    }
++}
++
++impl VirtualSocket for ConnectedEgressTcpSocket {
++    fn set_ttl(&mut self, ttl: u32) -> virtual_net::Result<()> {
++        self.inner.set_ttl(ttl)
++    }
++
++    fn ttl(&self) -> virtual_net::Result<u32> {
++        self.inner.ttl()
++    }
++
++    fn addr_local(&self) -> virtual_net::Result<SocketAddr> {
++        self.inner.addr_local()
++    }
++
++    fn status(&self) -> virtual_net::Result<SocketStatus> {
++        self.inner.status()
++    }
++
++    fn set_handler(
++        &mut self,
++        handler: Box<dyn InterestHandler + Send + Sync>,
++    ) -> virtual_net::Result<()> {
++        self.inner.set_handler(handler)
++    }
++}
++
++impl VirtualConnectedSocket for ConnectedEgressTcpSocket {
++    fn set_linger(&mut self, linger: Option<Duration>) -> virtual_net::Result<()> {
++        self.inner.set_linger(linger)
++    }
++
++    fn linger(&self) -> virtual_net::Result<Option<Duration>> {
++        self.inner.linger()
++    }
++
++    fn try_send(&mut self, data: &[u8]) -> virtual_net::Result<usize> {
++        let result = self.inner.try_send(data);
++        self.write_blocked = matches!(result, Err(NetworkError::WouldBlock));
++        result
++    }
++
++    fn try_flush(&mut self) -> virtual_net::Result<()> {
++        let result = self.inner.try_flush();
++        self.write_blocked = matches!(result, Err(NetworkError::WouldBlock));
++        result
++    }
++
++    fn close(&mut self) -> virtual_net::Result<()> {
++        self.inner.close()
++    }
++
++    fn try_recv(
++        &mut self,
++        buffer: &mut [MaybeUninit<u8>],
++        peek: bool,
++    ) -> virtual_net::Result<usize> {
++        if self.eof {
++            Ok(0)
++        } else {
++            self.inner.try_recv(buffer, peek)
++        }
++    }
++}
++
++impl VirtualTcpSocket for ConnectedEgressTcpSocket {
++    fn set_recv_buf_size(&mut self, size: usize) -> virtual_net::Result<()> {
++        self.inner.set_recv_buf_size(size)
++    }
++
++    fn recv_buf_size(&self) -> virtual_net::Result<usize> {
++        self.inner.recv_buf_size()
++    }
++
++    fn set_send_buf_size(&mut self, size: usize) -> virtual_net::Result<()> {
++        self.inner.set_send_buf_size(size)
++    }
++
++    fn send_buf_size(&self) -> virtual_net::Result<usize> {
++        self.inner.send_buf_size()
++    }
++
++    fn set_nodelay(&mut self, reuse: bool) -> virtual_net::Result<()> {
++        self.inner.set_nodelay(reuse)
++    }
++
++    fn nodelay(&self) -> virtual_net::Result<bool> {
++        self.inner.nodelay()
++    }
++
++    fn set_keepalive(&mut self, keepalive: bool) -> virtual_net::Result<()> {
++        self.inner.set_keepalive(keepalive)
++    }
++
++    fn keepalive(&self) -> virtual_net::Result<bool> {
++        self.inner.keepalive()
++    }
++
++    fn set_dontroute(&mut self, dont_route: bool) -> virtual_net::Result<()> {
++        self.inner.set_dontroute(dont_route)
++    }
++
++    fn dontroute(&self) -> virtual_net::Result<bool> {
++        self.inner.dontroute()
++    }
++
++    fn addr_peer(&self) -> virtual_net::Result<SocketAddr> {
++        self.inner.addr_peer()
++    }
++
++    fn shutdown(&mut self, how: std::net::Shutdown) -> virtual_net::Result<()> {
++        self.inner.shutdown(how)
++    }
++
++    fn is_closed(&self) -> bool {
++        self.inner.is_closed()
++    }
++}
++
++fn normalize_hostname(host: &str) -> anyhow::Result<String> {
++    let host = host.strip_suffix('.').unwrap_or(host);
++    match url::Host::parse(host)? {
++        url::Host::Domain(domain) if !domain.is_empty() && !domain.contains('*') => {
++            Ok(domain.to_ascii_lowercase())
++        }
++        _ => anyhow::bail!("network egress hosts must be exact DNS names"),
++    }
++}
++
++fn is_public_address(address: IpAddr) -> bool {
++    match address {
++        IpAddr::V4(address) => {
++            let [a, b, c, _] = address.octets();
++            !(a == 0
++                || a == 10
++                || a == 127
++                || (a == 100 && (64..=127).contains(&b))
++                || (a == 169 && b == 254)
++                || (a == 172 && (16..=31).contains(&b))
++                || (a == 192 && b == 0 && c == 0)
++                || (a == 192 && b == 0 && c == 2)
++                || (a == 192 && b == 88 && c == 99)
++                || (a == 192 && b == 168)
++                || (a == 198 && (b == 18 || b == 19))
++                || (a == 198 && b == 51 && c == 100)
++                || (a == 203 && b == 0 && c == 113)
++                || a >= 224)
++        }
++        IpAddr::V6(address) => {
++            if let Some(mapped) = address.to_ipv4_mapped() {
++                return is_public_address(IpAddr::V4(mapped));
++            }
++            let segments = address.segments();
++            !(address.is_unspecified()
++                || address.is_loopback()
++                || address.is_multicast()
++                || (segments[0] & 0xfe00) == 0xfc00
++                || (segments[0] & 0xffc0) == 0xfe80
++                || (segments[0] & 0xffc0) == 0xfec0
++                || (segments[0] == 0x2001 && segments[1] == 0x0db8))
 +        }
 +    }
 +}
@@ -177,37 +559,170 @@ index 0000000..f4c1a81
 +        self.inner.ttl()
 +    }
 +}
-diff --git a/src/lib.rs b/src/lib.rs
-index 7b22da5..b51bfee 100644
---- a/src/lib.rs
-+++ b/src/lib.rs
+diff --git i/src/js_runtime.rs w/src/js_runtime.rs
+index 9374b69..a839f26 100644
+--- i/src/js_runtime.rs
++++ w/src/js_runtime.rs
+@@ -3,9 +3,9 @@ use std::{
+     sync::Arc,
+ };
+ 
+-use wasm_bindgen::{prelude::wasm_bindgen, JsCast};
++use wasm_bindgen::{prelude::wasm_bindgen, JsCast, JsValue};
+ 
+-use crate::{runtime::Runtime, utils::Error};
++use crate::{browser_network::NetworkEgressCapability, runtime::Runtime, utils::Error};
+ 
+ #[derive(Clone, Debug, wasm_bindgen_derive::TryFromJsValue)]
+ #[repr(transparent)]
+@@ -44,8 +44,13 @@ impl JsRuntime {
+             rt.set_registry(registry, api_key.as_deref())?;
+         }
+ 
+-        if let Some(gateway) = options.as_ref().and_then(|opts| opts.network_gateway()) {
+-            rt.set_network_gateway(gateway);
++        if let Some(options) = options.as_ref() {
++            let value = options.network_egress();
++            if !value.is_undefined() {
++                let capability: NetworkEgressCapability =
++                    serde_wasm_bindgen::from_value(value).map_err(Error::js)?;
++                rt.set_network_egress(capability.validate()?);
++            }
+         }
+ 
+         Ok(JsRuntime::new(Arc::new(rt)))
+@@ -111,9 +116,20 @@ export type RuntimeOptions = {
+      */
+     apiKey?: string;
+     /**
+-     * Enable networking (i.e. TCP and UDP) via a gateway server.
++     * Grant outbound TCP only to the exact listed DNS host and port pairs.
++     *
++     * Localhost listen/connect remains browser-local. Numeric external IPs,
++     * unlisted destinations, and private or special-use addresses are denied.
+      */
+-    networkGateway?: string;
++    networkEgress?: {
++        gatewayUrl: string;
++        gatewayToken: string;
++        allow: ReadonlyArray<{
++            host: string;
++            port: number;
++            allowPrivateNetwork?: boolean;
++        }>;
++    };
+ };
+ "#;
+ 
+@@ -128,8 +144,8 @@ extern "C" {
+     #[wasm_bindgen(method, getter, js_name = "apiKey")]
+     fn api_key(this: &RuntimeOptions) -> Option<String>;
+ 
+-    #[wasm_bindgen(method, getter, js_name = "networkGateway")]
+-    fn network_gateway(this: &RuntimeOptions) -> Option<String>;
++    #[wasm_bindgen(method, getter, js_name = "networkEgress")]
++    fn network_egress(this: &RuntimeOptions) -> JsValue;
+ 
+     #[wasm_bindgen(typescript_type = "string | null | undefined")]
+     type MaybeRegistryUrl;
+diff --git i/src/lib.rs w/src/lib.rs
+index 7b22da5..74dfaf4 100644
+--- i/src/lib.rs
++++ w/src/lib.rs
 @@ -5,6 +5,7 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
  
  extern crate alloc;
  
-+mod browser_loopback;
++mod browser_network;
  pub mod fs;
  mod instance;
  mod js_runtime;
-diff --git a/src/runtime.rs b/src/runtime.rs
-index d71638f..bb2fd44 100644
---- a/src/runtime.rs
-+++ b/src/runtime.rs
-@@ -21,7 +21,7 @@ lazy_static! {
+diff --git i/src/net.rs w/src/net.rs
+index 4adab09..ce8f53b 100644
+--- i/src/net.rs
++++ w/src/net.rs
+@@ -9,7 +9,10 @@ use wasm_bindgen_futures::JsFuture;
+ 
+ use crate::{utils::GlobalScope, ws::WebSocket};
+ 
+-pub(crate) fn connect_networking(connect: String) -> RemoteNetworkingClient {
++pub(crate) fn connect_networking(
++    connect: String,
++    capability_protocol: String,
++) -> RemoteNetworkingClient {
+     let (recv_tx, recv_rx) = mpsc::channel(100);
+     let (send_tx, send_rx) = mpsc::channel(100);
+     let send_tx2 = send_tx.clone();
+@@ -32,7 +35,7 @@ pub(crate) fn connect_networking(connect: String) -> RemoteNetworkingClient {
+             backoff.store(new_backoff, Ordering::SeqCst);
+ 
+             // Establish a websocket connection to the edge network
+-            let mut ws = match WebSocket::new(connect.as_str()) {
++            let mut ws = match WebSocket::new(connect.as_str(), capability_protocol.as_str()) {
+                 Ok(ws) => ws,
+                 Err(err) => {
+                     tracing::error!("failed to establish web socket connection - {}", err);
+diff --git i/src/runtime.rs w/src/runtime.rs
+index d71638f..feff097 100644
+--- i/src/runtime.rs
++++ w/src/runtime.rs
+@@ -21,7 +21,11 @@ lazy_static! {
      static ref DEFAULT_THREAD_POOL: Arc<ThreadPool> = Arc::new(ThreadPool::new());
  }
  
 -use crate::{tasks::ThreadPool, utils::Error};
-+use crate::{browser_loopback::BrowserLoopbackNetworking, tasks::ThreadPool, utils::Error};
++use crate::{
++    browser_network::{BrowserNetworking, NetworkEgressCapability},
++    tasks::ThreadPool,
++    utils::Error,
++};
  
  /// A weak reference to the global [`Runtime`].
  static GLOBAL_RUNTIME: Lazy<Mutex<Weak<Runtime>>> = Lazy::new(Mutex::default);
-@@ -117,7 +117,7 @@ impl Runtime {
+@@ -117,7 +121,7 @@ impl Runtime {
  
          Runtime {
              task_manager: None,
 -            networking: Arc::new(virtual_net::UnsupportedVirtualNetworking::default()),
-+            networking: Arc::new(BrowserLoopbackNetworking::default()),
++            networking: Arc::new(BrowserNetworking::default()),
              source: None,
              http_client: Arc::new(http_client),
              package_loader: Arc::new(package_loader),
+@@ -140,10 +144,16 @@ impl Runtime {
+         Ok(())
+     }
+ 
+-    /// Enable networking (i.e. TCP and UDP) via a gateway server.
+-    pub fn set_network_gateway(&mut self, gateway_url: String) {
+-        let networking = crate::net::connect_networking(gateway_url);
+-        self.networking = Arc::new(networking);
++    /// Grant exact outbound host and port capabilities through a gateway server.
++    pub(crate) fn set_network_egress(&mut self, capability: NetworkEgressCapability) {
++        let remote = crate::net::connect_networking(
++            capability.gateway_url,
++            format!("clawsembly.capability.{}", capability.gateway_token),
++        );
++        self.networking = Arc::new(BrowserNetworking::with_egress(
++            Arc::new(remote),
++            capability.allow,
++        ));
+     }
+ }
+ 
+diff --git i/src/ws.rs w/src/ws.rs
+index fbe217f..ffd6117 100644
+--- i/src/ws.rs
++++ w/src/ws.rs
+@@ -10,9 +10,10 @@ pub struct WebSocket {
+ }
+ 
+ impl WebSocket {
+-    pub fn new(url: &str) -> Result<Self, String> {
++    pub fn new(url: &str, protocol: &str) -> Result<Self, String> {
+         // Open the web socket
+-        let ws_sys = WebSocketSys::new(url).map_err(|err| format!("{:?}", err))?;
++        let ws_sys =
++            WebSocketSys::new_with_str(url, protocol).map_err(|err| format!("{:?}", err))?;
+ 
+         Ok(Self { sys: ws_sys })
+     }
