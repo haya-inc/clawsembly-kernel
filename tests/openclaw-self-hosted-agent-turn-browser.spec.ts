@@ -505,8 +505,6 @@ async function startModelServer(
     "127.0.0.1",
     "--port",
     String(modelPort),
-    "--api-key",
-    modelServiceApiKey,
     "--ctx-size",
     "32768",
     "--parallel",
@@ -518,7 +516,9 @@ async function startModelServer(
     "--no-webui"
   ], {
     cwd: path.dirname(executable),
-    env: {},
+    env: {
+      LLAMA_API_KEY: modelServiceApiKey
+    },
     stdio: "pipe"
   }));
   await waitForHttpReady(
