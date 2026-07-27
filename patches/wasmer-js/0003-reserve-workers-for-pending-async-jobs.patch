@@ -1,0 +1,28 @@
+diff --git a/src/tasks/post_message_payload.rs b/src/tasks/post_message_payload.rs
+index f924d47..7c6b376 100644
+--- a/src/tasks/post_message_payload.rs
++++ b/src/tasks/post_message_payload.rs
+@@ -19,7 +19,10 @@ pub(crate) enum PostMessagePayload {
+ 
+ impl PostMessagePayload {
+     pub(crate) fn would_block(&self) -> bool {
+-        matches!(self, PostMessagePayload::Blocking(_))
++        matches!(
++            self,
++            PostMessagePayload::Async(_) | PostMessagePayload::Blocking(_)
++        )
+     }
+ }
+ 
+diff --git a/src/tasks/thread_pool_worker.rs b/src/tasks/thread_pool_worker.rs
+index 511f9d3..5a2c1e8 100644
+--- a/src/tasks/thread_pool_worker.rs
++++ b/src/tasks/thread_pool_worker.rs
+@@ -42,6 +42,7 @@ impl ThreadPoolWorker {
+     }
+ 
+     async fn execute_async(&self, job: AsyncJob) -> Result<(), crate::utils::Error> {
++        let _guard = self.busy();
+         match job {
+             AsyncJob::Thunk(thunk) => {
+                 thunk().await;

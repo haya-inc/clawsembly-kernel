@@ -16,11 +16,8 @@ on:
       - package.json
       - patches/edgejs/**
       - patches/wasmer-js/**
-      - patches/wasmer-wasix/**
-      - patches/virtual-net/**
       - playwright.config.ts
       - scripts/verify-edgejs-browser-build-contract.mjs
-      - scripts/apply-wasmer-cargo-dependency-patches.mjs
       - scripts/build-openclaw-package-image.mjs
       - scripts/create-edgejs-node-version-diagnostic.mjs
       - scripts/generate-openclaw-package-contract.mjs
@@ -258,9 +255,6 @@ jobs:
         run: |
           set -euo pipefail
           npm --prefix wasmer-js ci --ignore-scripts
-          RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
-            node scripts/apply-wasmer-cargo-dependency-patches.mjs \
-              wasmer-js/Cargo.toml
           (
             cd wasmer-js
             RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \

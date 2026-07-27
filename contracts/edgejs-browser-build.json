@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "runtimeProvider": "quickjs",
   "upstream": {
     "repository": "https://github.com/wasmerio/edgejs",
@@ -68,50 +68,15 @@
       {
         "path": "patches/wasmer-js/0002-add-capability-scoped-browser-loopback.patch",
         "sha256": "1c2e76f13ed50fefc00454d6c9a35e0a4334d22889a44dee51449945a07dd42b"
-      }
-    ],
-    "dependencyPatches": [
-      {
-        "package": "wasmer-wasix",
-        "version": "0.601.0",
-        "source": "registry+https://github.com/rust-lang/crates.io-index",
-        "crateSha256": "a9a804fcfbdbbfe5b2d6fb30e741e22a21e88e964dedfea9e609f13a52823bfe",
-        "patch": {
-          "path": "patches/wasmer-wasix/0001-use-write-readiness-for-writes.patch",
-          "sha256": "a5c1b9336fccc54c64c7374286ee91589ed8e282993f16c65dfc41cb624e8613"
-        },
-        "provenance": {
-          "kind": "upstream-backport",
-          "pullRequest": "https://github.com/wasmerio/wasmer/pull/6297",
-          "commit": "9303e572a2e1f70b60e2efc55668d3718f63e1e5"
-        },
-        "verification": {
-          "targetFile": "src/net/socket.rs",
-          "function": "pub fn poll_write_ready",
-          "expectedSnippet": "inner.poll_write_ready(cx)"
-        }
       },
       {
-        "package": "virtual-net",
-        "version": "0.601.0",
-        "source": "registry+https://github.com/rust-lang/crates.io-index",
-        "crateSha256": "0a7dccbe5d8d3a49e2b43a2c5a4287139e33ba04c03279bfc8a0aef82def2043",
-        "patch": {
-          "path": "patches/virtual-net/0001-rearm-loopback-write-readiness-after-receive.patch",
-          "sha256": "17aee7a42472ba29f526917e216456a2fcd5dbb0a9b1eaaf764e3676c9fcaec2"
-        },
-        "provenance": {
-          "kind": "clawsembly-fix",
-          "regression": "tests/edgejs-wasix-browser.spec.ts"
-        },
-        "verification": {
-          "targetFile": "src/tcp_pair.rs",
-          "function": "fn rearm_write_ready",
-          "expectedSnippet": "handler.push_interest(InterestType::Writable)"
-        }
+        "path": "patches/wasmer-js/0003-reserve-workers-for-pending-async-jobs.patch",
+        "sha256": "7533ee1f877f95094e36c22a44ed91c9cf5a8abd1397e8d05d4afa36c23c1f23"
       }
     ],
+    "dependencyPatches": [],
     "schedulerStress": {
+      "asyncWorkerReservation": "until-future-completion",
       "browserCpuThrottlingRate": 12
     },
     "build": {

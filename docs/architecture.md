@@ -89,7 +89,7 @@ The browser runtime is source-built from pinned upstream commits:
 ```text
 Chromium Worker
   -> patched Wasmer JS (browser-native async compilation)
-  -> WASIX scheduler (module + original bytes retained across Workers)
+  -> WASIX scheduler (module bytes + pending-job Worker ownership)
   -> self-contained Edge.js WASIX
   -> embedded QuickJS N-API provider
   -> Node-compatible OpenClaw process
@@ -166,6 +166,17 @@ large byte buffer through its older compiler path, while passing only an
 already-compiled `WebAssembly.Module` loses the original bytes required by
 WASIX child Workers. The kernel compiles asynchronously with Chromium, passes
 `{ module, bytes }`, and preserves both across scheduler messages.
+
+The scheduler also reserves a Worker until an asynchronous job's Future
+completes. Stock scheduling marks the Worker reusable as soon as an async
+payload launches. A WASIX sleep therefore leaves a pending JavaScript timer on
+that Worker, which can then receive a synchronous WASM process that blocks the
+timer's event loop. Under concurrent Gateway/client execution this starves the
+sleeping process even though its TCP data is already readable. The audited
+patch keeps the Worker busy through Future completion; the throttled browser
+loopback test is the regression proof. With that ownership fix in place, the
+pinned `wasmer-wasix` and `virtual-net` crates pass unchanged; no Cargo
+dependency patches remain in the browser build contract.
 
 The pinned Wasmer JS source also constructs a configured `WasiEnvBuilder` but
 then executes a different, unconfigured `WasiRunner`. That loses command-line
