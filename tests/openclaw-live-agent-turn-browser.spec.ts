@@ -229,7 +229,7 @@ test("unmodified OpenClaw completes a live model turn over guest TLS", async ({
           "--thinking",
           "off",
           "--timeout",
-          "60",
+          "120",
           "--json"
         ],
         completion: "agent-turn-output-observed",

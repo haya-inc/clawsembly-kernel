@@ -197,7 +197,7 @@ test("unmodified OpenClaw completes an agent turn through capability egress", as
           "--thinking",
           "off",
           "--timeout",
-          "60",
+          "120",
           "--json"
         ],
         distinctGuestProcess: true

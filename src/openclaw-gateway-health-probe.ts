@@ -358,6 +358,7 @@ const sensitiveValues = liveProviderProof
     )
   : [];
 const agentTurnMarker = "CLAWSEMBLY_AGENT_TURN_OK";
+const agentTurnTimeoutSeconds = 120;
 const readinessMarker = "http server listening";
 const clientLaunchMarker = "agent runtime plugins pre-warmed";
 const clientCompletionGraceMs = 10_000;
@@ -870,7 +871,7 @@ async function runProbe(): Promise<void> {
           "--thinking",
           "off",
           "--timeout",
-          "60",
+          String(agentTurnTimeoutSeconds),
           "--json"
         ]
       : [
@@ -888,7 +889,7 @@ async function runProbe(): Promise<void> {
         ];
     const clientArgv = ["/bin/edge", ...clientArgs];
     const clientProofTimeoutMs = agentTurnProof
-      ? Math.min(75_000, proofTimeoutMs)
+      ? Math.min(150_000, proofTimeoutMs)
       : Math.min(105_000, proofTimeoutMs);
     const clientTimeoutMarker =
       `CLAWSEMBLY_CLIENT_PROOF_TIMEOUT=${clientProofTimeoutMs}`;

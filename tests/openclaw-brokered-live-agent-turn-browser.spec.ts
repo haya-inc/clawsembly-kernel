@@ -402,7 +402,7 @@ function jsonLines(value: string): JsonRecord[] {
             "--thinking",
             "off",
             "--timeout",
-            "60",
+            "120",
             "--json"
           ],
           completion: "agent-turn-output-observed",
