@@ -27,14 +27,19 @@ const artifactPath = process.env.CLAWSEMBLY_EDGE_WASIX;
 const relayPath = process.env.CLAWSEMBLY_NETWORK_RELAY;
 const relayToken = "clawsembly-browser-egress-proof";
 
-test.describe.configure({ mode: "serial" });
+// The Wasmer SDK has no public API for terminating a WASIX Instance blocked
+// inside a syscall. A test timeout tears down the Playwright worker and all of
+// its browser Web Workers; a retry therefore starts the entire proof cold.
+// Failed attempts never write evidence, while a successful attempt must still
+// satisfy every assertion below.
+test.describe.configure({ mode: "serial", retries: 2 });
 
 test("reports the Edge.js globals required by Undici", async ({ page }) => {
   test.skip(
     artifactPath === undefined || !existsSync(artifactPath),
     "Set CLAWSEMBLY_EDGE_WASIX"
   );
-  test.setTimeout(120_000);
+  test.setTimeout(75_000);
   await page.route((url) => url.pathname === "/edgejs.wasm", async (route) => {
     await route.fulfill({
       contentType: "application/wasm",
@@ -49,8 +54,11 @@ test("reports the Edge.js globals required by Undici", async ({ page }) => {
   const status = page.locator("#status");
   await expect.poll(
     () => status.getAttribute("data-state"),
-    { timeout: 90_000 }
-  ).toBe("pass");
+    { timeout: 60_000 }
+  ).toMatch(/^(?:pass|fail)$/u);
+  if (await status.getAttribute("data-state") === "fail") {
+    throw new Error(await page.locator("#result").innerText());
+  }
   const evidence = JSON.parse(await page.locator("#result").innerText()) as {
     output: {
       ok: boolean;
@@ -72,7 +80,7 @@ test("captures the Edge.js HTTP fetch diagnostic", async ({ page }) => {
       || !existsSync(relayPath),
     "Set CLAWSEMBLY_EDGE_WASIX and CLAWSEMBLY_NETWORK_RELAY"
   );
-  test.setTimeout(120_000);
+  test.setTimeout(75_000);
   const fixture = await startFixture();
   let relay: ChildProcessWithoutNullStreams | undefined;
   try {
@@ -91,8 +99,11 @@ test("captures the Edge.js HTTP fetch diagnostic", async ({ page }) => {
     const status = page.locator("#status");
     await expect.poll(
       () => status.getAttribute("data-state"),
-      { timeout: 90_000 }
-    ).toBe("pass");
+      { timeout: 60_000 }
+    ).toMatch(/^(?:pass|fail)$/u);
+    if (await status.getAttribute("data-state") === "fail") {
+      throw new Error(await page.locator("#result").innerText());
+    }
     const evidence = JSON.parse(await page.locator("#result").innerText()) as {
       status: string;
       stderr: string;
@@ -133,7 +144,7 @@ test("grants exact TCP egress without replacing browser-local loopback", async (
       || !existsSync(relayPath),
     "Set CLAWSEMBLY_EDGE_WASIX and CLAWSEMBLY_NETWORK_RELAY"
   );
-  test.setTimeout(240_000);
+  test.setTimeout(120_000);
 
   const fixture = await startFixture();
   let relay: ChildProcessWithoutNullStreams | undefined;
@@ -166,7 +177,7 @@ test("grants exact TCP egress without replacing browser-local loopback", async (
     const outcome = await Promise.race([
       expect.poll(
         () => status.getAttribute("data-state"),
-        { timeout: 210_000 }
+        { timeout: 105_000 }
       ).toMatch(/^(?:pass|fail)$/u).then(() => ({ kind: "status" as const })),
       pageError.then((error) => ({ error, kind: "pageerror" as const }))
     ]);

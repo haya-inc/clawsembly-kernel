@@ -174,31 +174,38 @@ async function runProbe(): Promise<void> {
 
     if (searchParams.get("mode") === "http-fetch-diagnostic") {
       const prefix = "CLAWSEMBLY_HTTP_FETCH_DIAGNOSTIC=";
+      const completionMarker =
+        "CLAWSEMBLY_HTTP_FETCH_DIAGNOSTIC_COMPLETE";
       const diagnosticInstance = await runWasix(moduleWithBytes, {
         program: "edgejs",
         args: ["-e", [
           `const prefix=${JSON.stringify(prefix)};`,
+          `const completion=${JSON.stringify(completionMarker)};`,
+          "const finish=(code,value)=>{",
+          "console.log(prefix+JSON.stringify(value));",
+          "console.log(completion);",
+          "clearTimeout(watchdog);process.exit(code)};",
           `fetch('http://localhost:${fixturePort}/fixture-http')`,
           ".then(async(response)=>({",
           "ok:response.ok,status:response.status,body:await response.text()",
           "}))",
-          ".then(value=>console.log(prefix+JSON.stringify({ok:true,value})))",
-          ".catch(error=>console.log(prefix+JSON.stringify({",
+          ".then(value=>finish(0,{ok:true,value}))",
+          ".catch(error=>finish(1,{",
           "ok:false,name:error?.name,message:error?.message,stack:error?.stack,",
           "causeName:error?.cause?.name,causeMessage:error?.cause?.message,",
           "causeStack:error?.cause?.stack",
-          "})));",
-          "setTimeout(()=>console.log(prefix+JSON.stringify({",
+          "}));",
+          "const watchdog=setTimeout(()=>finish(124,{",
           "ok:false,name:'DiagnosticTimeout'",
-          "})),30000);"
+          "}),30000);"
         ].join("")],
         runtime
       });
       const stdout = captureStream(diagnosticInstance.stdout);
       const stderr = captureStream(diagnosticInstance.stderr);
       await Promise.any([
-        stdout.waitFor(prefix, 35_000),
-        stderr.waitFor(prefix, 35_000)
+        stdout.waitFor(completionMarker, 35_000),
+        stderr.waitFor(completionMarker, 35_000)
       ]);
       status.dataset.state = "pass";
       status.textContent = "PASS · Edge.js HTTP fetch crossed exact egress";
@@ -212,6 +219,7 @@ async function runProbe(): Promise<void> {
     }
 
     status.textContent = "Proving browser-local loopback remains local…";
+    console.info("CLAWSEMBLY_NETWORK_PHASE=browser-local-loopback");
     const listeningMarker = "CLAWSEMBLY_EGRESS_LOOPBACK_LISTENING";
     const serverMarker = "CLAWSEMBLY_EGRESS_LOOPBACK_SERVER=ping:pong";
     const clientMarker = "CLAWSEMBLY_EGRESS_LOOPBACK_CLIENT=pong";
@@ -270,6 +278,7 @@ async function runProbe(): Promise<void> {
     }
 
     status.textContent = "Proving the exact granted host and port…";
+    console.info("CLAWSEMBLY_NETWORK_PHASE=authorized-egress");
     const authorizedMarker = "CLAWSEMBLY_EGRESS_AUTHORIZED=egress-pong";
     const authorized = await runScript([
       "const net=require('node:net');let response='';",
@@ -291,6 +300,7 @@ async function runProbe(): Promise<void> {
     }
 
     status.textContent = "Proving ungranted authority is denied…";
+    console.info("CLAWSEMBLY_NETWORK_PHASE=denied-egress");
     const denialCompleteMarker = "CLAWSEMBLY_EGRESS_DENIAL_SUITE=complete";
     const denialInstance = await runWasix(moduleWithBytes, {
       program: "edgejs",
@@ -331,6 +341,7 @@ async function runProbe(): Promise<void> {
     const denialStdout = captureStream(denialInstance.stdout);
     const denialStderr = captureStream(denialInstance.stderr);
     await denialStdout.waitFor(denialCompleteMarker, 45_000);
+    console.info("CLAWSEMBLY_NETWORK_PHASE=denied-egress-complete");
     const denialStdoutSnapshot = denialStdout.snapshot();
     const denialStderrSnapshot = denialStderr.snapshot();
     const denialLabels = {
