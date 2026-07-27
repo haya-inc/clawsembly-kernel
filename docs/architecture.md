@@ -316,6 +316,21 @@ returns the assistant marker to the CLI. The fixture records the request
 method, path, authorization, model, streaming flag, message roles, and
 instruction without receiving relay credentials or any wider guest authority.
 
+A separate live-provider lane replaces the fixture grant with exactly
+`models.github.ai:443`. The relay remains an opaque raw-TCP carrier: the
+unmodified guest's Node TLS stack sends SNI, validates the public certificate,
+and exchanges the streaming chat-completion response end to end. The GitHub
+Actions job grants `contents: read` for its source build and `models: read` for
+inference; its guest network capability allows the Models DNS endpoint but not
+GitHub's repository API. The browser harness injects that short-lived token
+outside the URL, the probe deletes the injection point after consuming it, and
+recursive redaction plus test assertions prevent the token from entering
+published evidence. This establishes live TLS and provider compatibility, but
+deliberately does not claim the final credential boundary: the token still
+exists inside the guest's in-memory OpenClaw configuration.
+Production use needs an opaque broker that holds provider credentials outside
+the guest and exposes only the authorized inference operation.
+
 The Edge.js implementation baseline and compatibility claim remain distinct.
 `edgejs --version` reports the source identity `v24.13.2-pre`, while
 `process.version` and `process.versions.node` report the contract-gated
@@ -329,10 +344,10 @@ affected by the WAL-reset corruption bug. This kernel queries the loaded SQLite
 library and proves 3.53.4, above OpenClaw's 3.51.3 safe floor, before the
 unmodified Gateway uses state. The required install lifecycle effects execute
 on the same filesystem before Gateway startup. The deterministic fixture proves
-the real OpenClaw agent code path and capability transport, but not live model
-inference or Internet TLS. Durable recovery is separately proven through a
-complete browser restart; a live authorized TLS model-provider exchange remains
-the final end-to-end gate.
+the real OpenClaw agent code path and capability transport. The live lane proves
+model inference and Internet TLS. Durable recovery is separately proven through
+a complete browser restart. An opaque provider-credential broker remains the
+final capability-boundary gate.
 
 Model-provider traffic can use this separately authorized self-hostable
 transport, but it cannot substitute for local Gateway loopback. Browser-local
@@ -369,9 +384,10 @@ loopback exchange described above. The evidence pins:
   `sha512-ycF3yPcbjN6bUPeaUx6Mh6vze1hQWoD3CT/wWcmD7a8xaHHHRUaAlaq+lFxMHf1ssEgODVAwjlzYqp2twkYZ7g==`
 
 The same workflow extends the lane through Gateway readiness, authenticated
-client RPC, the deterministic agent turn, and fresh-browser OPFS recovery. It
-does not yet satisfy the complete North Star because the provider proof is not
-a live authorized TLS exchange.
+client RPC, the deterministic agent turn, fresh-browser OPFS recovery, and a
+live authorized TLS agent turn. It does not yet satisfy the complete North Star
+because the compatibility proof supplies its short-lived provider credential
+to the guest rather than resolving an opaque inference capability outside it.
 
 ## OPFS WAL precondition
 

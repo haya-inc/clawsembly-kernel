@@ -172,6 +172,13 @@ Experimental. Current execution milestones:
   official postinstall SQLite registry without re-running installation. A
   second restored directory then starts the unmodified Gateway and completes
   its authenticated health RPC.
+- The public source-build lane also runs a separate live-provider compatibility
+  proof. The unmodified OpenClaw CLI asks the unmodified Gateway for an agent
+  turn; guest Node TLS validates `models.github.ai`, while the raw-TCP relay
+  grants only that exact DNS name on port 443 and cannot terminate or inspect
+  TLS. GitHub Actions supplies its short-lived job token with `models: read` to
+  this proof without placing it in URLs, logs, or evidence artifacts; the
+  guest's network grant excludes GitHub's repository API.
 
 This does not yet claim the North Star is complete. The source-built runtime now
 has an explicit, workload-scoped Node compatibility profile: it transparently
@@ -179,8 +186,12 @@ separates the Edge.js `v24.13.2-pre` implementation baseline from the `24.15.0`
 version exposed to OpenClaw, and proves why that floor is safe for this workload
 instead of claiming general Node conformance. SQLite WAL-reset safety is pinned
 to 3.53.4 and its compiled browser binding is proven. Nested JavaScript
-WebAssembly and the deterministic Gateway-backed agent path are also proven.
-A live TLS model-provider exchange through the new capability remains open.
+WebAssembly, the deterministic Gateway-backed agent path, durable state, and a
+live TLS provider path are also proven. The remaining security gate is an
+opaque provider-credential broker: the live compatibility proof currently
+hands a short-lived job token to the guest and narrows its usable network path,
+whereas production credentials must remain outside it and be represented only
+by revocable capabilities.
 See
 [the artifact-derived SQLite contract](docs/openclaw-sqlite-contract.md) and
 [the Node compatibility profile](docs/node-compatibility-profile.md). The

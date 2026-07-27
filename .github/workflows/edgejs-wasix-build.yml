@@ -39,6 +39,7 @@ on:
       - tests/openclaw-agent-turn-browser.spec.ts
       - tests/openclaw-entrypoint-browser.spec.ts
       - tests/openclaw-gateway-health-browser.spec.ts
+      - tests/openclaw-live-agent-turn-browser.spec.ts
       - tests/openclaw-package-image-browser.spec.ts
       - tests/openclaw-package-runtime-browser.spec.ts
       - tsconfig.app.json
@@ -54,6 +55,7 @@ on:
 
 permissions:
   contents: read
+  models: read
 
 concurrency:
   group: edgejs-wasix-${{ github.ref }}
@@ -736,6 +738,70 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Prove a live OpenClaw agent turn over guest-validated TLS
+        env:
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
+          CLAWSEMBLY_LIVE_PROVIDER_API_KEY: ${{ secrets.GITHUB_TOKEN }}
+          CLAWSEMBLY_NETWORK_RELAY: ${{ github.workspace }}/relay/target/release/clawsembly-network-relay
+          CLAWSEMBLY_OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
+          CLAWSEMBLY_OPENCLAW_LIVE_AGENT_TURN_PROOF: "1"
+          CLAWSEMBLY_OPENCLAW_LIVE_AGENT_TURN_TIMEOUT_MS: "240000"
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
+        run: |
+          npx playwright test tests/openclaw-live-agent-turn-browser.spec.ts
+
+      - name: Preserve live OpenClaw agent-turn attempt evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="artifacts/live-agent-turn-attempt"
+          mkdir -p "${destination}"
+          mkdir -p test-results
+          evidence="$(
+            find test-results \
+              -name openclaw-live-agent-turn-browser-evidence.json \
+              -type f \
+              -print \
+              | head -n 1
+          )"
+          if test -n "${evidence}"; then
+            cp "${evidence}" \
+              artifacts/openclaw-live-agent-turn-browser-evidence.json
+            cp "${evidence}" "${destination}/"
+          fi
+          while IFS= read -r context; do
+            cp "${context}" \
+              "${destination}/error-context-$(
+                basename "$(dirname "${context}")"
+              ).md"
+          done < <(
+            find test-results -name error-context.md -type f -print | sort
+          )
+          jq -n \
+            --arg evidence "${evidence}" \
+            --argjson errorContexts "$(
+              find "${destination}" \
+                -name 'error-context-*.md' \
+                -type f \
+                | sort \
+                | jq -Rsc 'split("\n") | map(select(length > 0))'
+            )" \
+            '{
+              schemaVersion: 1,
+              evidence: (if $evidence == "" then null else $evidence end),
+              errorContexts: $errorContexts
+            }' > "${destination}/manifest.json"
+
+      - name: Upload live OpenClaw agent-turn diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: edgejs-wasix-live-agent-turn-diagnostics
+          path: artifacts/live-agent-turn-attempt/
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Assemble build evidence
         shell: bash
         env:
@@ -767,6 +833,7 @@ jobs:
           package_mount_evidence="artifacts/openclaw-package-image-browser-evidence.json"
           gateway_evidence="artifacts/openclaw-gateway-runtime-browser-evidence.json"
           agent_turn_evidence="artifacts/openclaw-agent-turn-browser-evidence.json"
+          live_agent_turn_evidence="artifacts/openclaw-live-agent-turn-browser-evidence.json"
           nested_wasm_smoke_evidence="nested-wasm/dist/link-smoke-evidence.json"
           gateway_health_evidence=""
           # Playwright resets test-results before the following agent test;
@@ -791,6 +858,7 @@ jobs:
           test -s "${package_mount_evidence}"
           test -s "${gateway_evidence}"
           test -s "${agent_turn_evidence}"
+          test -s "${live_agent_turn_evidence}"
           test -n "${gateway_health_evidence}"
           test -s "${nested_wasm_smoke_evidence}"
           cp "${gateway_health_evidence}" \
@@ -839,6 +907,7 @@ jobs:
             --slurpfile gateway "${gateway_evidence}" \
             --slurpfile gatewayHealth "${gateway_health_evidence}" \
             --slurpfile agentTurn "${agent_turn_evidence}" \
+            --slurpfile liveAgentTurn "${live_agent_turn_evidence}" \
             --slurpfile nestedWasmSmoke "${nested_wasm_smoke_evidence}" \
             --argjson nodeCompatibilityContract "$(
               jq '.nodeCompatibility' contracts/edgejs-browser-build.json
@@ -864,7 +933,7 @@ jobs:
                 contracts/edgejs-browser-build.json
             )" \
             '{
-              schemaVersion: 4,
+              schemaVersion: 5,
               edgeSourceCommit: $edgeSourceCommit,
               runtimeProvider: $runtimeProvider,
               patches: $edgePatches,
@@ -926,7 +995,8 @@ jobs:
               openclawRuntimeProof: {
                 browser: $gateway[0],
                 healthRpc: $gatewayHealth[0],
-                agentTurn: $agentTurn[0]
+                agentTurn: $agentTurn[0],
+                liveAgentTurn: $liveAgentTurn[0]
               }
             }' > artifacts/edgejs-wasix-build-evidence.json
           cat artifacts/edgejs-wasix-build-evidence.json

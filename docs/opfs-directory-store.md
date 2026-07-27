@@ -81,6 +81,7 @@ The combined evidence requires the database SHA-256, generation ID, manifest
 SHA-256, directory count, file count, and payload byte count to match on both
 sides of the browser restart. The restored Gateway must consume that exact
 generation; re-running package lifecycle hooks is forbidden. This closes the
-fresh-browser state-recovery gate for the pinned release. It does not prove
-live authorized model inference over TLS, which remains a separate North Star
+fresh-browser state-recovery gate for the pinned release. Live authorized model
+inference over TLS is proven by a separate browser lane in the same source-build
+workflow; an opaque provider-credential broker remains a separate security
 gate.

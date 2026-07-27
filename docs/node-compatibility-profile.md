@@ -46,6 +46,9 @@ passes all of these checks:
    completes an authenticated health RPC.
 6. The unmodified Gateway completes an agent turn through the explicit outbound
    TCP capability.
+7. A separate lane replaces the deterministic fixture with a live provider;
+   the guest validates `models.github.ai` over TLS and receives the requested
+   assistant marker.
 
 The machine-readable definition is
 `contracts/edgejs-browser-build.json#nodeCompatibility`. The public workflow
@@ -64,4 +67,6 @@ install lifecycle effects are now independently proven by the
 [install lifecycle contract](openclaw-install-lifecycle.md), and the
 [OPFS directory store](opfs-directory-store.md) proves recovery of that state
 after a complete browser restart. A live authorized TLS model-provider exchange
-remains a separate gate.
+is also proven separately. The remaining security gate is an opaque
+provider-credential broker that prevents production credentials from entering
+the untrusted guest.

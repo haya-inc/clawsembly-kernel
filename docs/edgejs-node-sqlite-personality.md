@@ -134,8 +134,11 @@ This still does not satisfy the North Star:
   contract. The generation-addressed OPFS store separately proves recovery of
   that official state after a complete browser restart. The deterministic
   browser fixture proves the unmodified Gateway-backed agent path and its
-  capability-authorized TCP transport, but a live TLS model-provider exchange
-  remains unproven.
+  capability-authorized TCP transport. A separate lane proves a live model
+  response over guest-validated TLS. That compatibility lane still injects a
+  short-lived job token into guest memory and relies on a DNS-derived TCP
+  restriction, so an opaque provider-credential broker remains unproven.
 
-This remaining live-provider gate stays explicit in the evidence; Gateway
-health cannot silently turn it into a completion claim.
+This remaining credential-boundary gate stays explicit in the evidence;
+Gateway health or a raw-token TLS proof cannot silently turn it into a
+completion claim.
