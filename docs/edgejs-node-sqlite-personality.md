@@ -130,10 +130,11 @@ This still does not satisfy the North Star:
 - The WASIX compiler sysroot is pinned to `v2025-12-10.1` so its process ABI
   matches Wasmer JS 0.10's WASIX 6.1 implementation. Newer process imports are
   not replaced with success-looking stubs.
-- Required lifecycle effects, durable OPFS recovery, and a live TLS
-  model-provider exchange remain unproven. The deterministic browser fixture
-  now proves the unmodified Gateway-backed agent path and its
-  capability-authorized TCP transport, but not live model inference.
+- Required lifecycle effects are proven by the version-bound browser install
+  contract. Durable OPFS recovery and a live TLS model-provider exchange remain
+  unproven. The deterministic browser fixture now proves the unmodified
+  Gateway-backed agent path and its capability-authorized TCP transport, but
+  not live model inference.
 
 These remaining gates stay explicit in the evidence; Gateway health cannot
 silently turn them into a completion claim.

@@ -59,6 +59,8 @@ addon ABI compatibility, or that the artifact was built from the official Node
 24.15 source tree. It establishes sufficient, execution-backed compatibility
 for the pinned unmodified OpenClaw Gateway and agent path.
 
-It also does not complete Clawsembly's North Star by itself. Required install
-lifecycle effects, a live TLS model-provider exchange, and durable recovery
-from OPFS in a fresh browser session remain separate gates.
+It also does not complete Clawsembly's North Star by itself. The required
+install lifecycle effects are now independently proven by the
+[install lifecycle contract](openclaw-install-lifecycle.md). A live TLS
+model-provider exchange and durable recovery from OPFS in a fresh browser
+session remain separate gates.

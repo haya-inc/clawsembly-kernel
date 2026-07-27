@@ -752,8 +752,9 @@ async function main() {
       image,
       remainingGates: {
         lifecycleScripts:
-          "The four pinned lifecycle-script entries are recorded but have not "
-          + "yet executed inside the browser kernel.",
+          "The four declared lifecycle-script entries are recorded. Required "
+          + "effects are intentionally deferred to the capability-scoped "
+          + "browser install proof.",
         nodeCompatibility:
           "The image does not claim Node 24.15 compatibility or bypass the "
           + "official launcher version gate.",

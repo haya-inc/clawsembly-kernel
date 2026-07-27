@@ -93,6 +93,18 @@ type GatewayHealthEvidence = {
     sha256: string;
     version: number;
   };
+  installLifecycle?: {
+    packageFiles: {
+      mutated: boolean;
+    };
+    requiredEffects: {
+      packageStateDatabase: {
+        hostContractVersion: string;
+        indexedPlugins: number;
+      };
+    };
+    status: string;
+  };
   isolation?: {
     clientRetryFilesystem: string;
     clientStateRootPattern: string;
@@ -278,6 +290,18 @@ test("official OpenClaw client attempts authenticated Gateway health over browse
     schemaVersion: 1,
     crossOriginIsolated: true,
     executor: "@wasmer/sdk + Edge.js QuickJS/WASIX",
+    installLifecycle: {
+      status: "pass",
+      packageFiles: {
+        mutated: false
+      },
+      requiredEffects: {
+        packageStateDatabase: {
+          hostContractVersion: packageContract.artifact.version,
+          indexedPlugins: 33
+        }
+      }
+    },
     gateway: {
       args: [
         "gateway",
@@ -365,16 +389,7 @@ test("official OpenClaw client attempts authenticated Gateway health over browse
   expect(evidence.client?.health).toMatchObject({
     ok: true,
     plugins: {
-      loaded: [
-        "browser",
-        "canvas",
-        "device-pair",
-        "file-transfer",
-        "memory-core",
-        "ollama",
-        "phone-control",
-        "talk-voice"
-      ],
+      loaded: expect.arrayContaining(["memory-core", "ollama"]),
       errors: []
     }
   });

@@ -37,6 +37,18 @@ type AgentTurnEvidence = {
     state: string;
     stdout: string;
   };
+  installLifecycle: {
+    packageFiles: {
+      mutated: boolean;
+    };
+    requiredEffects: {
+      packageStateDatabase: {
+        hostContractVersion: string;
+        indexedPlugins: number;
+      };
+    };
+    status: string;
+  };
   launchHarness: {
     openclawPackageFilesMutated: boolean;
   };
@@ -161,6 +173,18 @@ test("unmodified OpenClaw completes an agent turn through capability egress", as
             port: fixturePort,
             allowPrivateNetwork: true
           }]
+        }
+      },
+      installLifecycle: {
+        status: "pass",
+        packageFiles: {
+          mutated: false
+        },
+        requiredEffects: {
+          packageStateDatabase: {
+            hostContractVersion: "2026.7.1-2",
+            indexedPlugins: 33
+          }
         }
       },
       client: {

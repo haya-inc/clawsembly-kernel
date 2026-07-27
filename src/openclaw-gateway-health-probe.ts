@@ -1,5 +1,6 @@
 import "./style.css";
 import { parseClawsemblyFs } from "./clawsemblyfs";
+import { runOpenClawInstallLifecycle } from "./openclaw-install-lifecycle";
 
 type OpenClawPackage = {
   engines?: {
@@ -453,6 +454,21 @@ async function runProbe(): Promise<void> {
     const gatewayWorkspace = "/openclaw/.clawsembly-gateway-workspace";
     await gatewayOpenclaw.createDir("/.clawsembly-gateway-state");
     await gatewayOpenclaw.createDir("/.clawsembly-gateway-workspace");
+    const module = await WebAssembly.compile(edgeBytes);
+    const moduleWithBytes = {
+      module,
+      bytes: edgeBytes
+    } as unknown as WebAssembly.Module;
+    status.textContent =
+      "Installing required OpenClaw lifecycle effects in the browser kernel…";
+    const installLifecycle = await runOpenClawInstallLifecycle({
+      directory: gatewayOpenclaw,
+      homeDir: "/openclaw/.clawsembly-gateway-home",
+      module: moduleWithBytes,
+      runWasix,
+      runtime: wasixRuntime,
+      stateDir: "/openclaw/.clawsembly-gateway-state"
+    });
     await gatewayOpenclaw.writeFile(
       "/.clawsembly-gateway-state/openclaw.json",
       new TextEncoder().encode(JSON.stringify({
@@ -502,11 +518,6 @@ async function runProbe(): Promise<void> {
           : {})
       }, null, 2))
     );
-    const module = await WebAssembly.compile(edgeBytes);
-    const moduleWithBytes = {
-      module,
-      bytes: edgeBytes
-    } as unknown as WebAssembly.Module;
     const gatewayArgs = [
       "gateway",
       "run",
@@ -617,6 +628,7 @@ async function runProbe(): Promise<void> {
         artifact: artifactEvidence,
         image: imageEvidence,
         openclaw: openclawEvidence,
+        installLifecycle,
         network: networkEvidence,
         isolation: isolationEvidence,
         launchHarness: launchHarnessEvidence,
@@ -916,6 +928,7 @@ async function runProbe(): Promise<void> {
       artifact: artifactEvidence,
       image: imageEvidence,
       openclaw: openclawEvidence,
+      installLifecycle,
       network: networkEvidence,
       isolation: isolationEvidence,
       launchHarness: launchHarnessEvidence,

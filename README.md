@@ -158,6 +158,13 @@ Experimental. Current execution milestones:
   assistant marker. The test also guards QuickJS's ECMAScript
   `WeakRef` keep-during-job semantics, which Undici requires to return a
   `Response` rather than `undefined`.
+- The required install lifecycle effects now execute inside Chromium before
+  Gateway startup. The exact root pre/postinstall and `protobufjs` postinstall
+  scripts complete against one shared capability filesystem; the official
+  postinstall creates a SQLite-backed registry with 33 indexed plugins, which
+  a fresh Edge.js process reopens and verifies. The Google hook is an audited
+  literal no-op, while OpenClaw's own `allowBuilds` policy disables the unused
+  `tree-sitter-bash` native build in favor of its published Wasm grammar.
 
 This does not yet claim the North Star is complete. The source-built runtime now
 has an explicit, workload-scoped Node compatibility profile: it transparently
@@ -166,12 +173,12 @@ version exposed to OpenClaw, and proves why that floor is safe for this workload
 instead of claiming general Node conformance. SQLite WAL-reset safety is pinned
 to 3.53.4 and its compiled browser binding is proven. Nested JavaScript
 WebAssembly and the deterministic Gateway-backed agent path are also proven.
-Required lifecycle effects, a live TLS model-provider exchange through the new
-capability, and durable OPFS ownership across a fresh browser session remain
-open. See
+A live TLS model-provider exchange through the new capability and durable OPFS
+ownership across a fresh browser session remain open. See
 [the artifact-derived SQLite contract](docs/openclaw-sqlite-contract.md) and
-[the Node compatibility profile](docs/node-compatibility-profile.md) for the
-implemented and deliberately unsupported boundaries.
+[the Node compatibility profile](docs/node-compatibility-profile.md). The
+[install lifecycle contract](docs/openclaw-install-lifecycle.md) records the
+executed effects and deliberately unauthorized native build.
 
 ## License
 

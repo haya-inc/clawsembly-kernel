@@ -150,9 +150,14 @@ a deterministic `ClawsemblyFS` image. The browser verifies and mounts that
 complete image at `/openclaw`; OpenClaw files remain byte-identical.
 
 Required lifecycle scripts are recorded with their exact package identities
-and commands. They are not silently treated as complete: executing or replacing
-each required lifecycle effect inside the capability kernel remains an
-explicit gate before the package-install requirement is satisfied.
+and commands. The browser kernel executes the exact root pre/postinstall and
+`protobufjs` scripts against a shared capability directory. The root
+postinstall leaves the clean package files unchanged, creates the SQLite-backed
+installed plugin index, and a separate Edge.js process verifies all 33 records.
+The Google hook is a literal no-op. OpenClaw's own `allowBuilds` policy disables
+the `tree-sitter-bash` native build, and its reached command-explainer path uses
+the validated published Wasm grammar instead. This is a version-bound install
+contract, not permission to run arbitrary dependency scripts.
 
 Edge.js's QuickJS `globalThis.WebAssembly` surface is now backed by the
 MIT/Apache-2.0 `wasmi_c_api_impl` crate, compiled for
@@ -315,11 +320,11 @@ test-suite conformance or that Edge.js is an official Node binary.
 OpenClaw introduced the Node 24.15 floor to reject embedded SQLite releases
 affected by the WAL-reset corruption bug. This kernel queries the loaded SQLite
 library and proves 3.53.4, above OpenClaw's 3.51.3 safe floor, before the
-unmodified Gateway uses state. The deterministic fixture proves the real
-OpenClaw agent code path and capability transport, but not live model inference
-or Internet TLS. A live authorized model-provider exchange, required install
-lifecycle effects, and persistent recovery in a fresh browser session remain
-separate gates.
+unmodified Gateway uses state. The required install lifecycle effects execute
+on the same filesystem before Gateway startup. The deterministic fixture proves
+the real OpenClaw agent code path and capability transport, but not live model
+inference or Internet TLS. A live authorized model-provider exchange and
+persistent recovery in a fresh browser session remain separate gates.
 
 Model-provider traffic can use this separately authorized self-hostable
 transport, but it cannot substitute for local Gateway loopback. Browser-local
