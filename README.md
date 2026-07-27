@@ -176,9 +176,9 @@ Experimental. Current execution milestones:
   proof. The unmodified OpenClaw CLI asks the unmodified Gateway for an agent
   turn; guest Node TLS validates `models.github.ai`, while the raw-TCP relay
   grants only that exact DNS name on port 443 and cannot terminate or inspect
-  TLS. GitHub Actions supplies its short-lived job token with `models: read` to
-  this proof without placing it in URLs, logs, or evidence artifacts; the
-  guest's network grant excludes GitHub's repository API.
+  TLS. A separate GitHub Actions job has `models: read` but no repository
+  contents permission and supplies its short-lived token without placing it in
+  URLs, logs, or evidence artifacts.
 
 This does not yet claim the North Star is complete. The source-built runtime now
 has an explicit, workload-scoped Node compatibility profile: it transparently

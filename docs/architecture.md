@@ -319,10 +319,11 @@ instruction without receiving relay credentials or any wider guest authority.
 A separate live-provider lane replaces the fixture grant with exactly
 `models.github.ai:443`. The relay remains an opaque raw-TCP carrier: the
 unmodified guest's Node TLS stack sends SNI, validates the public certificate,
-and exchanges the streaming chat-completion response end to end. The GitHub
-Actions job grants `contents: read` for its source build and `models: read` for
-inference; its guest network capability allows the Models DNS endpoint but not
-GitHub's repository API. The browser harness injects that short-lived token
+and exchanges the streaming chat-completion response end to end. The source
+build job exports only integrity-addressed runtime inputs and a `git archive`
+proof runner. A separate job has `models: read` and no repository contents
+permission; its guest network capability allows the Models DNS endpoint but
+not GitHub's repository API. The browser harness injects that short-lived token
 outside the URL, the probe deletes the injection point after consuming it, and
 recursive redaction plus test assertions prevent the token from entering
 published evidence. This establishes live TLS and provider compatibility, but

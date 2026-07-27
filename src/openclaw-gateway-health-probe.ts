@@ -529,10 +529,11 @@ async function runProbe(): Promise<void> {
     const notNorthStarCompletion = liveProviderProof
       ? "This proves a live authorized model turn over guest-enforced TLS; "
         + "durable fresh-browser OPFS recovery is proven separately in the "
-        + "same public build. CI supplies its short-lived job token and a "
-        + "DNS-derived Models endpoint grant as explicit guest capabilities "
-        + "for this compatibility proof; an opaque production credential "
-        + "broker remains a separate security gate."
+        + "same public build. A repository-isolated CI job supplies its "
+        + "short-lived models:read token and a DNS-derived endpoint grant as "
+        + "explicit guest capabilities for this compatibility proof; an "
+        + "opaque production credential broker remains a separate security "
+        + "gate."
       : proofKind === "agent-turn"
         ? "This proves the real unmodified OpenClaw agent path against a "
           + "deterministic OpenAI-compatible fixture under the source-declared "
@@ -1149,7 +1150,8 @@ async function runProbe(): Promise<void> {
                 credential: "job-scoped GITHUB_TOKEN",
                 providerEgress: "models.github.ai:443 DNS-derived TCP grant",
                 recorded: false,
-                workflowPermissions: ["contents: read", "models: read"]
+                repositoryContentsPermission: "none",
+                workflowPermissions: ["models: read"]
               },
               baseUrl: providerBaseUrl,
               expectedMarker: agentTurnMarker,

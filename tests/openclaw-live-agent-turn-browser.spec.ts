@@ -38,6 +38,7 @@ type LiveAgentTurnEvidence = {
       credential: string;
       providerEgress: string;
       recorded: boolean;
+      repositoryContentsPermission: string;
       workflowPermissions: string[];
     };
     baseUrl: string;
@@ -161,7 +162,8 @@ test("unmodified OpenClaw completes a live model turn over guest TLS", async ({
           providerEgress:
             "models.github.ai:443 DNS-derived TCP grant",
           recorded: false,
-          workflowPermissions: ["contents: read", "models: read"]
+          repositoryContentsPermission: "none",
+          workflowPermissions: ["models: read"]
         },
         baseUrl: "https://models.github.ai/inference",
         expectedMarker: responseMarker,
