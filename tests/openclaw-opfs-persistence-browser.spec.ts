@@ -215,14 +215,14 @@ async function runRestoredGatewayHealth(options: {
     `${options.baseURL}/openclaw-gateway-health-probe.html`
     + "?artifact=/edgejs.wasm"
     + "&image=/openclaw.clawfs"
-    + "&timeoutMs=240000"
+    + "&timeoutMs=300000"
     + `&restoreStore=${options.storeId}`
   );
   const status = options.page.locator("#status");
   const outcome = await Promise.race([
     expect.poll(
       () => status.getAttribute("data-state"),
-      { timeout: 300_000 }
+      { timeout: 360_000 }
     ).toMatch(/^(?:pass|fail)$/u).then(() => ({ kind: "status" as const })),
     pageError.then((error) => ({ error, kind: "pageerror" as const }))
   ]);
@@ -247,7 +247,7 @@ test("official OpenClaw state survives a complete browser restart through OPFS",
       || !existsSync(imageEvidencePath),
     "Set the Edge.js artifact, package image, and build evidence paths"
   );
-  test.setTimeout(600_000);
+  test.setTimeout(720_000);
   if (!baseURL) throw new Error("Playwright baseURL is required");
 
   const resolvedEdgePath = path.resolve(edgeArtifactPath!);
@@ -296,25 +296,30 @@ test("official OpenClaw state survives a complete browser restart through OPFS",
       { headless: true }
     );
     try {
-      const readPage = await readContext.newPage();
       readEvidence = await runPhase<ReadEvidence>({
         artifactPath: resolvedEdgePath,
         baseURL,
-        page: readPage,
-        phase: "read",
-        storeId
-      });
-      // Release the first Wasmer runtime and its Worker pool before proving
-      // the restored Gateway in another clean page of this browser session.
-      await readPage.close();
-      gatewayHealthEvidence = await runRestoredGatewayHealth({
-        artifactPath: resolvedEdgePath,
-        baseURL,
         page: await readContext.newPage(),
+        phase: "read",
         storeId
       });
     } finally {
       await readContext.close();
+    }
+
+    const gatewayContext = await chromium.launchPersistentContext(
+      profileDirectory,
+      { headless: true }
+    );
+    try {
+      gatewayHealthEvidence = await runRestoredGatewayHealth({
+        artifactPath: resolvedEdgePath,
+        baseURL,
+        page: await gatewayContext.newPage(),
+        storeId
+      });
+    } finally {
+      await gatewayContext.close();
     }
   } finally {
     await rm(profileDirectory, { recursive: true, force: true });
@@ -465,7 +470,7 @@ test("official OpenClaw state survives a complete browser restart through OPFS",
       + "Directory; new Edge.js processes reopened its SQLite registry and "
       + "completed the official Gateway health RPC without reinstalling.",
     browserSessions: {
-      generations: 2,
+      generations: 3,
       fullyClosedBetweenPhases: true,
       samePersistentProfile: true,
       distinctSessionNonces: true

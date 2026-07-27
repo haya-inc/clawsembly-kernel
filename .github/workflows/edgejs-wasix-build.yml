@@ -13,6 +13,7 @@ on:
       - contracts/edgejs-browser-build.json
       - contracts/openclaw-artifact.json
       - contracts/openclaw-package.generated.json
+      - docs/provider-credential-broker.md
       - package-lock.json
       - package.json
       - patches/edgejs/**
@@ -20,6 +21,7 @@ on:
       - patches/wasmer-wasix/**
       - patches/virtual-net/**
       - playwright.config.ts
+      - provider-broker/**
       - relay/**
       - scripts/apply-cargo-dependency-patches.mjs
       - scripts/verify-edgejs-browser-build-contract.mjs
@@ -37,6 +39,7 @@ on:
       - tests/edgejs-wasix-browser.spec.ts
       - tests/network-egress-browser.spec.ts
       - tests/openclaw-agent-turn-browser.spec.ts
+      - tests/openclaw-brokered-live-agent-turn-browser.spec.ts
       - tests/openclaw-entrypoint-browser.spec.ts
       - tests/openclaw-gateway-health-browser.spec.ts
       - tests/openclaw-live-agent-turn-browser.spec.ts
@@ -160,7 +163,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: ${{ steps.contract.outputs.rust_version }}
-          components: rustfmt
+          components: rustfmt, clippy
 
       - name: Install pinned wasixcc
         uses: wasix-org/wasixcc@8a505d4605b15fd466a3881d286582b23e4ffecb
@@ -380,6 +383,18 @@ jobs:
           cargo build --locked --release --manifest-path relay/Cargo.toml
           test -x relay/target/release/clawsembly-network-relay
 
+      - name: Check and build the self-hostable provider credential broker
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run broker:check
+          cargo clippy --locked --manifest-path provider-broker/Cargo.toml \
+            -- -D warnings
+          cargo build --locked --release \
+            --manifest-path provider-broker/Cargo.toml
+          test -x \
+            provider-broker/target/release/clawsembly-provider-broker
+
       - name: Build self-contained QuickJS Edge.js WASIX
         shell: bash
         env:
@@ -424,6 +439,7 @@ jobs:
             edgejs/edge-quickjs-wasix-browser-compatible.zip
             legacy-validation-error.txt
             nested-wasm/dist/
+            provider-broker/target/release/clawsembly-provider-broker
             relay/target/release/clawsembly-network-relay
             wasmer-js/dist/
           if-no-files-found: error
@@ -758,6 +774,9 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts
           cp edgejs/edge-quickjs-wasix-browser-compatible.zip artifacts/
+          cp \
+            provider-broker/target/release/clawsembly-provider-broker \
+            artifacts/
           cp relay/target/release/clawsembly-network-relay artifacts/
           browser_evidence="artifacts/edgejs-wasix-browser-evidence.json"
           network_evidence="artifacts/network-egress-browser-evidence.json"
@@ -953,6 +972,9 @@ jobs:
           cp "${OPENCLAW_IMAGE}" "${destination}/openclaw.clawfs"
           cp relay/target/release/clawsembly-network-relay \
             "${destination}/clawsembly-network-relay"
+          cp \
+            provider-broker/target/release/clawsembly-provider-broker \
+            "${destination}/clawsembly-provider-broker"
           cp -R wasmer-js/dist/. "${destination}/wasmer-sdk/"
 
       - name: Upload least-privilege live-proof inputs
@@ -983,6 +1005,7 @@ jobs:
           mkdir -p live-runner
           tar -xf live-inputs/runner.tar -C live-runner
           chmod +x live-inputs/clawsembly-network-relay
+          chmod +x live-inputs/clawsembly-provider-broker
 
       - name: Set up Node
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
@@ -1010,6 +1033,36 @@ jobs:
         run: |
           npx playwright test tests/openclaw-live-agent-turn-browser.spec.ts
 
+      - name: Preserve the raw guest-TLS proof before the next browser run
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$(
+            find test-results \
+              -name openclaw-live-agent-turn-browser-evidence.json \
+              -type f \
+              -print \
+              | head -n 1
+          )"
+          test -n "${evidence}"
+          cp "${evidence}" \
+            ../openclaw-live-agent-turn-browser-evidence.json
+
+      - name: Prove a live OpenClaw turn through the opaque credential broker
+        working-directory: live-runner
+        env:
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/live-inputs/edgejs.wasm
+          CLAWSEMBLY_LIVE_PROVIDER_API_KEY: ${{ secrets.GITHUB_TOKEN }}
+          CLAWSEMBLY_NETWORK_RELAY: ${{ github.workspace }}/live-inputs/clawsembly-network-relay
+          CLAWSEMBLY_OPENCLAW_BROKERED_LIVE_AGENT_TURN_PROOF: "1"
+          CLAWSEMBLY_OPENCLAW_IMAGE: ${{ github.workspace }}/live-inputs/openclaw.clawfs
+          CLAWSEMBLY_OPENCLAW_LIVE_AGENT_TURN_TIMEOUT_MS: "240000"
+          CLAWSEMBLY_PROVIDER_BROKER: ${{ github.workspace }}/live-inputs/clawsembly-provider-broker
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/live-inputs/wasmer-sdk
+        run: |
+          npx playwright test \
+            tests/openclaw-brokered-live-agent-turn-browser.spec.ts
+
       - name: Preserve live OpenClaw agent-turn attempt evidence
         if: ${{ always() }}
         shell: bash
@@ -1018,17 +1071,36 @@ jobs:
           destination="live-agent-turn-diagnostics"
           mkdir -p "${destination}"
           mkdir -p live-runner/test-results
-          evidence="$(
+          raw_evidence="openclaw-live-agent-turn-browser-evidence.json"
+          if ! test -s "${raw_evidence}"; then
+            raw_evidence="$(
+              find live-runner/test-results \
+                -name openclaw-live-agent-turn-browser-evidence.json \
+                -type f \
+                -print \
+                | head -n 1
+            )"
+          fi
+          if test -n "${raw_evidence}" && test -s "${raw_evidence}"; then
+            if test "${raw_evidence}" \
+              != "openclaw-live-agent-turn-browser-evidence.json"
+            then
+              cp "${raw_evidence}" \
+                openclaw-live-agent-turn-browser-evidence.json
+            fi
+            cp "${raw_evidence}" "${destination}/"
+          fi
+          brokered_evidence="$(
             find live-runner/test-results \
-              -name openclaw-live-agent-turn-browser-evidence.json \
+              -name openclaw-brokered-live-agent-turn-browser-evidence.json \
               -type f \
               -print \
               | head -n 1
           )"
-          if test -n "${evidence}"; then
-            cp "${evidence}" \
-              openclaw-live-agent-turn-browser-evidence.json
-            cp "${evidence}" "${destination}/"
+          if test -n "${brokered_evidence}"; then
+            cp "${brokered_evidence}" \
+              openclaw-brokered-live-agent-turn-browser-evidence.json
+            cp "${brokered_evidence}" "${destination}/"
           fi
           while IFS= read -r context; do
             cp "${context}" \
@@ -1043,7 +1115,8 @@ jobs:
               | sort
           )
           jq -n \
-            --arg evidence "${evidence}" \
+            --arg rawEvidence "${raw_evidence}" \
+            --arg brokeredEvidence "${brokered_evidence}" \
             --argjson errorContexts "$(
               find "${destination}" \
                 -name 'error-context-*.md' \
@@ -1053,7 +1126,15 @@ jobs:
             )" \
             '{
               schemaVersion: 1,
-              evidence: (if $evidence == "" then null else $evidence end),
+              rawEvidence: (
+                if $rawEvidence == "" then null else $rawEvidence end
+              ),
+              brokeredEvidence: (
+                if $brokeredEvidence == ""
+                then null
+                else $brokeredEvidence
+                end
+              ),
               errorContexts: $errorContexts
             }' > "${destination}/manifest.json"
 
@@ -1072,31 +1153,84 @@ jobs:
           name: edgejs-wasix-browser-compatible-base
           path: final-artifacts
 
-      - name: Bind live-provider evidence to the source-built artifact
+      - name: Bind both live-provider proofs to the source-built artifact
         shell: bash
         run: |
           set -euo pipefail
           base="final-artifacts/edgejs-wasix-build-evidence.json"
           live="openclaw-live-agent-turn-browser-evidence.json"
+          brokered="openclaw-brokered-live-agent-turn-browser-evidence.json"
+          broker_binary="final-artifacts/clawsembly-provider-broker"
           test -s "${base}"
           test -s "${live}"
+          test -s "${brokered}"
+          test -s "${broker_binary}"
           jq -e '.schemaVersion == 4' "${base}" >/dev/null
           jq -e '.status == "live-agent-turn-pass"' "${live}" >/dev/null
+          jq -e \
+            '.status == "brokered-live-agent-turn-pass"' \
+            "${brokered}" >/dev/null
           jq -e --slurpfile base "${base}" '
             .artifact.sha256 == $base[0].artifact.wasmSha256
             and .image.sha256 == $base[0].packageImage.build.image.sha256
           ' "${live}" >/dev/null
+          jq -e --slurpfile base "${base}" '
+            .artifact.sha256 == $base[0].artifact.wasmSha256
+            and .image.sha256 == $base[0].packageImage.build.image.sha256
+            and .credentialBroker.browserReceivesProviderCredential == false
+            and .credentialBroker.provider.authentication.recorded == false
+            and .credentialBroker.provider.tls.visibleToGuest == false
+            and .credentialBroker.hostProcess.ready
+              .providerCredentialRecorded == false
+            and .credentialBroker.hostProcess.upstreamResponse
+              .providerCredentialRecorded == false
+            and .credentialBroker.hostProcess.upstreamResponse
+              .requestBodyRecorded == false
+          ' "${brokered}" >/dev/null
           cp "${live}" \
             final-artifacts/openclaw-live-agent-turn-browser-evidence.json
-          jq --slurpfile live "${live}" '
-            .schemaVersion = 5
+          cp "${brokered}" \
+            final-artifacts/openclaw-brokered-live-agent-turn-browser-evidence.json
+          broker_binary_sha256="$(
+            sha256sum "${broker_binary}" | awk '{print $1}'
+          )"
+          broker_source_sha256="$(
+            (
+              cd live-runner
+              sha256sum \
+                provider-broker/Cargo.toml \
+                provider-broker/Cargo.lock \
+                provider-broker/src/main.rs
+            ) | sha256sum | awk '{print $1}'
+          )"
+          jq \
+            --arg brokerBinarySha256 "${broker_binary_sha256}" \
+            --arg brokerSourceSha256 "${broker_source_sha256}" \
+            --slurpfile brokered "${brokered}" \
+            --slurpfile live "${live}" '
+            .schemaVersion = 6
             | .openclawRuntimeProof.liveAgentTurn = $live[0]
+            | .openclawRuntimeProof.brokeredLiveAgentTurn = $brokered[0]
+            | .providerCredentialBroker = {
+                implementation: "clawsembly-provider-broker",
+                license: "MIT",
+                sourceFilesSha256: $brokerSourceSha256,
+                binarySha256: $brokerBinarySha256,
+                browserReceivesProviderCredential: false,
+                providerCredentialRecorded: false,
+                proof: $brokered[0].credentialBroker
+              }
           ' "${base}" > "${base}.next"
           mv "${base}.next" "${base}"
           jq -e '
-            .schemaVersion == 5
+            .schemaVersion == 6
             and .openclawRuntimeProof.liveAgentTurn.status
               == "live-agent-turn-pass"
+            and .openclawRuntimeProof.brokeredLiveAgentTurn.status
+              == "brokered-live-agent-turn-pass"
+            and .providerCredentialBroker.browserReceivesProviderCredential
+              == false
+            and .providerCredentialBroker.providerCredentialRecorded == false
           ' "${base}" >/dev/null
 
       - name: Upload live-proven browser runtime and evidence

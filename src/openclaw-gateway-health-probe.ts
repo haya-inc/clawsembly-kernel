@@ -40,7 +40,8 @@ type AgentTurnResponse = {
 };
 
 type LiveProviderCapability = {
-  providerApiKey: string;
+  brokerToken?: string;
+  providerApiKey?: string;
   relayToken: string;
 };
 
@@ -260,21 +261,33 @@ function consumeLiveProviderCapability(): LiveProviderCapability | undefined {
     return undefined;
   }
   const candidate = value as {
+    brokerToken?: unknown;
     providerApiKey?: unknown;
     relayToken?: unknown;
   };
   if (
-    typeof candidate.providerApiKey !== "string"
-    || candidate.providerApiKey.length === 0
-    || candidate.providerApiKey.length > 4_096
-    || typeof candidate.relayToken !== "string"
+    typeof candidate.relayToken !== "string"
     || candidate.relayToken.length === 0
     || candidate.relayToken.length > 128
   ) {
     return undefined;
   }
+  const providerApiKey =
+    typeof candidate.providerApiKey === "string"
+      && candidate.providerApiKey.length > 0
+      && candidate.providerApiKey.length <= 4_096
+      ? candidate.providerApiKey
+      : undefined;
+  const brokerToken =
+    typeof candidate.brokerToken === "string"
+      && candidate.brokerToken.length > 0
+      && candidate.brokerToken.length <= 128
+      ? candidate.brokerToken
+      : undefined;
+  if (!providerApiKey && !brokerToken) return undefined;
   return {
-    providerApiKey: candidate.providerApiKey,
+    ...(brokerToken ? { brokerToken } : {}),
+    ...(providerApiKey ? { providerApiKey } : {}),
     relayToken: candidate.relayToken
   };
 }
@@ -310,10 +323,15 @@ const imageUrl = searchParams.get("image") ?? "/openclaw.clawfs";
 const requestedProofKind = searchParams.get("proof");
 const proofKind = requestedProofKind === "agent-turn"
   || requestedProofKind === "live-agent-turn"
+  || requestedProofKind === "brokered-live-agent-turn"
   ? requestedProofKind
   : "health";
 const agentTurnProof = proofKind !== "health";
-const liveProviderProof = proofKind === "live-agent-turn";
+const directLiveProviderProof = proofKind === "live-agent-turn";
+const brokeredLiveProviderProof =
+  proofKind === "brokered-live-agent-turn";
+const liveProviderProof =
+  directLiveProviderProof || brokeredLiveProviderProof;
 const liveProviderCapability = liveProviderProof
   ? consumeLiveProviderCapability()
   : undefined;
@@ -334,23 +352,37 @@ const proofTimeoutMs =
 const gatewayPort = 18_789;
 const gatewayUrl = `ws://127.0.0.1:${gatewayPort}`;
 const gatewayToken = "clawsembly-diagnostic-non-secret-token";
-const providerHost = liveProviderProof ? "models.github.ai" : "localhost";
-const providerPort = liveProviderProof ? 443 : 18_794;
+const providerHost = directLiveProviderProof
+  ? "models.github.ai"
+  : "localhost";
+const providerPort = directLiveProviderProof ? 443 : 18_794;
 const providerModel = liveProviderProof
   ? "openai/gpt-4o"
   : "clawsembly-proof";
-const providerName = liveProviderProof ? "github-models" : "clawsembly";
-const providerBaseUrl = liveProviderProof
+const providerName = directLiveProviderProof
+  ? "github-models"
+  : brokeredLiveProviderProof
+    ? "clawsembly-broker"
+    : "clawsembly";
+const providerBaseUrl = directLiveProviderProof
   ? "https://models.github.ai/inference"
   : `http://localhost:${providerPort}/v1`;
-const providerApiKey = liveProviderProof
+const providerApiKey = directLiveProviderProof
   ? liveProviderCapability?.providerApiKey
-  : "clawsembly-fixture-key";
-const providerDisplayName = liveProviderProof
+  : brokeredLiveProviderProof
+    ? liveProviderCapability?.brokerToken
+    : "clawsembly-fixture-key";
+const providerDisplayName = directLiveProviderProof
   ? "GitHub Models live TLS proof"
-  : "Clawsembly deterministic proof fixture";
+  : brokeredLiveProviderProof
+    ? "Clawsembly opaque credential-broker proof"
+    : "Clawsembly deterministic proof fixture";
 const sensitiveValues = liveProviderProof
-  ? [relayToken, providerApiKey].filter(
+  ? [
+      relayToken,
+      liveProviderCapability?.brokerToken,
+      liveProviderCapability?.providerApiKey
+    ].filter(
       (value): value is string => typeof value === "string" && value.length > 0
     )
   : [];
@@ -372,8 +404,20 @@ async function runProbe(): Promise<void> {
     if (agentTurnProof && !relayToken) {
       throw new Error("The agent-turn relay capability token is required");
     }
+    if (
+      brokeredLiveProviderProof
+      && liveProviderCapability?.providerApiKey
+    ) {
+      throw new Error(
+        "The brokered proof rejects provider credentials at the browser boundary"
+      );
+    }
     if (liveProviderProof && !providerApiKey) {
-      throw new Error("The live provider capability is required");
+      throw new Error(
+        brokeredLiveProviderProof
+          ? "The opaque provider-broker capability is required"
+          : "The live provider capability is required"
+      );
     }
     const runtimeOptions = agentTurnProof
       ? {
@@ -384,7 +428,7 @@ async function runProbe(): Promise<void> {
             allow: [{
               host: providerHost,
               port: providerPort,
-              allowPrivateNetwork: !liveProviderProof
+              allowPrivateNetwork: !directLiveProviderProof
             }]
           }
         }
@@ -491,8 +535,10 @@ async function runProbe(): Promise<void> {
     }
     const networkEvidence = {
       namespace: agentTurnProof
-        ? liveProviderProof
+        ? directLiveProviderProof
           ? "browser-local-loopback+live-tls-capability-egress"
+          : brokeredLiveProviderProof
+            ? "browser-local-loopback+credential-broker-capability-egress"
           : "browser-local-loopback+capability-egress"
         : "browser-local-loopback",
       url: gatewayUrl,
@@ -501,10 +547,10 @@ async function runProbe(): Promise<void> {
             allow: [{
               host: providerHost,
               port: providerPort,
-              allowPrivateNetwork: !liveProviderProof
+              allowPrivateNetwork: !directLiveProviderProof
             }],
             credentialTransport: "Sec-WebSocket-Protocol",
-            ...(liveProviderProof
+            ...(directLiveProviderProof
               ? {
                   guestTls: {
                     authority: providerHost,
@@ -526,14 +572,19 @@ async function runProbe(): Promise<void> {
       gatewayStateRoot: "/openclaw/.clawsembly-gateway-state",
       clientStateRootPattern: "/openclaw/.clawsembly-client-state-{attempt}"
     };
-    const notNorthStarCompletion = liveProviderProof
+    const notNorthStarCompletion = directLiveProviderProof
       ? "This proves a live authorized model turn over guest-enforced TLS; "
         + "durable fresh-browser OPFS recovery is proven separately in the "
         + "same public build. A repository-isolated CI job supplies its "
         + "short-lived models:read token and a DNS-derived endpoint grant as "
-        + "explicit guest capabilities for this compatibility proof; an "
-        + "opaque production credential broker remains a separate security "
-        + "gate."
+        + "explicit guest capabilities for this compatibility proof; the "
+        + "brokered proof separately closes the provider-secret boundary."
+      : brokeredLiveProviderProof
+        ? "This proves a live authorized model turn while the provider "
+          + "credential remains outside the browser and both WASIX guests. "
+          + "The same public build separately binds this result to the raw "
+          + "guest-TLS compatibility proof and durable fresh-browser OPFS "
+          + "recovery proof."
       : proofKind === "agent-turn"
         ? "This proves the real unmodified OpenClaw agent path against a "
           + "deterministic OpenAI-compatible fixture under the source-declared "
@@ -831,8 +882,10 @@ async function runProbe(): Promise<void> {
       performance.now() - startedAt
     );
     status.textContent = agentTurnProof
-      ? liveProviderProof
+      ? directLiveProviderProof
         ? "Gateway ready; starting a live-provider OpenClaw agent turn…"
+        : brokeredLiveProviderProof
+          ? "Gateway ready; starting a brokered live OpenClaw agent turn…"
         : "Gateway ready; starting an official OpenClaw agent turn…"
       : "Gateway ready; starting the official OpenClaw health client…";
     const clientArgs = agentTurnProof
@@ -863,7 +916,9 @@ async function runProbe(): Promise<void> {
           "--json"
         ];
     const clientArgv = ["/bin/edge", ...clientArgs];
-    const clientProofTimeoutMs = Math.min(75_000, proofTimeoutMs);
+    const clientProofTimeoutMs = agentTurnProof
+      ? Math.min(75_000, proofTimeoutMs)
+      : Math.min(105_000, proofTimeoutMs);
     const clientTimeoutMarker =
       `CLAWSEMBLY_CLIENT_PROOF_TIMEOUT=${clientProofTimeoutMs}`;
     const runClientAttempt = async (attempt: number) => {
@@ -1063,8 +1118,10 @@ async function runProbe(): Promise<void> {
       schemaVersion: 1,
       status: proofPassed
         ? agentTurnProof
-          ? liveProviderProof
+          ? directLiveProviderProof
             ? "live-agent-turn-pass"
+            : brokeredLiveProviderProof
+              ? "brokered-live-agent-turn-pass"
             : "agent-turn-pass"
           : "gateway-health-pass"
         : "blocked",
@@ -1077,11 +1134,17 @@ async function runProbe(): Promise<void> {
           }),
       claim: proofPassed
         ? agentTurnProof
-          ? liveProviderProof
+          ? directLiveProviderProof
             ? "A second browser guest executed the exact official OpenClaw "
               + "CLI, submitted a real agent turn through the unmodified "
               + "Gateway, and received a live GitHub Models reply over "
               + "guest-validated TLS through an exact-host capability relay."
+            : brokeredLiveProviderProof
+              ? "A second browser guest executed the exact official OpenClaw "
+                + "CLI, submitted a real agent turn through the unmodified "
+                + "Gateway, and received a live GitHub Models reply while "
+                + "only an opaque operation capability entered the browser; "
+                + "the provider credential remained in the OSS host broker."
             : "A second browser guest executed the exact official OpenClaw "
               + "CLI, submitted a real agent turn through the unmodified "
               + "Gateway, and received the deterministic model reply through "
@@ -1142,7 +1205,7 @@ async function runProbe(): Promise<void> {
             }
           }
         : {}),
-      ...(liveProviderProof
+      ...(directLiveProviderProof
         ? {
             liveProvider: {
               api: "openai-completions",
@@ -1160,6 +1223,52 @@ async function runProbe(): Promise<void> {
                 authority: providerHost,
                 terminatedByRelay: false,
                 validation: "guest Node TLS/SNI certificate validation"
+              }
+            }
+          }
+        : {}),
+      ...(brokeredLiveProviderProof
+        ? {
+            credentialBroker: {
+              api: "openai-completions",
+              browserReceivesProviderCredential: false,
+              guestEndpoint: providerBaseUrl,
+              guestOperationCapability: {
+                authority:
+                  `POST ${providerBaseUrl}/chat/completions`,
+                model: providerModel,
+                recorded: false,
+                streamingRequired: true
+              },
+              expectedMarker: agentTurnMarker,
+              model: `${providerName}/${providerModel}`,
+              provider: {
+                authentication: {
+                  credential: "job-scoped GITHUB_TOKEN",
+                  recorded: false,
+                  repositoryContentsPermission: "none",
+                  workflowPermissions: ["models: read"]
+                },
+                endpoint:
+                  "https://models.github.ai/inference/chat/completions",
+                model: providerModel,
+                tls: {
+                  authority: "models.github.ai",
+                  terminatedBy: "clawsembly-provider-broker",
+                  validation:
+                    "Rustls HTTPS with platform certificate validation",
+                  visibleToGuest: false
+                }
+              },
+              security: {
+                exactEndpointAndModel: true,
+                loopbackOnly: true,
+                maxConcurrency: 1,
+                maxRequestBytes: 2_097_152,
+                maxRequests: 1,
+                maxResponseBytes: 2_097_152,
+                redirects: "disabled",
+                systemProxy: "disabled"
               }
             }
           }
@@ -1191,8 +1300,10 @@ async function runProbe(): Promise<void> {
     status.dataset.state = "pass";
     status.textContent = proofPassed
       ? agentTurnProof
-        ? liveProviderProof
+        ? directLiveProviderProof
           ? "PASS · Unmodified OpenClaw completed a live TLS agent turn"
+          : brokeredLiveProviderProof
+            ? "PASS · Unmodified OpenClaw completed a brokered live agent turn"
           : "PASS · Unmodified OpenClaw completed a real agent turn"
         : "PASS · Official OpenClaw client completed Gateway health RPC"
       : "MILESTONE · Gateway client blocker captured";
