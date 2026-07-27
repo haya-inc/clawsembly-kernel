@@ -157,6 +157,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: ${{ steps.contract.outputs.rust_version }}
+          components: rustfmt
 
       - name: Install pinned wasixcc
         uses: wasix-org/wasixcc@8a505d4605b15fd466a3881d286582b23e4ffecb
