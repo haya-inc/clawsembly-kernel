@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 5,
+  "schemaVersion": 6,
   "runtimeProvider": "quickjs",
   "upstream": {
     "repository": "https://github.com/wasmerio/edgejs",
@@ -74,7 +74,18 @@
         "sha256": "7533ee1f877f95094e36c22a44ed91c9cf5a8abd1397e8d05d4afa36c23c1f23"
       }
     ],
-    "dependencyPatches": [],
+    "dependencyPatches": [
+      {
+        "package": "wasmer-wasix",
+        "version": "0.601.0",
+        "path": "patches/wasmer-wasix/0001-keep-successful-child-thread-exit-local.patch",
+        "sha256": "6d507c0920c8f2778cd88468684b6126decad70e60a276345222810d0c217d2e"
+      }
+    ],
+    "threadExitPolicy": {
+      "successfulSpawnedThreadExit": "thread-local",
+      "nonzeroSpawnedThreadExit": "process-terminating"
+    },
     "schedulerStress": {
       "asyncWorkerReservation": "until-future-completion",
       "browserCpuThrottlingRate": 12

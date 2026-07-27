@@ -16,6 +16,7 @@ on:
       - package.json
       - patches/edgejs/**
       - patches/wasmer-js/**
+      - patches/wasmer-wasix/**
       - playwright.config.ts
       - scripts/verify-edgejs-browser-build-contract.mjs
       - scripts/build-openclaw-package-image.mjs
@@ -191,7 +192,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y cmake libicu-dev ninja-build unzip
+          sudo apt-get install -y cmake libicu-dev ninja-build patch unzip
           cargo install --locked wasm-tools --version "${WASM_TOOLS_VERSION}"
 
       - name: Fetch pinned official SQLite amalgamation
@@ -257,6 +258,43 @@ jobs:
           npm --prefix wasmer-js ci --ignore-scripts
           (
             cd wasmer-js
+            RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
+              cargo fetch --locked --target wasm32-unknown-unknown
+            while IFS=$'\t' read -r package_name package_version dependency_patch; do
+              dependency_source="$(
+                RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
+                  cargo metadata \
+                    --locked \
+                    --format-version 1 \
+                    --filter-platform wasm32-unknown-unknown \
+                  | jq -r \
+                    --arg name "${package_name}" \
+                    --arg version "${package_version}" \
+                    '.packages[]
+                      | select(.name == $name and .version == $version)
+                      | .manifest_path
+                      | sub("/Cargo.toml$"; "")'
+              )"
+              test -n "${dependency_source}"
+              test -d "${dependency_source}"
+              patch \
+                --dry-run \
+                --silent \
+                -d "${dependency_source}" \
+                -p1 \
+                < "../${dependency_patch}"
+              patch \
+                --silent \
+                -d "${dependency_source}" \
+                -p1 \
+                < "../${dependency_patch}"
+            done < <(
+              jq -r \
+                '.browserExecutor.dependencyPatches[]
+                  | [.package, .version, .path]
+                  | @tsv' \
+                ../contracts/edgejs-browser-build.json
+            )
             RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
               ../tools/wasm-pack/wasm-pack build \
                 --release \

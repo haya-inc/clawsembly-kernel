@@ -1,0 +1,10 @@
+diff --git a/src/syscalls/wasix/thread_spawn.rs b/src/syscalls/wasix/thread_spawn.rs
+--- a/src/syscalls/wasix/thread_spawn.rs
++++ b/src/syscalls/wasix/thread_spawn.rs
+@@ -216,2 +216,4 @@ fn call_module_internal<M: MemorySize>(
+-    // Clean up the environment on exit
+-    env.on_exit(store, exit_code);
++    // WASIX libc can surface a successful child-thread trampoline as Exit(0).
++    // Keep that completion local while preserving process-wide nonzero exits.
++    let process_exit_code = exit_code.filter(|code| !code.is_success());
++    env.on_exit(store, process_exit_code);

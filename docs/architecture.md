@@ -174,9 +174,17 @@ that Worker, which can then receive a synchronous WASM process that blocks the
 timer's event loop. Under concurrent Gateway/client execution this starves the
 sleeping process even though its TCP data is already readable. The audited
 patch keeps the Worker busy through Future completion; the throttled browser
-loopback test is the regression proof. With that ownership fix in place, the
-pinned `wasmer-wasix` and `virtual-net` crates pass unchanged; no Cargo
-dependency patches remain in the browser build contract.
+loopback test is the regression proof.
+
+The pinned `wasmer-wasix@0.601.0` also promotes a successful `Exit(0)` returned
+by a spawned, non-main WASM thread into `WasiProcess::terminate(0)`. Edge.js's
+WASIX libc thread trampoline can take that path after routine background work,
+which previously ended a live Gateway or client with code 0 and no Node
+shutdown event. The audited dependency patch keeps successful spawned-thread
+completion local while preserving process-wide propagation for nonzero exits.
+Three consecutive official Gateway health proofs pass with this rule; the
+preceding diagnostic build reproduced the faulty child-thread termination path
+twice with a unique exit code.
 
 The pinned Wasmer JS source also constructs a configured `WasiEnvBuilder` but
 then executes a different, unconfigured `WasiRunner`. That loses command-line

@@ -16,7 +16,7 @@ const edgeArtifact = readJson(
 );
 const packageLock = readJson(path.join(repositoryRoot, "package-lock.json"));
 
-assert.equal(contract.schemaVersion, 5);
+assert.equal(contract.schemaVersion, 6);
 assert.equal(contract.runtimeProvider, "quickjs");
 assert.equal(contract.upstream.commit, edgeArtifact.source.commit);
 assert.equal(contract.upstream.repository, edgeArtifact.source.repository);
@@ -65,7 +65,27 @@ for (const patch of contract.browserExecutor.patches) {
   );
 }
 
-assert.deepEqual(contract.browserExecutor.dependencyPatches, []);
+assert.deepEqual(
+  contract.browserExecutor.dependencyPatches.map(
+    ({ package: packageName, version }) => ({ package: packageName, version })
+  ),
+  [{ package: "wasmer-wasix", version: "0.601.0" }]
+);
+for (const patch of contract.browserExecutor.dependencyPatches) {
+  const patchPath = path.join(repositoryRoot, patch.path);
+  const actualSha256 = createHash("sha256")
+    .update(readFileSync(patchPath))
+    .digest("hex");
+  assert.equal(
+    actualSha256,
+    patch.sha256,
+    `Cargo dependency patch integrity mismatch: ${patch.path}`
+  );
+}
+assert.deepEqual(contract.browserExecutor.threadExitPolicy, {
+  successfulSpawnedThreadExit: "thread-local",
+  nonzeroSpawnedThreadExit: "process-terminating"
+});
 
 assert.equal(
   contract.browserExecutor.schedulerStress.asyncWorkerReservation,
