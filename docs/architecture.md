@@ -287,7 +287,7 @@ single initial completion required by libuv and waits for real backpressure
 before signaling another writable event.
 
 The same namespace now carries the real OpenClaw protocol. The
-diagnostic-only Node-floor artifact starts the exact unmodified
+single source-built compatibility artifact starts the exact unmodified
 `openclaw@2026.7.1-2` Gateway in normal local mode. After the Gateway emits its
 own readiness markers, a second Edge.js guest runs the official
 `gateway call health` CLI, authenticates with a capability-scoped token, and
@@ -304,14 +304,22 @@ returns the assistant marker to the CLI. The fixture records the request
 method, path, authorization, model, streaming flag, message roles, and
 instruction without receiving relay credentials or any wider guest authority.
 
-This is a Gateway compatibility milestone, not a Node-version claim. The
-artifact differs from the source-built Edge.js Wasm only by two equal-length
-embedded version-label substitutions, and its evidence records both hashes
-and offsets. The deterministic fixture proves the real OpenClaw agent code
-path and capability transport, but not live model inference or Internet TLS.
-Genuine Node 24.15 compatibility, a live authorized model-provider exchange,
-required install lifecycle effects, and persistent recovery in a fresh browser
-session remain separate gates.
+The Edge.js implementation baseline and compatibility claim remain distinct.
+`edgejs --version` reports the source identity `v24.13.2-pre`, while
+`process.version` and `process.versions.node` report the contract-gated
+compatibility version `v24.15.0` and `24.15.0`. That value is compiled from
+audited source, not substituted into a finished Wasm binary. The profile is
+scoped to the pinned unmodified OpenClaw workload and does not claim full Node
+test-suite conformance or that Edge.js is an official Node binary.
+
+OpenClaw introduced the Node 24.15 floor to reject embedded SQLite releases
+affected by the WAL-reset corruption bug. This kernel queries the loaded SQLite
+library and proves 3.53.4, above OpenClaw's 3.51.3 safe floor, before the
+unmodified Gateway uses state. The deterministic fixture proves the real
+OpenClaw agent code path and capability transport, but not live model inference
+or Internet TLS. A live authorized model-provider exchange, required install
+lifecycle effects, and persistent recovery in a fresh browser session remain
+separate gates.
 
 Model-provider traffic can use this separately authorized self-hostable
 transport, but it cannot substitute for local Gateway loopback. Browser-local
@@ -327,30 +335,29 @@ semantics would violate the kernel's compatibility and capability boundaries.
 CI installs only that release's legacy-EH sysroot asset and verifies its pinned
 SHA-256, avoiding the toolchain's unrelated newer `exnref` asset set.
 
-The browser lane is publicly proven by
-[GitHub Actions run 30203815745](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30203815745).
-Chromium reported three arguments (`edgejs`, `-e`, and the evidence program),
-captured the runtime marker, and observed a clean exit. A second process proved
-that `process.exit(7)` unwinds immediately: stdout is exactly `before-exit\n`,
-the following statement is not executed, and WASIX reports code 7. A third
-process executes the exact official `openclaw.mjs` launcher and stops at its
-honest Node version gate with code 1, empty stdout, and no `dist/entry.js`
-fall-through. Additional guests prove synchronous SQLite persistence and the
-browser-local loopback exchange described above. The evidence pins:
+The
+[public browser build workflow](https://github.com/haya-inc/clawsembly-kernel/actions/workflows/edgejs-wasix-build.yml)
+builds the source-pinned runtime and executes the complete lane. Chromium
+reports three arguments (`edgejs`, `-e`, and the evidence program), captures
+the runtime marker, and observes a clean exit. A second process proves that
+`process.exit(7)` unwinds immediately: stdout is exactly `before-exit\n`, the
+following statement is not executed, and WASIX reports code 7. A third process
+executes the exact official `openclaw.mjs` launcher and proves that it accepts
+the source-built compatibility profile without modifying the launcher.
+Additional guests prove synchronous SQLite persistence and the browser-local
+loopback exchange described above. The evidence pins:
 
 - Edge `0.0.0-554eb9b`
-- Node `24.13.2`
+- Edge.js source baseline `v24.13.2-pre`
+- OpenClaw-scoped Node compatibility version `24.15.0`
 - V8 `0.0.0-node.0`
-- Edge.js WASIX SHA-256
-  `706af076949e662f3af2c2d57ae5e23b25956bf796377fa84b56bb048be208ae`
-- Wasmer JS runtime Wasm SHA-256
-  `467cbca59bd647262cd6f7377f6354a36f72f696d959acc60fb79ed52fa2c46d`
+- the Edge.js WASIX and source-built Wasmer JS SHA-256 digests
 - OpenClaw `2026.7.1-2` npm integrity
   `sha512-ycF3yPcbjN6bUPeaUx6Mh6vze1hQWoD3CT/wWcmD7a8xaHHHRUaAlaq+lFxMHf1ssEgODVAwjlzYqp2twkYZ7g==`
 
-That earlier run proves the browser runtime lane. The newer Gateway health
-proof extends the lane through readiness and authenticated client RPC, but
-still does not satisfy the complete North Star.
+The same workflow extends the lane through Gateway readiness, authenticated
+client RPC, and the deterministic agent turn, but does not yet satisfy the
+complete North Star.
 
 ## OPFS WAL precondition
 

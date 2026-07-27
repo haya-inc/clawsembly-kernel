@@ -106,13 +106,14 @@ Experimental. Current execution milestones:
   the kernel `node:sqlite` personality and recovers its state in a fresh
   Edge.js process.
 - Chromium executes the pinned, self-built QuickJS Edge.js WASIX artifact
-  through the pinned, self-built Wasmer JS runtime. The latest public proof
-  records Edge `0.0.0-554eb9b`, Node `24.13.2`, an exact
+  through the pinned, self-built Wasmer JS runtime. The base proof records Edge
+  `0.0.0-554eb9b`, the `v24.13.2-pre` source baseline, the source-declared
+  OpenClaw compatibility version `24.15.0`, an exact
   `process.exit(7)` unwind, an artifact SHA-256 match, and browser-local TCP
   communication between two isolated guest processes. It then executes the
   official `openclaw@2026.7.1-2` launcher from its integrity-pinned npm
-  archive in
-  [GitHub Actions run 30203815745](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30203815745).
+  archive in the
+  [public browser build workflow](https://github.com/haya-inc/clawsembly-kernel/actions/workflows/edgejs-wasix-build.yml).
 - The exact OpenClaw shrinkwrap is materialized as a deterministic
   browser-mountable image: 308 integrity-pinned runtime archives, 32,027 files,
   and exact hashes for `openclaw.mjs`, `dist/entry.js`, `package.json`, and
@@ -129,20 +130,16 @@ Experimental. Current execution milestones:
 - The runtime now provides a capability-scoped browser-local loopback
   namespace. Two separate Edge.js guest processes listen and connect at
   `127.0.0.1:18790`, exchange `ping`/`pong`, and close cleanly. A separate
-  guest proves that external egress is denied by default with `EPERM`. The
-  Edge.js WASIX artifact is
-  `706af076949e662f3af2c2d57ae5e23b25956bf796377fa84b56bb048be208ae`;
-  the complete browser proof is in
-  [GitHub Actions run 30203815745](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30203815745).
-- The diagnostic-only Edge.js artifact, whose two embedded Node version labels
-  are auditably changed from 24.13.2 to 24.15.0 without changing OpenClaw,
-  now starts the exact unmodified Gateway in normal local mode. A separate
-  browser-local WASI guest runs the official CLI, authenticates over the
-  runtime-scoped loopback WebSocket, and receives a valid `health` response
-  with eight plugins loaded and no plugin errors. The proof keeps Gateway and
-  client filesystems distinct, denies ambient external egress, and records
-  exact package-image and entrypoint hashes in
-  [GitHub Actions run 30258622000](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30258622000).
+  guest proves that external egress is denied by default with `EPERM`. Each
+  public build records the exact Edge.js WASIX digest in its final evidence
+  artifact.
+- Edge.js now declares its OpenClaw-scoped Node compatibility version in source
+  rather than rewriting a built Wasm artifact. The contract records that this
+  is not an official Node binary, preserves `v24.13.2-pre` as the implementation
+  baseline, and gates the `24.15.0` compatibility claim on the actual SQLite
+  3.53.4 runtime query, unmodified package integrity, Gateway health RPC, and
+  agent-turn proofs. The official launcher, Gateway, and separate official CLI
+  guest all consume the same source-built Wasm artifact.
 - The browser runtime now has an optional, default-deny outbound-TCP
   capability without replacing browser-local loopback. A self-hostable
   MIT-licensed relay authenticates by WebSocket subprotocol, exposes only DNS
@@ -162,19 +159,18 @@ Experimental. Current execution milestones:
   `WeakRef` keep-during-job semantics, which Undici requires to return a
   `Response` rather than `undefined`.
 
-This does not yet claim the North Star is complete. The pinned Edge.js runtime
-reports Node 24.13.2, below OpenClaw's Node 24.15.0 safety floor. Its official
-launcher therefore stops honestly at that version gate. The separately
-generated 24.15.0-label artifact is retained only as a byte-audited diagnostic
-instrument; a successful Gateway health response from it does not prove
-genuine Node 24.15 compatibility. SQLite WAL-reset safety is pinned to 3.53.4
-and its compiled browser binding is proven. Nested JavaScript WebAssembly and
-the deterministic Gateway-backed agent path are now proven. Required lifecycle
-effects, a genuine Node compatibility profile, a live TLS model-provider
-exchange through the new capability, and durable OPFS ownership across a fresh
-browser session remain open. See
+This does not yet claim the North Star is complete. The source-built runtime now
+has an explicit, workload-scoped Node compatibility profile: it transparently
+separates the Edge.js `v24.13.2-pre` implementation baseline from the `24.15.0`
+version exposed to OpenClaw, and proves why that floor is safe for this workload
+instead of claiming general Node conformance. SQLite WAL-reset safety is pinned
+to 3.53.4 and its compiled browser binding is proven. Nested JavaScript
+WebAssembly and the deterministic Gateway-backed agent path are also proven.
+Required lifecycle effects, a live TLS model-provider exchange through the new
+capability, and durable OPFS ownership across a fresh browser session remain
+open. See
 [the artifact-derived SQLite contract](docs/openclaw-sqlite-contract.md) and
-[the Edge.js personality proof](docs/edgejs-node-sqlite-personality.md) for the
+[the Node compatibility profile](docs/node-compatibility-profile.md) for the
 implemented and deliberately unsupported boundaries.
 
 ## License

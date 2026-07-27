@@ -197,6 +197,7 @@ test("unmodified OpenClaw completes an agent turn through capability egress", as
     expect(evidence.notNorthStarCompletion).toContain(
       "deterministic OpenAI-compatible fixture"
     );
+    expect(evidence.notNorthStarCompletion).not.toContain("relabeled");
 
     const completionRequest = requests.find(
       (request) => request.path === "/v1/chat/completions"

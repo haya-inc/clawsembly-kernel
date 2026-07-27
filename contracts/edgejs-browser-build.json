@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 9,
+  "schemaVersion": 10,
   "runtimeProvider": "quickjs",
   "upstream": {
     "repository": "https://github.com/wasmerio/edgejs",
@@ -34,6 +34,10 @@
     {
       "path": "patches/edgejs/0007-keep-quickjs-weakref-targets-during-job.patch",
       "sha256": "0029d44998faa5633a3fc2843a894346e7af04eeba27e545e1d3a833c67a7a5a"
+    },
+    {
+      "path": "patches/edgejs/0008-declare-openclaw-node-24-compatibility.patch",
+      "sha256": "3e522e86d03246ef2cdb4d15b778efa49f8d2a6dda1274ed7b7b9d893fb76da6"
     }
   ],
   "sqlite": {
@@ -150,9 +154,33 @@
       "wasmPackLinuxSha256": "c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a"
     }
   },
+  "nodeCompatibility": {
+    "profile": "openclaw-2026.7",
+    "reportedVersion": "24.15.0",
+    "sourceBaselineVersion": "v24.13.2-pre",
+    "officialNodeBinary": false,
+    "scope": "unmodified-openclaw-gateway-agent-path",
+    "openclawFloor": {
+      "repository": "https://github.com/openclaw/openclaw",
+      "commit": "f33ab243cf820e7558562381dbfaa1407bfb39a7",
+      "reason": "sqlite-wal-reset-safety",
+      "minimumSqlite": "3.51.3",
+      "safeBackports": [
+        "3.44.6",
+        "3.50.7"
+      ]
+    },
+    "requiredProofs": [
+      "runtime-source-baseline-and-compat-version",
+      "sqlite-wal-cross-process",
+      "unmodified-package-integrity",
+      "gateway-health-rpc",
+      "agent-turn"
+    ]
+  },
   "expectedRuntime": {
     "edge": "0.0.0-554eb9b",
-    "node": "24.13.2",
+    "node": "24.15.0",
     "v8": "0.0.0-node.0",
     "marker": "clawsembly-edgejs-wasix-browser"
   }

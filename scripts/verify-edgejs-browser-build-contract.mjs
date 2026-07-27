@@ -14,6 +14,9 @@ const contract = readJson(
 const edgeArtifact = readJson(
   path.join(repositoryRoot, "contracts/edgejs-artifact.json")
 );
+const openclawPackage = readJson(
+  path.join(repositoryRoot, "contracts/openclaw-package.generated.json")
+);
 const packageLock = readJson(path.join(repositoryRoot, "package-lock.json"));
 const nestedWasmManifest = readFileSync(
   path.join(repositoryRoot, "nested-wasm/Cargo.toml"),
@@ -24,7 +27,7 @@ const nestedWasmLock = readFileSync(
   "utf8"
 );
 
-assert.equal(contract.schemaVersion, 9);
+assert.equal(contract.schemaVersion, 10);
 assert.equal(contract.runtimeProvider, "quickjs");
 assert.equal(contract.upstream.commit, edgeArtifact.source.commit);
 assert.equal(contract.upstream.repository, edgeArtifact.source.repository);
@@ -48,6 +51,39 @@ assert.deepEqual(
   ["sqlite3.c", "sqlite3.h", "sqlite3ext.h"]
 );
 assert.equal(contract.sqlite.extensionLoading, false);
+assert.deepEqual(contract.nodeCompatibility, {
+  profile: "openclaw-2026.7",
+  reportedVersion: "24.15.0",
+  sourceBaselineVersion: "v24.13.2-pre",
+  officialNodeBinary: false,
+  scope: "unmodified-openclaw-gateway-agent-path",
+  openclawFloor: {
+    repository: "https://github.com/openclaw/openclaw",
+    commit: "f33ab243cf820e7558562381dbfaa1407bfb39a7",
+    reason: "sqlite-wal-reset-safety",
+    minimumSqlite: "3.51.3",
+    safeBackports: ["3.44.6", "3.50.7"]
+  },
+  requiredProofs: [
+    "runtime-source-baseline-and-compat-version",
+    "sqlite-wal-cross-process",
+    "unmodified-package-integrity",
+    "gateway-health-rpc",
+    "agent-turn"
+  ]
+});
+assert.equal(
+  contract.nodeCompatibility.reportedVersion,
+  contract.expectedRuntime.node
+);
+assert.equal(
+  openclawPackage.artifact.nodeEngine,
+  ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0"
+);
+assert.match(
+  openclawPackage.artifact.nodeEngine,
+  new RegExp(`>=${contract.nodeCompatibility.reportedVersion.replaceAll(".", "\\.")}`)
+);
 assert.deepEqual(contract.nestedWebAssembly, {
   implementation: "wasmi",
   package: "wasmi_c_api_impl",

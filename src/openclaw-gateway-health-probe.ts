@@ -424,13 +424,13 @@ async function runProbe(): Promise<void> {
     };
     const notNorthStarCompletion = proofKind === "agent-turn"
       ? "This proves the real unmodified OpenClaw agent path against a "
-        + "deterministic OpenAI-compatible fixture, but still uses an "
-        + "auditably relabeled diagnostic Node version and does not replace "
-        + "the required genuine Node compatibility profile or live-provider "
-        + "TLS proof."
-      : "This uses an auditably relabeled diagnostic Node version and does "
-        + "not replace the required genuine Node compatibility profile or "
-        + "real agent-turn proof.";
+        + "deterministic OpenAI-compatible fixture under the source-declared "
+        + "Node compatibility profile, but does not replace live-provider TLS "
+        + "or durable fresh-session OPFS recovery proof."
+      : "This proves the unmodified Gateway health path under the "
+        + "source-declared Node compatibility profile, but does not replace "
+        + "the agent-turn, live-provider TLS, or durable fresh-session OPFS "
+        + "recovery proofs.";
     const launchHarnessEvidence = {
       officialEntrypoint: "/openclaw/dist/entry.js",
       openclawPackageFilesMutated: diagnosticMutation !== undefined,
@@ -438,7 +438,7 @@ async function runProbe(): Promise<void> {
       clientCompletionGraceMs,
       clientLaunchMarker,
       gateway:
-        "Sets guest process.argv, records the diagnostic runtime label, "
+        "Sets guest process.argv, records the runtime compatibility label, "
         + "and retains a bounded watchdog while dynamically importing the "
         + "official entrypoint.",
       client:

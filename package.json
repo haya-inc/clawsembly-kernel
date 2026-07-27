@@ -14,7 +14,6 @@
     "package-contract:generate": "node scripts/generate-openclaw-package-contract.mjs",
     "package-contract:check": "node scripts/generate-openclaw-package-contract.mjs --check",
     "package-image:build": "node scripts/build-openclaw-package-image.mjs",
-    "edgejs:diagnostic-node-floor": "node scripts/create-edgejs-node-version-diagnostic.mjs",
     "contract:check": "node scripts/generate-openclaw-sqlite-contract.mjs --check && npm run package-contract:check && node scripts/verify-edgejs-browser-build-contract.mjs",
     "typecheck": "tsc -p tsconfig.app.json && tsc -p tsconfig.worker.json && tsc -p tsconfig.node.json",
     "build": "npm run typecheck && vite build",

@@ -332,9 +332,9 @@ async function runProbe(): Promise<void> {
         ? "timer-bounded-unmodified-gateway-diagnostic"
         : "direct-unmodified-entry-diagnostic",
       notSuccessReason:
-        "The official launcher Node-version gate was deliberately bypassed "
-        + "only to identify the next compatibility boundary; Gateway "
-        + "readiness requires a successful client connection.",
+        "This bounded probe records an intermediate startup result only; "
+        + "Gateway readiness and client-visible behavior are proved by the "
+        + "separate health-RPC and agent-turn browser proofs.",
       crossOriginIsolated,
       executor: "@wasmer/sdk + Edge.js QuickJS/WASIX",
       image: {

@@ -22,6 +22,10 @@ type BrowserBuildContract = {
     node: string;
     v8: string;
   };
+  nodeCompatibility: {
+    reportedVersion: string;
+    sourceBaselineVersion: string;
+  };
   sqlite: {
     version: string;
   };
@@ -46,8 +50,15 @@ type BrowserEvidence = {
     edge: string;
     marker: string;
     node: string;
+    processVersion: string;
     v8: string;
     weakRefKeepsTargetDuringJob: boolean;
+  };
+  nodeCompatibility: {
+    distinctSourceAndCompatibilityVersions: boolean;
+    processVersion: string;
+    processVersionsNode: string;
+    sourceBaselineVersion: string;
   };
   processExit: {
     code: number;
@@ -191,7 +202,14 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
     exitCode: 0,
     runtime: {
       ...contract.expectedRuntime,
+      processVersion: `v${contract.nodeCompatibility.reportedVersion}`,
       weakRefKeepsTargetDuringJob: true
+    },
+    nodeCompatibility: {
+      distinctSourceAndCompatibilityVersions: true,
+      processVersion: `v${contract.nodeCompatibility.reportedVersion}`,
+      processVersionsNode: contract.nodeCompatibility.reportedVersion,
+      sourceBaselineVersion: contract.nodeCompatibility.sourceBaselineVersion
     },
     nestedWebAssembly: {
       available: true,

@@ -3,8 +3,16 @@ import "./style.css";
 type EdgeVersions = {
   edge: string;
   node: string;
+  processVersion: string;
   v8: string;
   weakRefKeepsTargetDuringJob: boolean;
+};
+
+type NodeCompatibilityEvidence = {
+  distinctSourceAndCompatibilityVersions: boolean;
+  processVersion: string;
+  processVersionsNode: string;
+  sourceBaselineVersion: string;
 };
 
 type EventLoopMarker = {
@@ -195,6 +203,7 @@ async function runProbe(): Promise<void> {
       `marker: ${JSON.stringify(marker)},`,
       "edge: process.versions.edge,",
       "node: process.versions.node,",
+      "processVersion: process.version,",
       "v8: process.versions.v8,",
       "weakRefKeepsTargetDuringJob:",
       "weakRef.deref()?.marker==='clawsembly-weakref-job'",
@@ -217,6 +226,36 @@ async function runProbe(): Promise<void> {
     >(output as WasixOutput, markerPrefix);
     if (runtime.marker !== marker) {
       throw new Error(`Unexpected Edge.js marker: ${runtime.marker}`);
+    }
+
+    status.textContent =
+      "Separating the Edge.js source baseline from its Node compatibility profile…";
+    const sourceVersionInstance = await runWasix(moduleWithBytes, {
+      program: "edgejs",
+      args: ["--version"],
+      runtime: wasixRuntime
+    });
+    const sourceVersionOutput =
+      await sourceVersionInstance.wait() as WasixOutput;
+    const sourceBaselineVersion = sourceVersionOutput.stdout.trim();
+    const nodeCompatibility: NodeCompatibilityEvidence = {
+      processVersion: runtime.processVersion,
+      processVersionsNode: runtime.node,
+      sourceBaselineVersion,
+      distinctSourceAndCompatibilityVersions:
+        sourceBaselineVersion !== runtime.processVersion
+    };
+    if (
+      !sourceVersionOutput.ok
+      || sourceVersionOutput.stderr !== ""
+      || sourceBaselineVersion.length === 0
+      || runtime.processVersion !== `v${runtime.node}`
+      || !nodeCompatibility.distinctSourceAndCompatibilityVersions
+    ) {
+      throw new Error(
+        "Edge.js source/compatibility version evidence mismatch: "
+        + JSON.stringify({ nodeCompatibility, sourceVersionOutput })
+      );
     }
 
     status.textContent =
@@ -640,6 +679,7 @@ async function runProbe(): Promise<void> {
       executor: "@wasmer/sdk",
       artifactBytes: bytes.byteLength,
       runtime,
+      nodeCompatibility,
       nestedWebAssembly,
       eventLoop,
       exitCode: output.code,

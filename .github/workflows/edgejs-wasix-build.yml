@@ -24,7 +24,6 @@ on:
       - scripts/apply-cargo-dependency-patches.mjs
       - scripts/verify-edgejs-browser-build-contract.mjs
       - scripts/build-openclaw-package-image.mjs
-      - scripts/create-edgejs-node-version-diagnostic.mjs
       - scripts/generate-openclaw-package-contract.mjs
       - src/clawsemblyfs.ts
       - src/edgejs-wasix-probe.ts
@@ -521,28 +520,9 @@ jobs:
           echo "path=${image}" >> "${GITHUB_OUTPUT}"
           echo "evidence=${evidence}" >> "${GITHUB_OUTPUT}"
 
-      - name: Create diagnostic-only Node-floor artifact
-        id: diagnostic_node
-        shell: bash
-        run: |
-          set -euo pipefail
-          diagnostic="${RUNNER_TEMP}/edgejs-openclaw-node-floor-diagnostic.wasm"
-          evidence="${RUNNER_TEMP}/edgejs-openclaw-node-floor-diagnostic.evidence.json"
-          node scripts/create-edgejs-node-version-diagnostic.mjs \
-            --input edgejs/build-quickjs-wasix/edgejs.wasm \
-            --output "${diagnostic}" \
-            --evidence "${evidence}"
-          test -s "${diagnostic}"
-          test -s "${evidence}"
-          cp "${evidence}" \
-            artifacts/edgejs-openclaw-node-floor-diagnostic.evidence.json
-          echo "path=${diagnostic}" >> "${GITHUB_OUTPUT}"
-          echo "evidence=${evidence}" >> "${GITHUB_OUTPUT}"
-
       - name: Prove complete package mount and advance the real Gateway path
         env:
-          CLAWSEMBLY_EDGE_NODE_DIAGNOSTIC_EVIDENCE: ${{ steps.diagnostic_node.outputs.evidence }}
-          CLAWSEMBLY_EDGE_WASIX: ${{ steps.diagnostic_node.outputs.path }}
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
           CLAWSEMBLY_OPENCLAW_GATEWAY_DIAGNOSTIC: "1"
           CLAWSEMBLY_OPENCLAW_GATEWAY_DIAGNOSTIC_TIMEOUT_MS: "180000"
           CLAWSEMBLY_OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
@@ -575,8 +555,7 @@ jobs:
 
       - name: Prove official Gateway health RPC over browser-local loopback
         env:
-          CLAWSEMBLY_EDGE_NODE_DIAGNOSTIC_EVIDENCE: ${{ steps.diagnostic_node.outputs.evidence }}
-          CLAWSEMBLY_EDGE_WASIX: ${{ steps.diagnostic_node.outputs.path }}
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
           CLAWSEMBLY_OPENCLAW_GATEWAY_HEALTH_PROOF: "1"
           CLAWSEMBLY_OPENCLAW_GATEWAY_HEALTH_RETRIES: "3"
           CLAWSEMBLY_OPENCLAW_GATEWAY_HEALTH_TIMEOUT_MS: "240000"
@@ -648,7 +627,7 @@ jobs:
 
       - name: Prove an official OpenClaw agent turn through capability egress
         env:
-          CLAWSEMBLY_EDGE_WASIX: ${{ steps.diagnostic_node.outputs.path }}
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
           CLAWSEMBLY_NETWORK_RELAY: ${{ github.workspace }}/relay/target/release/clawsembly-network-relay
           CLAWSEMBLY_OPENCLAW_AGENT_TURN_PROOF: "1"
           CLAWSEMBLY_OPENCLAW_AGENT_TURN_TIMEOUT_MS: "240000"
@@ -753,7 +732,6 @@ jobs:
               -type f \
               | sort
           )
-          node_diagnostic_evidence="artifacts/edgejs-openclaw-node-floor-diagnostic.evidence.json"
           test -s "${browser_evidence}"
           test -s "${network_evidence}"
           test -s "${openclaw_evidence}"
@@ -762,7 +740,6 @@ jobs:
           test -s "${gateway_evidence}"
           test -s "${agent_turn_evidence}"
           test -n "${gateway_health_evidence}"
-          test -s "${node_diagnostic_evidence}"
           test -s "${nested_wasm_smoke_evidence}"
           cp "${gateway_health_evidence}" \
             artifacts/openclaw-gateway-health-browser-evidence.json
@@ -808,8 +785,10 @@ jobs:
             --slurpfile gateway "${gateway_evidence}" \
             --slurpfile gatewayHealth "${gateway_health_evidence}" \
             --slurpfile agentTurn "${agent_turn_evidence}" \
-            --slurpfile nodeDiagnostic "${node_diagnostic_evidence}" \
             --slurpfile nestedWasmSmoke "${nested_wasm_smoke_evidence}" \
+            --argjson nodeCompatibilityContract "$(
+              jq '.nodeCompatibility' contracts/edgejs-browser-build.json
+            )" \
             --argjson edgePatches "$(
               jq '[.patches[] | {
                 path,
@@ -831,7 +810,7 @@ jobs:
                 contracts/edgejs-browser-build.json
             )" \
             '{
-              schemaVersion: 1,
+              schemaVersion: 2,
               edgeSourceCommit: $edgeSourceCommit,
               runtimeProvider: $runtimeProvider,
               patches: $edgePatches,
@@ -874,6 +853,10 @@ jobs:
                 archiveSha256: $archiveSha256
               },
               browser: $browser[0],
+              nodeCompatibility: {
+                contract: $nodeCompatibilityContract,
+                browser: $browser[0].nodeCompatibility
+              },
               networkCapability: {
                 contract: $networkContract,
                 relaySha256: $relaySha256,
@@ -884,8 +867,7 @@ jobs:
                 build: $packageBuild[0],
                 browserMount: $packageMount[0]
               },
-              gatewayDiagnostic: {
-                nodeVersionEvidence: $nodeDiagnostic[0],
+              openclawRuntimeProof: {
                 browser: $gateway[0],
                 healthRpc: $gatewayHealth[0],
                 agentTurn: $agentTurn[0]
