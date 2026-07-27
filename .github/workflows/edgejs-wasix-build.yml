@@ -544,6 +544,30 @@ jobs:
           cp "${lifecycle_evidence}" \
             artifacts/openclaw-install-lifecycle-browser-evidence.json
 
+      - name: Prove durable OpenClaw state recovery after browser restart
+        env:
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
+          CLAWSEMBLY_OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
+          CLAWSEMBLY_OPENCLAW_IMAGE_EVIDENCE: ${{ steps.package_image.outputs.evidence }}
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
+        run: |
+          npx playwright test \
+            tests/openclaw-opfs-persistence-browser.spec.ts
+
+      - name: Preserve durable OpenClaw state evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          opfs_evidence="$(
+            find test-results \
+              -name openclaw-opfs-persistence-browser-evidence.json \
+              -type f \
+              | head -n 1
+          )"
+          test -n "${opfs_evidence}"
+          cp "${opfs_evidence}" \
+            artifacts/openclaw-opfs-persistence-browser-evidence.json
+
       - name: Prove complete package mount and advance the real Gateway path
         env:
           CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
@@ -738,6 +762,7 @@ jobs:
           network_evidence="artifacts/network-egress-browser-evidence.json"
           openclaw_evidence="artifacts/openclaw-entrypoint-browser-evidence.json"
           lifecycle_evidence="artifacts/openclaw-install-lifecycle-browser-evidence.json"
+          opfs_evidence="artifacts/openclaw-opfs-persistence-browser-evidence.json"
           package_build_evidence="artifacts/openclaw-package-image-build-evidence.json"
           package_mount_evidence="artifacts/openclaw-package-image-browser-evidence.json"
           gateway_evidence="artifacts/openclaw-gateway-runtime-browser-evidence.json"
@@ -761,6 +786,7 @@ jobs:
           test -s "${network_evidence}"
           test -s "${openclaw_evidence}"
           test -s "${lifecycle_evidence}"
+          test -s "${opfs_evidence}"
           test -s "${package_build_evidence}"
           test -s "${package_mount_evidence}"
           test -s "${gateway_evidence}"
@@ -807,6 +833,7 @@ jobs:
             --slurpfile network "${network_evidence}" \
             --slurpfile openclaw "${openclaw_evidence}" \
             --slurpfile lifecycle "${lifecycle_evidence}" \
+            --slurpfile opfs "${opfs_evidence}" \
             --slurpfile packageBuild "${package_build_evidence}" \
             --slurpfile packageMount "${package_mount_evidence}" \
             --slurpfile gateway "${gateway_evidence}" \
@@ -837,7 +864,7 @@ jobs:
                 contracts/edgejs-browser-build.json
             )" \
             '{
-              schemaVersion: 3,
+              schemaVersion: 4,
               edgeSourceCommit: $edgeSourceCommit,
               runtimeProvider: $runtimeProvider,
               patches: $edgePatches,
@@ -895,6 +922,7 @@ jobs:
                 browserMount: $packageMount[0],
                 lifecycleEffects: $lifecycle[0]
               },
+              persistentState: $opfs[0],
               openclawRuntimeProof: {
                 browser: $gateway[0],
                 healthRpc: $gatewayHealth[0],

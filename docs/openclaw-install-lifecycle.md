@@ -36,4 +36,7 @@ independent Edge.js process against one shared Wasmer `Directory`. The proof:
 
 This closes the package lifecycle-effect requirement for the pinned release.
 It does not claim arbitrary npm lifecycle compatibility, native addon ABI
-support, or permission to run unreviewed package scripts.
+support, or permission to run unreviewed package scripts. The
+[OPFS directory-store proof](opfs-directory-store.md) commits the resulting
+official state and recovers it after a complete browser restart without
+re-running these hooks.

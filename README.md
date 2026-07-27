@@ -165,6 +165,13 @@ Experimental. Current execution milestones:
   a fresh Edge.js process reopens and verifies. The Google hook is an audited
   literal no-op, while OpenClaw's own `allowBuilds` policy disables the unused
   `tree-sitter-bash` native build in favor of its published Wasm grammar.
+- The mutable OpenClaw capability directory now has a generation-addressed
+  OPFS store. Chromium commits every file with a SHA-256 manifest, closes the
+  complete browser process, reopens the same origin profile, restores a new
+  Wasmer `Directory`, and uses a new Edge.js process to reopen the exact
+  official postinstall SQLite registry without re-running installation. A
+  second restored directory then starts the unmodified Gateway and completes
+  its authenticated health RPC.
 
 This does not yet claim the North Star is complete. The source-built runtime now
 has an explicit, workload-scoped Node compatibility profile: it transparently
@@ -173,12 +180,14 @@ version exposed to OpenClaw, and proves why that floor is safe for this workload
 instead of claiming general Node conformance. SQLite WAL-reset safety is pinned
 to 3.53.4 and its compiled browser binding is proven. Nested JavaScript
 WebAssembly and the deterministic Gateway-backed agent path are also proven.
-A live TLS model-provider exchange through the new capability and durable OPFS
-ownership across a fresh browser session remain open. See
+A live TLS model-provider exchange through the new capability remains open.
+See
 [the artifact-derived SQLite contract](docs/openclaw-sqlite-contract.md) and
 [the Node compatibility profile](docs/node-compatibility-profile.md). The
 [install lifecycle contract](docs/openclaw-install-lifecycle.md) records the
-executed effects and deliberately unauthorized native build.
+executed effects and deliberately unauthorized native build. The
+[OPFS directory store](docs/opfs-directory-store.md) records the commit,
+integrity, recovery, and browser-restart contract.
 
 ## License
 

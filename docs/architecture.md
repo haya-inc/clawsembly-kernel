@@ -135,11 +135,17 @@ additionally prove WAL database bytes survive
 one Edge.js process and can be reopened read-only by another process sharing
 the same mounted directory.
 
-That mounted directory is currently an in-memory Wasmer JS capability object.
-It proves the SQLite and process boundary, but does not yet satisfy the North
-Star persistence requirement. The final storage broker must commit the
-capability directory to OPFS and recover it in a fresh browser session without
-granting ambient filesystem access to the guest.
+The mounted Wasmer JS directory remains a process-local capability object while
+OpenClaw runs. The kernel now commits its mutable state subtree to a
+generation-addressed OPFS store. A manifest records every directory, file
+length, and file SHA-256; its hash is committed through `HEAD.json` only after
+the whole generation is durable. Recovery creates a new Wasmer `Directory`,
+verifies the manifest and every payload file, and mounts no ambient host path.
+The browser proof fully closes Chromium between commit and recovery, then a new
+Edge.js process reopens OpenClaw's installed-plugin SQLite registry without
+re-running lifecycle scripts. A second clean restored directory starts the
+unmodified Gateway and completes the official authenticated health RPC. See
+[the OPFS directory store](opfs-directory-store.md).
 
 ### Complete package image
 
@@ -298,8 +304,9 @@ own readiness markers, a second Edge.js guest runs the official
 `gateway call health` CLI, authenticates with a capability-scoped token, and
 receives a healthy JSON response over `ws://127.0.0.1:18789`. Gateway and
 client mount byte-identical package images into distinct filesystem
-instances. The response proves eight loaded plugins, no plugin errors, active
-configuration reload, and the default `main` agent.
+instances. The response proves the two official migrated startup plugins
+(`memory-core` and `ollama`), no plugin errors, active configuration reload,
+and the default `main` agent.
 
 The agent-turn proof then runs the official `openclaw agent` CLI in that
 second guest. The unmodified Gateway builds the real model request, sends it
@@ -323,8 +330,9 @@ library and proves 3.53.4, above OpenClaw's 3.51.3 safe floor, before the
 unmodified Gateway uses state. The required install lifecycle effects execute
 on the same filesystem before Gateway startup. The deterministic fixture proves
 the real OpenClaw agent code path and capability transport, but not live model
-inference or Internet TLS. A live authorized model-provider exchange and
-persistent recovery in a fresh browser session remain separate gates.
+inference or Internet TLS. Durable recovery is separately proven through a
+complete browser restart; a live authorized TLS model-provider exchange remains
+the final end-to-end gate.
 
 Model-provider traffic can use this separately authorized self-hostable
 transport, but it cannot substitute for local Gateway loopback. Browser-local
@@ -361,8 +369,9 @@ loopback exchange described above. The evidence pins:
   `sha512-ycF3yPcbjN6bUPeaUx6Mh6vze1hQWoD3CT/wWcmD7a8xaHHHRUaAlaq+lFxMHf1ssEgODVAwjlzYqp2twkYZ7g==`
 
 The same workflow extends the lane through Gateway readiness, authenticated
-client RPC, and the deterministic agent turn, but does not yet satisfy the
-complete North Star.
+client RPC, the deterministic agent turn, and fresh-browser OPFS recovery. It
+does not yet satisfy the complete North Star because the provider proof is not
+a live authorized TLS exchange.
 
 ## OPFS WAL precondition
 

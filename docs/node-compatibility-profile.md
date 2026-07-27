@@ -61,6 +61,7 @@ for the pinned unmodified OpenClaw Gateway and agent path.
 
 It also does not complete Clawsembly's North Star by itself. The required
 install lifecycle effects are now independently proven by the
-[install lifecycle contract](openclaw-install-lifecycle.md). A live TLS
-model-provider exchange and durable recovery from OPFS in a fresh browser
-session remain separate gates.
+[install lifecycle contract](openclaw-install-lifecycle.md), and the
+[OPFS directory store](opfs-directory-store.md) proves recovery of that state
+after a complete browser restart. A live authorized TLS model-provider exchange
+remains a separate gate.

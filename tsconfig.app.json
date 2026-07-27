@@ -12,7 +12,9 @@
     "src/openclaw-gateway-health-probe.ts",
     "src/openclaw-install-lifecycle-probe.ts",
     "src/openclaw-install-lifecycle.ts",
+    "src/openclaw-opfs-persistence-probe.ts",
     "src/openclaw-package-runtime-probe.ts",
+    "src/opfs-directory-store.ts",
     "src/package-image-probe.ts",
     "src/protocol.ts"
   ]

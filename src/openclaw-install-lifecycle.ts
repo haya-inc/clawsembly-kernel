@@ -23,6 +23,15 @@ type LifecycleExecution = {
   version: string;
 };
 
+export type OpenClawPackageStateDatabaseEvidence = {
+  bytes: number;
+  hostContractVersion: string;
+  indexedPlugins: number;
+  migrationVersion: number;
+  path: string;
+  refreshReason: string;
+};
+
 export type OpenClawInstallLifecycleEvidence = {
   executor: "@wasmer/sdk shared Directory + Edge.js QuickJS/WASIX";
   packageFiles: {
@@ -32,14 +41,7 @@ export type OpenClawInstallLifecycleEvidence = {
   };
   requiredEffects: {
     executions: LifecycleExecution[];
-    packageStateDatabase: {
-      bytes: number;
-      hostContractVersion: string;
-      indexedPlugins: number;
-      migrationVersion: number;
-      path: string;
-      refreshReason: string;
-    };
+    packageStateDatabase: OpenClawPackageStateDatabaseEvidence;
   };
   reviewedNonEffects: Array<{
     command: string;
@@ -111,57 +113,14 @@ async function runNodeLifecycleScript(options: {
   };
 }
 
-export async function runOpenClawInstallLifecycle(options: {
+export async function inspectOpenClawInstallState(options: {
   directory: Directory;
   homeDir: string;
   module: WasixModule;
   runWasix: RunWasix;
   runtime?: Runtime;
   stateDir: string;
-}): Promise<OpenClawInstallLifecycleEvidence> {
-  const executions: LifecycleExecution[] = [];
-  executions.push(await runNodeLifecycleScript({
-    ...options,
-    command: "node scripts/preinstall-package-manager-warning.mjs",
-    cwd: "/openclaw",
-    name: "preinstall",
-    package: "openclaw",
-    scriptPath: "/openclaw/scripts/preinstall-package-manager-warning.mjs",
-    version: "2026.7.1-2"
-  }));
-  executions.push(await runNodeLifecycleScript({
-    ...options,
-    command: "node scripts/postinstall",
-    cwd: "/openclaw/node_modules/protobufjs",
-    name: "postinstall",
-    package: "protobufjs",
-    scriptPath: "/openclaw/node_modules/protobufjs/scripts/postinstall.js",
-    version: "7.6.3"
-  }));
-  executions.push(await runNodeLifecycleScript({
-    ...options,
-    command: "node scripts/postinstall-bundled-plugins.mjs",
-    cwd: "/openclaw",
-    name: "postinstall",
-    package: "openclaw",
-    scriptPath: "/openclaw/scripts/postinstall-bundled-plugins.mjs",
-    version: "2026.7.1-2"
-  }));
-
-  const rootPostinstall = executions.at(-1);
-  if (
-    !rootPostinstall
-    || !rootPostinstall.result.stdout.includes(
-      "[postinstall] migrated plugin registry: 33 plugin(s) indexed"
-    )
-    || rootPostinstall.result.stdout.includes("pruned ")
-    || rootPostinstall.result.stdout.includes("patched baileys")
-  ) {
-    throw new Error(
-      "clean OpenClaw image unexpectedly required a package-file mutation"
-    );
-  }
-
+}): Promise<OpenClawPackageStateDatabaseEvidence> {
   const databasePath = `${options.stateDir}/state/openclaw.sqlite`;
   const mountedDatabasePath = databasePath.replace(/^\/openclaw/u, "");
   const database = await options.directory.readFile(mountedDatabasePath);
@@ -241,6 +200,68 @@ export async function runOpenClawInstallLifecycle(options: {
       + JSON.stringify(databaseVerification)
     );
   }
+  return {
+    bytes: database.byteLength,
+    hostContractVersion: databaseVerification.hostContractVersion,
+    indexedPlugins: databaseVerification.indexedPlugins,
+    migrationVersion: databaseVerification.migrationVersion,
+    path: databasePath,
+    refreshReason: databaseVerification.refreshReason
+  };
+}
+
+export async function runOpenClawInstallLifecycle(options: {
+  directory: Directory;
+  homeDir: string;
+  module: WasixModule;
+  runWasix: RunWasix;
+  runtime?: Runtime;
+  stateDir: string;
+}): Promise<OpenClawInstallLifecycleEvidence> {
+  const executions: LifecycleExecution[] = [];
+  executions.push(await runNodeLifecycleScript({
+    ...options,
+    command: "node scripts/preinstall-package-manager-warning.mjs",
+    cwd: "/openclaw",
+    name: "preinstall",
+    package: "openclaw",
+    scriptPath: "/openclaw/scripts/preinstall-package-manager-warning.mjs",
+    version: "2026.7.1-2"
+  }));
+  executions.push(await runNodeLifecycleScript({
+    ...options,
+    command: "node scripts/postinstall",
+    cwd: "/openclaw/node_modules/protobufjs",
+    name: "postinstall",
+    package: "protobufjs",
+    scriptPath: "/openclaw/node_modules/protobufjs/scripts/postinstall.js",
+    version: "7.6.3"
+  }));
+  executions.push(await runNodeLifecycleScript({
+    ...options,
+    command: "node scripts/postinstall-bundled-plugins.mjs",
+    cwd: "/openclaw",
+    name: "postinstall",
+    package: "openclaw",
+    scriptPath: "/openclaw/scripts/postinstall-bundled-plugins.mjs",
+    version: "2026.7.1-2"
+  }));
+
+  const rootPostinstall = executions.at(-1);
+  if (
+    !rootPostinstall
+    || !rootPostinstall.result.stdout.includes(
+      "[postinstall] migrated plugin registry: 33 plugin(s) indexed"
+    )
+    || rootPostinstall.result.stdout.includes("pruned ")
+    || rootPostinstall.result.stdout.includes("patched baileys")
+  ) {
+    throw new Error(
+      "clean OpenClaw image unexpectedly required a package-file mutation"
+    );
+  }
+
+  const packageStateDatabase = await inspectOpenClawInstallState(options);
 
   const treeSitterWasm = await options.directory.readFile(
     "/node_modules/tree-sitter-bash/tree-sitter-bash.wasm"
@@ -257,14 +278,7 @@ export async function runOpenClawInstallLifecycle(options: {
     executor: "@wasmer/sdk shared Directory + Edge.js QuickJS/WASIX",
     requiredEffects: {
       executions,
-      packageStateDatabase: {
-        bytes: database.byteLength,
-        hostContractVersion: databaseVerification.hostContractVersion,
-        indexedPlugins: databaseVerification.indexedPlugins,
-        migrationVersion: databaseVerification.migrationVersion,
-        path: databasePath,
-        refreshReason: databaseVerification.refreshReason
-      }
+      packageStateDatabase
     },
     reviewedNonEffects: [
       {

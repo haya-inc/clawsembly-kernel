@@ -67,6 +67,7 @@ export default defineConfig({
         "index.html",
         "install-lifecycle-probe.html",
         "openclaw-agent-turn-probe.html",
+        "openclaw-opfs-persistence-probe.html",
         "openclaw-probe.html",
         "openclaw-gateway-health-probe.html",
         "network-egress-probe.html",

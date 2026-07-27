@@ -131,10 +131,11 @@ This still does not satisfy the North Star:
   matches Wasmer JS 0.10's WASIX 6.1 implementation. Newer process imports are
   not replaced with success-looking stubs.
 - Required lifecycle effects are proven by the version-bound browser install
-  contract. Durable OPFS recovery and a live TLS model-provider exchange remain
-  unproven. The deterministic browser fixture now proves the unmodified
-  Gateway-backed agent path and its capability-authorized TCP transport, but
-  not live model inference.
+  contract. The generation-addressed OPFS store separately proves recovery of
+  that official state after a complete browser restart. The deterministic
+  browser fixture proves the unmodified Gateway-backed agent path and its
+  capability-authorized TCP transport, but a live TLS model-provider exchange
+  remains unproven.
 
-These remaining gates stay explicit in the evidence; Gateway health cannot
-silently turn them into a completion claim.
+This remaining live-provider gate stays explicit in the evidence; Gateway
+health cannot silently turn it into a completion claim.

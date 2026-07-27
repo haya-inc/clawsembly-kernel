@@ -1,6 +1,10 @@
 import "./style.css";
 import { parseClawsemblyFs } from "./clawsemblyfs";
-import { runOpenClawInstallLifecycle } from "./openclaw-install-lifecycle";
+import {
+  inspectOpenClawInstallState,
+  runOpenClawInstallLifecycle
+} from "./openclaw-install-lifecycle";
+import { restoreDirectoryTreeFromOpfs } from "./opfs-directory-store";
 
 type OpenClawPackage = {
   engines?: {
@@ -252,6 +256,7 @@ const proofKind = searchParams.get("proof") === "agent-turn"
 const relayUrl =
   searchParams.get("relay") ?? "ws://127.0.0.1:18792/v1/network";
 const relayToken = searchParams.get("token");
+const restoreStore = searchParams.get("restoreStore");
 const diagnosticErrorDetail = searchParams.get("errorDetail") === "1";
 const requestedProofTimeoutMs = Number(searchParams.get("timeoutMs"));
 const proofTimeoutMs =
@@ -451,24 +456,68 @@ async function runProbe(): Promise<void> {
     const maxClientAttempts = proofKind === "agent-turn" ? 1 : 3;
     const gatewayOpenclaw = new Directory(packageFiles);
     const clientOpenclaw = new Directory(packageFiles);
+    const gatewayStateRoot = "/openclaw/.clawsembly-gateway-state";
+    const mountedGatewayStateRoot =
+      gatewayStateRoot.replace(/^\/openclaw/u, "");
     const gatewayWorkspace = "/openclaw/.clawsembly-gateway-workspace";
-    await gatewayOpenclaw.createDir("/.clawsembly-gateway-state");
+    if (!restoreStore) {
+      await gatewayOpenclaw.createDir(mountedGatewayStateRoot);
+    }
     await gatewayOpenclaw.createDir("/.clawsembly-gateway-workspace");
     const module = await WebAssembly.compile(edgeBytes);
     const moduleWithBytes = {
       module,
       bytes: edgeBytes
     } as unknown as WebAssembly.Module;
-    status.textContent =
-      "Installing required OpenClaw lifecycle effects in the browser kernel…";
-    const installLifecycle = await runOpenClawInstallLifecycle({
-      directory: gatewayOpenclaw,
-      homeDir: "/openclaw/.clawsembly-gateway-home",
-      module: moduleWithBytes,
-      runWasix,
-      runtime: wasixRuntime,
-      stateDir: "/openclaw/.clawsembly-gateway-state"
-    });
+    let persistentStateRestore:
+      | Awaited<ReturnType<typeof restoreDirectoryTreeFromOpfs>>
+      | undefined;
+    const installLifecycle = restoreStore
+      ? await (async () => {
+          status.textContent =
+            "Restoring committed OpenClaw state from OPFS…";
+          persistentStateRestore = await restoreDirectoryTreeFromOpfs({
+            directory: gatewayOpenclaw,
+            rootPath: mountedGatewayStateRoot,
+            storeId: restoreStore
+          });
+          const packageStateDatabase = await inspectOpenClawInstallState({
+            directory: gatewayOpenclaw,
+            homeDir: "/openclaw/.clawsembly-gateway-home",
+            module: moduleWithBytes,
+            runWasix,
+            runtime: wasixRuntime,
+            stateDir: gatewayStateRoot
+          });
+          return {
+            schemaVersion: 1 as const,
+            status: "restored-from-opfs" as const,
+            executor:
+              "OPFS snapshot + new @wasmer/sdk Directory + Edge.js/WASIX",
+            requiredEffects: {
+              executions: [],
+              packageStateDatabase
+            },
+            reviewedNonEffects: [],
+            packageFiles: {
+              mutated: false as const,
+              verification:
+                "immutable package remounted before scoped state recovery"
+            }
+          };
+        })()
+      : await (async () => {
+          status.textContent =
+            "Installing required OpenClaw lifecycle effects in the browser kernel…";
+          return runOpenClawInstallLifecycle({
+            directory: gatewayOpenclaw,
+            homeDir: "/openclaw/.clawsembly-gateway-home",
+            module: moduleWithBytes,
+            runWasix,
+            runtime: wasixRuntime,
+            stateDir: gatewayStateRoot
+          });
+        })();
     await gatewayOpenclaw.writeFile(
       "/.clawsembly-gateway-state/openclaw.json",
       new TextEncoder().encode(JSON.stringify({
@@ -629,6 +678,7 @@ async function runProbe(): Promise<void> {
         image: imageEvidence,
         openclaw: openclawEvidence,
         installLifecycle,
+        ...(persistentStateRestore ? { persistentStateRestore } : {}),
         network: networkEvidence,
         isolation: isolationEvidence,
         launchHarness: launchHarnessEvidence,
@@ -929,6 +979,7 @@ async function runProbe(): Promise<void> {
       image: imageEvidence,
       openclaw: openclawEvidence,
       installLifecycle,
+      ...(persistentStateRestore ? { persistentStateRestore } : {}),
       network: networkEvidence,
       isolation: isolationEvidence,
       launchHarness: launchHarnessEvidence,
