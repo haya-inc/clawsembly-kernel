@@ -740,6 +740,8 @@ jobs:
           agent_turn_evidence="artifacts/openclaw-agent-turn-browser-evidence.json"
           nested_wasm_smoke_evidence="nested-wasm/dist/link-smoke-evidence.json"
           gateway_health_evidence=""
+          # Playwright resets test-results before the following agent test;
+          # consume the durable copy made by the preservation step.
           while IFS= read -r candidate; do
             if jq -e '.status == "gateway-health-pass"' "${candidate}" >/dev/null; then
               gateway_health_evidence="${candidate}"

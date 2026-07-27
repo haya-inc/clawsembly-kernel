@@ -125,16 +125,18 @@ This still does not satisfy the North Star:
   Gateway health proof uses a separately generated artifact whose two embedded
   version labels are auditably changed to 24.15.0; it does not claim the
   underlying runtime implements that release.
-- QuickJS's optional JavaScript `WebAssembly` global is disabled because its
-  WASIX implementation imports native Wasmer's `wasm_c_api_v0` namespace.
-  Reintroducing that surface through a browser-native OSS adapter is a tracked
-  compatibility gate, not an implicit host dependency.
+- QuickJS's JavaScript `WebAssembly` global is backed by a statically linked
+  `wasmi` C API compiled into the WASIX guest. Chromium proves nested module
+  compilation and execution without native Wasmer imports or ambient
+  capabilities.
 - The WASIX compiler sysroot is pinned to `v2025-12-10.1` so its process ABI
   matches Wasmer JS 0.10's WASIX 6.1 implementation. Newer process imports are
   not replaced with success-looking stubs.
-- Required lifecycle effects, durable OPFS recovery, worker behavior reached
-  by a real turn, capability-authorized model-provider egress, and a real
-  Gateway-backed agent turn remain unproven.
+- Required lifecycle effects, durable OPFS recovery, a genuine Node 24.15
+  compatibility profile, and a live TLS model-provider exchange remain
+  unproven. The deterministic browser fixture now proves the unmodified
+  Gateway-backed agent path and its capability-authorized TCP transport, but
+  not live model inference.
 
 These remaining gates stay explicit in the evidence; Gateway health cannot
 silently turn them into a completion claim.

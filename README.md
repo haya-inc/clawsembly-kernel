@@ -149,8 +149,18 @@ Experimental. Current execution milestones:
   and outbound TCP, and independently enforces exact DNS-name/port grants and
   private-address denial. The deterministic browser proof covers local
   `ping`/`pong`, one explicitly granted external fixture, and wrong-port,
-  unlisted-host, and raw-IP denials. Publication against a freshly rebuilt
-  Edge.js artifact is the current gate.
+  unlisted-host, and raw-IP denials.
+- QuickJS now exposes guest JavaScript `WebAssembly` without native Wasmer or
+  a proprietary host namespace. Edge.js statically links the
+  MIT/Apache-2.0 `wasmi` C API, and Chromium proves a nested Wasm module
+  compiling, instantiating, and returning `42` with no ambient capability.
+- The unmodified official OpenClaw Gateway and a separate official CLI guest
+  now execute the complete agent path through browser-local loopback. The
+  Gateway sends the OpenAI-compatible streaming request through the
+  capability-scoped relay to a deterministic fixture and returns its exact
+  assistant marker. The test also guards QuickJS's ECMAScript
+  `WeakRef` keep-during-job semantics, which Undici requires to return a
+  `Response` rather than `undefined`.
 
 This does not yet claim the North Star is complete. The pinned Edge.js runtime
 reports Node 24.13.2, below OpenClaw's Node 24.15.0 safety floor. Its official
@@ -158,12 +168,11 @@ launcher therefore stops honestly at that version gate. The separately
 generated 24.15.0-label artifact is retained only as a byte-audited diagnostic
 instrument; a successful Gateway health response from it does not prove
 genuine Node 24.15 compatibility. SQLite WAL-reset safety is pinned to 3.53.4
-and its compiled browser binding is proven. QuickJS's optional JavaScript
-`WebAssembly` global is explicitly disabled until its native
-`wasm_c_api_v0` dependency is replaced by a browser-native OSS adapter.
-Required lifecycle effects, a genuine Node compatibility profile, a real TLS
-model-provider exchange through the new capability, durable OPFS ownership
-across a fresh browser session, and one real agent turn remain open. See
+and its compiled browser binding is proven. Nested JavaScript WebAssembly and
+the deterministic Gateway-backed agent path are now proven. Required lifecycle
+effects, a genuine Node compatibility profile, a live TLS model-provider
+exchange through the new capability, and durable OPFS ownership across a fresh
+browser session remain open. See
 [the artifact-derived SQLite contract](docs/openclaw-sqlite-contract.md) and
 [the Edge.js personality proof](docs/edgejs-node-sqlite-personality.md) for the
 implemented and deliberately unsupported boundaries.

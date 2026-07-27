@@ -154,12 +154,24 @@ and commands. They are not silently treated as complete: executing or replacing
 each required lifecycle effect inside the capability kernel remains an
 explicit gate before the package-install requirement is satisfied.
 
-Edge.js's optional QuickJS `globalThis.WebAssembly` implementation is disabled
-in this first browser build. That implementation imports native Wasmer's
-`wasm_c_api_v0` namespace, which Wasmer JS does not expose. The audited build
-rejects that namespace so an apparently self-contained artifact cannot regress
-to a hidden native-host dependency. Restoring nested JavaScript WebAssembly
-through an OSS browser-native adapter remains an explicit compatibility gate.
+Edge.js's QuickJS `globalThis.WebAssembly` surface is now backed by the
+MIT/Apache-2.0 `wasmi_c_api_impl` crate, compiled for
+`wasm32-unknown-unknown` and statically linked into the WASIX guest. The
+adapter implements Edge.js's existing standard Wasm C API integration without
+importing native Wasmer's `wasm_c_api_v0` namespace. Nested modules receive no
+ambient filesystem or network authority; JavaScript imports remain their only
+explicit host interface. Chromium proves a guest-created module compiling,
+instantiating, and exporting the value `42`.
+
+QuickJS is ref-counted and releases an otherwise unrooted `WeakRef` target
+immediately, while ECMAScript keeps a target observed by `WeakRef` alive until
+the end of the current job. Undici creates a `Response`, wraps it in
+`WeakRef`, and immediately dereferences it before resolving `fetch()`. The
+Edge.js compatibility patch holds constructor and successful `deref()` targets
+through the current microtask job, then clears the temporary roots. A browser
+regression probe verifies an unrooted target can be dereferenced in the
+constructing job; the full OpenClaw agent test exercises the same contract
+through Undici.
 
 The Wasmer JS patch is still required. Stock `@wasmer/sdk@0.10.0` validates a
 large byte buffer through its older compiler path, while passing only an
@@ -284,12 +296,22 @@ client mount byte-identical package images into distinct filesystem
 instances. The response proves eight loaded plugins, no plugin errors, active
 configuration reload, and the default `main` agent.
 
+The agent-turn proof then runs the official `openclaw agent` CLI in that
+second guest. The unmodified Gateway builds the real model request, sends it
+through Undici and the explicitly granted outbound-TCP capability, consumes a
+streaming OpenAI-compatible response from a deterministic local fixture, and
+returns the assistant marker to the CLI. The fixture records the request
+method, path, authorization, model, streaming flag, message roles, and
+instruction without receiving relay credentials or any wider guest authority.
+
 This is a Gateway compatibility milestone, not a Node-version claim. The
 artifact differs from the source-built Edge.js Wasm only by two equal-length
 embedded version-label substitutions, and its evidence records both hashes
-and offsets. Genuine Node 24.15 compatibility, authorized model-provider
-egress, a real agent turn, and persistent recovery in a fresh browser session
-remain separate gates.
+and offsets. The deterministic fixture proves the real OpenClaw agent code
+path and capability transport, but not live model inference or Internet TLS.
+Genuine Node 24.15 compatibility, a live authorized model-provider exchange,
+required install lifecycle effects, and persistent recovery in a fresh browser
+session remain separate gates.
 
 Model-provider traffic can use this separately authorized self-hostable
 transport, but it cannot substitute for local Gateway loopback. Browser-local
