@@ -27,6 +27,10 @@ type BrowserEvidence = {
   artifactBytes: number;
   crossOriginIsolated: boolean;
   executor: string;
+  eventLoop: {
+    elapsedMs: number;
+    timerKeepAlive: boolean;
+  };
   exitCode: number;
   runtime: {
     edge: string;
@@ -94,6 +98,9 @@ type BrowserEvidence = {
         journalMode: string;
         lockingMode: string;
         phase: string;
+        overlappingReadOnlyConnection: boolean;
+        readOnlyExecRejected: boolean;
+        readOnlyPrepareRejected: boolean;
         statementFinalized: boolean;
         version: string;
       };
@@ -155,6 +162,9 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
     status: "pass",
     crossOriginIsolated: true,
     executor: contract.browserExecutor.package,
+    eventLoop: {
+      timerKeepAlive: true
+    },
     exitCode: 0,
     runtime: contract.expectedRuntime,
     processExit: {
@@ -197,6 +207,9 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
           count: 1,
           extensionLoadingRejected: true,
           overlappingConnections: true,
+          overlappingReadOnlyConnection: true,
+          readOnlyPrepareRejected: true,
+          readOnlyExecRejected: true,
           statementFinalized: true
         },
         result: {

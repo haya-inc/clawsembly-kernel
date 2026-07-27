@@ -174,6 +174,22 @@ mounted directories. The audited patch applies those options directly to the
 runner that calls `run_wasm`; this is a compatibility and capability fix, not a
 success-looking shim.
 
+### Node event-loop integration
+
+Edge.js originally entered `uv_run(UV_RUN_DEFAULT)` while its Node-style
+keep-alive loop was active. V8 foreground tasks and dynamic-import completion
+are not necessarily represented by a live libuv handle, so that blocking turn
+can sleep while runnable embedder work is waiting. The audited browser patch
+uses bounded `UV_RUN_NOWAIT` turns, drains platform tasks and microtasks, and
+then yields for one millisecond. Browser tests prove that a refed timer keeps
+the process alive, while the full Gateway proof exercises large dynamic imports
+and concurrent Gateway/client processes.
+
+The one-millisecond polling yield is a correctness-first integration point,
+not the final efficiency design. A browser-native wake bridge may replace it
+once it preserves the same Node lifecycle behavior without starving embedder
+tasks.
+
 ### Browser-local virtual networking
 
 The runtime now contains a browser-local virtual network namespace rather than
@@ -188,8 +204,8 @@ libuv patch feeds that successful completion back through the ordinary libuv
 I/O queue so Node's existing `net.connect` callback runs without modifying
 OpenClaw or Node JavaScript.
 
-The public browser proof creates two separate Edge.js guest processes under
-one runtime. The server listens on `127.0.0.1:18790`; the client connects,
+The browser proof creates two separate Edge.js guest processes under one
+runtime. The server listens on `127.0.0.1:18790`; the client connects,
 sends `ping`, receives `pong`, and both processes close cleanly. A third guest
 attempts an external connection and receives `EPERM`, proving that loopback
 support did not introduce ambient egress. This completes the kernel-level
@@ -200,12 +216,22 @@ loopback sub-gate, including:
 - explicit listen, connect, listener-lifetime, and denied-egress behavior; and
 - ordinary Node `net` callback completion over synchronous WASIX virtual TCP.
 
-It does not yet prove that the real OpenClaw Gateway is ready. The
-diagnostic-only Node-floor artifact starts the exact unmodified Gateway
-entrypoint, reaches the traced pre-bootstrap boundary, and then reaches the
-65-second host diagnostic deadline. The next gate is a phase-aware Gateway
-startup proof followed by a second browser guest completing the real Gateway
-readiness/health exchange.
+The same namespace now carries the real OpenClaw protocol. The
+diagnostic-only Node-floor artifact starts the exact unmodified
+`openclaw@2026.7.1-2` Gateway in normal local mode. After the Gateway emits its
+own readiness markers, a second Edge.js guest runs the official
+`gateway call health` CLI, authenticates with a capability-scoped token, and
+receives a healthy JSON response over `ws://127.0.0.1:18789`. Gateway and
+client mount byte-identical package images into distinct filesystem
+instances. The response proves eight loaded plugins, no plugin errors, active
+configuration reload, and the default `main` agent.
+
+This is a Gateway compatibility milestone, not a Node-version claim. The
+artifact differs from the source-built Edge.js Wasm only by two equal-length
+embedded version-label substitutions, and its evidence records both hashes
+and offsets. Genuine Node 24.15 compatibility, authorized model-provider
+egress, a real agent turn, and persistent recovery in a fresh browser session
+remain separate gates.
 
 External model-provider traffic may later use a separately authorized
 self-hostable transport, but it cannot substitute for local Gateway loopback.
@@ -241,7 +267,9 @@ browser-local loopback exchange described above. The evidence pins:
 - OpenClaw `2026.7.1-2` npm integrity
   `sha512-ycF3yPcbjN6bUPeaUx6Mh6vze1hQWoD3CT/wWcmD7a8xaHHHRUaAlaq+lFxMHf1ssEgODVAwjlzYqp2twkYZ7g==`
 
-This proves the browser runtime lane, not complete OpenClaw startup.
+That earlier run proves the browser runtime lane. The newer Gateway health
+proof extends the lane through readiness and authenticated client RPC, but
+still does not satisfy the complete North Star.
 
 ## OPFS WAL precondition
 

@@ -6,6 +6,11 @@ type EdgeVersions = {
   v8: string;
 };
 
+type EventLoopMarker = {
+  elapsedMs: number;
+  timerKeepAlive: boolean;
+};
+
 type WasixOutput = {
   code: number;
   ok: boolean;
@@ -27,7 +32,10 @@ type SqliteMarker = {
   journalMode: string;
   lockingMode: string;
   overlappingConnections?: boolean;
+  overlappingReadOnlyConnection?: boolean;
   phase: "read" | "write";
+  readOnlyExecRejected?: boolean;
+  readOnlyPrepareRejected?: boolean;
   statementFinalized: boolean;
   version: string;
 };
@@ -45,6 +53,7 @@ const artifactUrl = searchParams.get("artifact")
   ?? "/edgejs.wasm";
 const marker = "clawsembly-edgejs-wasix-browser";
 const markerPrefix = "CLAWSEMBLY_EDGE_WASIX=";
+const eventLoopMarkerPrefix = "CLAWSEMBLY_EDGE_EVENT_LOOP=";
 const sqliteMarkerPrefix = "CLAWSEMBLY_EDGE_SQLITE=";
 
 function markerPayload<T>(
@@ -185,6 +194,41 @@ async function runProbe(): Promise<void> {
       throw new Error(`Unexpected Edge.js marker: ${runtime.marker}`);
     }
 
+    status.textContent =
+      "Verifying that a refed timer keeps the Node event loop alive…";
+    const eventLoopScript = [
+      `const prefix=${JSON.stringify(eventLoopMarkerPrefix)};`,
+      "const started=Date.now();",
+      "setTimeout(()=>{",
+      "console.log(prefix+JSON.stringify({",
+      "elapsedMs:Date.now()-started,timerKeepAlive:true",
+      "}))",
+      "},50)"
+    ].join("");
+    const eventLoopInstance = await runWasix(moduleWithBytes, {
+      program: "edgejs",
+      args: ["-e", eventLoopScript],
+      runtime: wasixRuntime
+    });
+    const eventLoopOutput =
+      await eventLoopInstance.wait() as WasixOutput;
+    if (!eventLoopOutput.ok) {
+      throw new Error(
+        "Edge.js timer keep-alive probe failed: "
+        + JSON.stringify(eventLoopOutput)
+      );
+    }
+    const eventLoop = markerPayload<EventLoopMarker>(
+      eventLoopOutput,
+      eventLoopMarkerPrefix
+    );
+    if (!eventLoop.timerKeepAlive || eventLoop.elapsedMs < 40) {
+      throw new Error(
+        "Edge.js exited before its refed timer fired: "
+        + JSON.stringify({ eventLoop, eventLoopOutput })
+      );
+    }
+
     status.textContent = "Verifying synchronous process.exit() semantics…";
     const exitInstance = await runWasix(moduleWithBytes, {
       program: "edgejs",
@@ -240,10 +284,29 @@ async function runProbe(): Promise<void> {
       "'SELECT count(*) AS count FROM turns').get().count;",
       "overlapping.exec('COMMIT');",
       "overlapping.close();",
+      "const overlappingReadOnly=new DatabaseSync(",
+      "'/state/openclaw-state.db',{readOnly:true,timeout:1000});",
+      "const overlappingReadOnlyCount=overlappingReadOnly.prepare(",
+      "'SELECT count(*) AS count FROM turns').get().count;",
+      "let readOnlyPrepareRejected=false;",
+      "try{overlappingReadOnly.prepare(",
+      "'INSERT INTO turns(body) VALUES (\\'forbidden-prepare\\')')",
+      "}catch(error){",
+      "readOnlyPrepareRejected=error?.code==='ERR_SQLITE_READONLY'",
+      "}",
+      "let readOnlyExecRejected=false;",
+      "try{overlappingReadOnly.exec(",
+      "'INSERT INTO turns(body) VALUES (\\'forbidden-exec\\')')",
+      "}catch(error){",
+      "readOnlyExecRejected=error?.code==='ERR_SQLITE_READONLY'",
+      "}",
+      "overlappingReadOnly.close();",
       "const longLivedCount=db.prepare(",
       "'SELECT count(*) AS count FROM turns').get().count;",
       "const overlappingConnections=",
       "overlappingCount===1&&longLivedCount===1;",
+      "const overlappingReadOnlyConnection=",
+      "overlappingReadOnlyCount===1&&longLivedCount===1;",
       "db.enableLoadExtension(false);",
       "let extensionLoadingRejected=false;",
       "try{db.enableLoadExtension(true)}catch(error){",
@@ -261,7 +324,8 @@ async function runProbe(): Promise<void> {
       "console.log(prefix+JSON.stringify({",
       "phase:'write',version,foreignKeys,lockingMode,journalMode,count,",
       "checkpointed:checkpoint.checkpointed,extensionLoadingRejected,",
-      "overlappingConnections,statementFinalized",
+      "overlappingConnections,overlappingReadOnlyConnection,",
+      "readOnlyPrepareRejected,readOnlyExecRejected,statementFinalized",
       "}));"
     ].join("");
     const sqliteWriteInstance = await runWasix(moduleWithBytes, {
@@ -333,6 +397,9 @@ async function runProbe(): Promise<void> {
       || sqliteReadMarker.count !== 1
       || !sqliteWriteMarker.extensionLoadingRejected
       || !sqliteWriteMarker.overlappingConnections
+      || !sqliteWriteMarker.overlappingReadOnlyConnection
+      || !sqliteWriteMarker.readOnlyPrepareRejected
+      || !sqliteWriteMarker.readOnlyExecRejected
       || !sqliteWriteMarker.statementFinalized
       || !sqliteReadMarker.statementFinalized
     ) {
@@ -503,6 +570,7 @@ async function runProbe(): Promise<void> {
       executor: "@wasmer/sdk",
       artifactBytes: bytes.byteLength,
       runtime,
+      eventLoop,
       exitCode: output.code,
       stderr: output.stderr,
       processExit,

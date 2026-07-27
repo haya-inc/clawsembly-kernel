@@ -443,7 +443,8 @@ jobs:
           CLAWSEMBLY_EDGE_NODE_DIAGNOSTIC_EVIDENCE: ${{ steps.diagnostic_node.outputs.evidence }}
           CLAWSEMBLY_EDGE_WASIX: ${{ steps.diagnostic_node.outputs.path }}
           CLAWSEMBLY_OPENCLAW_GATEWAY_HEALTH_PROOF: "1"
-          CLAWSEMBLY_OPENCLAW_GATEWAY_HEALTH_TIMEOUT_MS: "120000"
+          CLAWSEMBLY_OPENCLAW_GATEWAY_HEALTH_RETRIES: "3"
+          CLAWSEMBLY_OPENCLAW_GATEWAY_HEALTH_TIMEOUT_MS: "240000"
           CLAWSEMBLY_OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
           CLAWSEMBLY_OPENCLAW_IMAGE_EVIDENCE: ${{ steps.package_image.outputs.evidence }}
           CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist

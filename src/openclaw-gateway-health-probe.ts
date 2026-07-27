@@ -29,6 +29,11 @@ type StreamCapture = {
   done: Promise<void>;
   snapshot: () => string;
   waitFor: (marker: string, timeoutMs: number) => Promise<void>;
+  waitUntil: (
+    predicate: (captured: string) => boolean,
+    description: string,
+    timeoutMs: number
+  ) => Promise<void>;
 };
 
 function requiredElement<T extends Element>(selector: string): T {
@@ -118,6 +123,34 @@ function captureStream(
                 ?? new Error(
                   `Stream ended before marker: ${expectedMarker}`
                 )
+            );
+          }
+        };
+        const cleanup = () => {
+          window.clearTimeout(timeout);
+          waiters.delete(check);
+        };
+        waiters.add(check);
+      });
+    },
+    waitUntil: (predicate, description, timeoutMs) => {
+      if (predicate(captured)) return Promise.resolve();
+      return new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(() => {
+          cleanup();
+          reject(
+            new Error(`Timed out waiting for ${description}`)
+          );
+        }, timeoutMs);
+        const check = () => {
+          if (predicate(captured)) {
+            cleanup();
+            resolve();
+          } else if (finished) {
+            cleanup();
+            reject(
+              failure
+                ?? new Error(`Stream ended before ${description}`)
             );
           }
         };
@@ -300,6 +333,24 @@ async function runProbe(): Promise<void> {
     const maxClientAttempts = 3;
     const gatewayOpenclaw = new Directory(parsed.files);
     const clientOpenclaw = new Directory(parsed.files);
+    const gatewayWorkspace = "/openclaw/.clawsembly-gateway-workspace";
+    await gatewayOpenclaw.createDir("/.clawsembly-gateway-state");
+    await gatewayOpenclaw.createDir("/.clawsembly-gateway-workspace");
+    await gatewayOpenclaw.writeFile(
+      "/.clawsembly-gateway-state/openclaw.json",
+      new TextEncoder().encode(JSON.stringify({
+        gateway: {
+          mode: "local",
+          bind: "loopback"
+        },
+        agents: {
+          defaults: {
+            workspace: gatewayWorkspace,
+            skipBootstrap: true
+          }
+        }
+      }, null, 2))
+    );
     const module = await WebAssembly.compile(edgeBytes);
     const moduleWithBytes = {
       module,
@@ -308,7 +359,6 @@ async function runProbe(): Promise<void> {
     const gatewayArgs = [
       "gateway",
       "run",
-      "--dev",
       "--allow-unconfigured",
       "--auth",
       "token",
@@ -482,11 +532,16 @@ async function runProbe(): Promise<void> {
       const clientHarness = [
         `process.argv=${JSON.stringify(clientArgv)};`,
         "console.error('CLAWSEMBLY_CLIENT_STARTED='+process.versions.node);",
+        "console.error('CLAWSEMBLY_CLIENT_WATCHDOG_START');",
         "const clientWatchdog=setTimeout(()=>{",
         `console.error(${JSON.stringify(clientTimeoutMarker)});`,
         "process.exit(124)",
         `},${clientProofTimeoutMs});`,
-        "import('file:///openclaw/dist/entry.js').then(()=>{",
+        "console.error('CLAWSEMBLY_CLIENT_WATCHDOG_ARMED');",
+        "console.error('CLAWSEMBLY_CLIENT_IMPORT_START');",
+        "const clientEntry=import('file:///openclaw/dist/entry.js');",
+        "console.error('CLAWSEMBLY_CLIENT_IMPORT_ENQUEUED');",
+        "clientEntry.then(()=>{",
         "console.error('CLAWSEMBLY_CLIENT_ENTRY_SETTLED');",
         "setTimeout(()=>{",
         "clearTimeout(clientWatchdog);process.exit(process.exitCode??0)",
@@ -529,7 +584,13 @@ async function runProbe(): Promise<void> {
           kind: "client-exit" as const,
           output: output as WasixOutput
         })),
-        clientStdout.waitFor("\n}\n", remainingMs).then(
+        clientStdout.waitUntil((captured) => {
+          try {
+            return isHealthyResponse(parseJsonOutput(captured));
+          } catch {
+            return false;
+          }
+        }, "a complete healthy Gateway JSON response", remainingMs).then(
           () => ({
             kind: "client-health-output" as const
           }),

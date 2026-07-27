@@ -13,11 +13,15 @@
     },
     {
       "path": "patches/edgejs/0002-add-openclaw-node-sqlite.patch",
-      "sha256": "293ca1e4d4290a517d4adcffde3e65a5cc5c93e04e26d49cb0ec521942694327"
+      "sha256": "cab52130e02386d063f17edda01663a41068d3f988f20f79448f82e8f06b94bc"
     },
     {
       "path": "patches/edgejs/0003-complete-synchronous-wasix-tcp-connect.patch",
       "sha256": "f7f1c6e93ddec19c408dd7282c18a3474ec738fea58abe46c27b71b51a64edb2"
+    },
+    {
+      "path": "patches/edgejs/0004-pump-embedder-tasks-during-node-keepalive.patch",
+      "sha256": "1beb40c6ba52e5f2a3a5fe13d6ae4f3b8d7450650cc4921def95c381946a20c5"
     }
   ],
   "sqlite": {

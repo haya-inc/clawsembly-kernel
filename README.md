@@ -119,27 +119,26 @@ Experimental. Current execution milestones:
   [GitHub Actions run 30203815745](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30203815745).
 - The diagnostic-only Edge.js artifact, whose two embedded Node version labels
   are auditably changed from 24.13.2 to 24.15.0 without changing OpenClaw,
-  starts the exact unmodified Gateway entrypoint. In the current public run it
-  reaches the traced pre-bootstrap boundary and then hits the 65-second host
-  diagnostic deadline. It does not yet prove Gateway readiness or a client
-  connection.
+  now starts the exact unmodified Gateway in normal local mode. A separate
+  browser-local WASI guest runs the official CLI, authenticates over the
+  runtime-scoped loopback WebSocket, and receives a valid `health` response
+  with eight plugins loaded and no plugin errors. The proof keeps Gateway and
+  client filesystems distinct, denies ambient external egress, and records
+  exact package-image and entrypoint hashes. Public CI publication of this
+  newer proof is the current release gate.
 
-This does not yet claim complete OpenClaw startup. The pinned Edge.js runtime
-reports Node 24.13.2, below OpenClaw's Node 24.15.0 safety floor. The official
-launcher now stops synchronously at that version gate with exit code 1, empty
-stdout, the exact diagnostic, and no fall-through into `dist/entry.js`. The
-runtime will not be relabeled until a compatibility profile proves the
-required Node surfaces. The relabeled artifact is retained only as a
-version-bound diagnostic instrument. SQLite WAL-reset safety is pinned to
-3.53.4 and its compiled browser binding is proven. QuickJS's optional
-JavaScript `WebAssembly` global is explicitly disabled until its native
-`wasm_c_api_v0` dependency is replaced by a browser-native OSS adapter. The
-browser-local networking sub-gate is complete at the kernel level; the next
-hard gate is to run the real Gateway through readiness and connect a second
-browser guest using that namespace. Required lifecycle scripts, a genuine
-Node compatibility profile, Gateway readiness, capability-complete authorized
-external connectivity, durable OPFS ownership, and one real agent turn remain
-open. See
+This does not yet claim the North Star is complete. The pinned Edge.js runtime
+reports Node 24.13.2, below OpenClaw's Node 24.15.0 safety floor. Its official
+launcher therefore stops honestly at that version gate. The separately
+generated 24.15.0-label artifact is retained only as a byte-audited diagnostic
+instrument; a successful Gateway health response from it does not prove
+genuine Node 24.15 compatibility. SQLite WAL-reset safety is pinned to 3.53.4
+and its compiled browser binding is proven. QuickJS's optional JavaScript
+`WebAssembly` global is explicitly disabled until its native
+`wasm_c_api_v0` dependency is replaced by a browser-native OSS adapter.
+Required lifecycle effects, a genuine Node compatibility profile,
+capability-authorized model-provider connectivity, durable OPFS ownership
+across a fresh browser session, and one real agent turn remain open. See
 [the artifact-derived SQLite contract](docs/openclaw-sqlite-contract.md) and
 [the Edge.js personality proof](docs/edgejs-node-sqlite-personality.md) for the
 implemented and deliberately unsupported boundaries.

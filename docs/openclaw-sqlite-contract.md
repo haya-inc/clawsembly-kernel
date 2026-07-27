@@ -2,7 +2,8 @@
 
 This milestone answers one narrow question: can the browser kernel preserve
 the SQLite state contract required by the exact official OpenClaw artifact?
-It does not claim that OpenClaw itself starts yet.
+This contract by itself does not claim that OpenClaw starts; later browser
+runtime evidence carries that separate claim.
 
 ## Source of truth
 
@@ -55,11 +56,12 @@ Proven in Chromium:
 The artifact also requires behaviors not yet proven by this milestone:
 
 - extension loading and `sqlite-vec`
-- Edge.js registration of the `node:sqlite` personality
 - complete backup archive and restore orchestration above the SQLite snapshot
 
-These remain explicit failures or unproven requirements. They are not emulated
-with remote storage and are not counted as passing.
+The Edge.js browser lane now registers a separately audited compiled
+`node:sqlite` personality and proves overlapping writable/read-only startup
+access. The remaining items stay explicit failures or unproven requirements;
+they are not emulated with remote storage and are not counted as passing.
 
 ## Reproduce
 

@@ -73,10 +73,14 @@ For a granted path, the personality:
 - maps the host path to a non-user-controlled nested Wasm filename;
 - imports existing bytes into the official SQLite Wasm POSIX VFS;
 - applies exclusive locking before OpenClaw requests WAL;
-- multiplexes overlapping writable `DatabaseSync` wrappers for the same path
-  onto one reference-counted in-process connection, allowing OpenClaw's
-  long-lived state handle and short-lived startup-checkpoint handles to coexist
-  without pretending the mounted browser VFS has cross-process WAL locks;
+- multiplexes overlapping writable and read-only `DatabaseSync` wrappers for
+  the same path onto one reference-counted in-process connection, allowing
+  OpenClaw's long-lived state handle and read-only startup migration inspection
+  to coexist without pretending the mounted browser VFS has cross-process WAL
+  locks;
+- preserves logical read-only semantics on a shared writable physical handle
+  by installing an SQLite authorizer while compiling `prepare()` and `exec()`
+  SQL, rejecting mutations with `ERR_SQLITE_READONLY`;
 - tracks every prepared statement and finalizes it on `DatabaseSync.close()`
   before closing the SQLite connection, so a retained `StatementSync` cannot
   keep the single-owner WAL lock alive across OpenClaw's sequential database
@@ -92,9 +96,16 @@ wrapper; the exclusive underlying connection closes only when its final wrapper
 is released. Native Edge.js builds keep normal SQLite locking and independent
 connections.
 
-## Not yet proven
+## Gateway milestone and remaining North Star gates
 
-This proof deliberately does not claim complete OpenClaw startup:
+The compiled browser binding is now exercised beyond the isolated state
+contract. The diagnostic-only Node-floor artifact starts the exact unmodified
+OpenClaw Gateway in normal local mode while the long-lived writable state
+connection and read-only migration inspection overlap. A separate Edge.js
+guest runs the official CLI and receives a valid authenticated health response
+through the browser-local loopback namespace.
+
+This still does not satisfy the North Star:
 
 - The pinned Edge.js reports Node 24.13.2. OpenClaw requires Node 24.15.0 or
   newer on the Node 24 line because of its SQLite WAL-reset safety gate. The
@@ -110,8 +121,10 @@ This proof deliberately does not claim complete OpenClaw startup:
   bytes across WASIX Workers. Chromium startup, exact `process.exit` semantics,
   and the official launcher boundary for this source-pinned pair are proven by
   [GitHub Actions run 30197574607](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30197574607);
-  the remaining gate is a proven Node compatibility profile and the complete
-  OpenClaw package graph rather than runtime startup.
+  the remaining version gate is a proven Node compatibility profile. The
+  Gateway health proof uses a separately generated artifact whose two embedded
+  version labels are auditably changed to 24.15.0; it does not claim the
+  underlying runtime implements that release.
 - QuickJS's optional JavaScript `WebAssembly` global is disabled because its
   WASIX implementation imports native Wasmer's `wasm_c_api_v0` namespace.
   Reintroducing that surface through a browser-native OSS adapter is a tracked
@@ -119,9 +132,9 @@ This proof deliberately does not claim complete OpenClaw startup:
 - The WASIX compiler sysroot is pinned to `v2025-12-10.1` so its process ABI
   matches Wasmer JS 0.10's WASIX 6.1 implementation. Newer process imports are
   not replaced with success-looking stubs.
-- Filesystem, process, network, worker, WebSocket, and Gateway capability
-  surfaces required by the remaining OpenClaw startup path have not yet been
-  proven.
+- Required lifecycle effects, durable OPFS recovery, worker behavior reached
+  by a real turn, capability-authorized model-provider egress, and a real
+  Gateway-backed agent turn remain unproven.
 
-These failures are kept explicit in the emitted proof under
-`remainingGates`; the test cannot turn them into a success claim.
+These remaining gates stay explicit in the evidence; Gateway health cannot
+silently turn them into a completion claim.

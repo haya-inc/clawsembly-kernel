@@ -126,6 +126,9 @@ const nodeDiagnosticEvidencePath =
 const proofTimeoutMs = Number(
   process.env.CLAWSEMBLY_OPENCLAW_GATEWAY_HEALTH_TIMEOUT_MS ?? "240000"
 );
+const proofRetries = Number(
+  process.env.CLAWSEMBLY_OPENCLAW_GATEWAY_HEALTH_RETRIES ?? "3"
+);
 if (
   !Number.isSafeInteger(proofTimeoutMs)
   || proofTimeoutMs < 60_000
@@ -134,6 +137,16 @@ if (
   throw new Error(
     "CLAWSEMBLY_OPENCLAW_GATEWAY_HEALTH_TIMEOUT_MS must be "
     + "an integer from 60000 through 300000"
+  );
+}
+if (
+  !Number.isSafeInteger(proofRetries)
+  || proofRetries < 0
+  || proofRetries > 3
+) {
+  throw new Error(
+    "CLAWSEMBLY_OPENCLAW_GATEWAY_HEALTH_RETRIES must be "
+    + "an integer from 0 through 3"
   );
 }
 const packageContract = JSON.parse(
@@ -151,7 +164,7 @@ async function sha256File(filename: string): Promise<string> {
   return hash.digest("hex");
 }
 
-test.describe.configure({ retries: 3 });
+test.describe.configure({ retries: proofRetries });
 
 test("official OpenClaw client attempts authenticated Gateway health over browser loopback", async ({
   page
@@ -283,7 +296,6 @@ test("official OpenClaw client attempts authenticated Gateway health over browse
       args: [
         "gateway",
         "run",
-        "--dev",
         "--allow-unconfigured",
         "--auth",
         "token",

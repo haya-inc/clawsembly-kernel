@@ -139,12 +139,15 @@ index 0000000000000000000000000000000000000000..c03a687c9eb8d7624c5ff31d99cc7aea
 +  cross-process shared-memory locking, while exclusive mode permits WAL for
 +  the kernel's single-owner database capability. Native builds retain Node's
 +  normal locking mode.
-+- WASIX multiplexes overlapping `DatabaseSync` wrappers for the same writable
-+  file onto one in-process SQLite connection. This preserves the single-owner
-+  WAL constraint while supporting OpenClaw's long-lived state connection and
-+  short-lived startup-checkpoint connection. Each wrapper retains independent
-+  open/close and statement-finalization state; the underlying connection closes
-+  only after the final wrapper releases it.
++- WASIX multiplexes overlapping read-write and read-only `DatabaseSync`
++  wrappers for the same file onto one in-process SQLite connection. This
++  preserves the single-owner WAL constraint while supporting OpenClaw's
++  long-lived state connection and read-only startup migration inspection.
++  Logical read-only wrappers install an SQLite authorizer while compiling SQL,
++  rejecting mutations from both `prepare()` and `exec()` while allowing
++  introspection queries. Each wrapper retains independent open/close and
++  statement-finalization state; the underlying connection closes only after
++  the final wrapper releases it.
 +- The normal runtime still reports Node 24.13.2. Only the diagnostic build may
 +  cross the OpenClaw Node floor until the broader compatibility profile passes.
 +
@@ -218,7 +221,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..2729b471053c7ea2e4ba2cee66991e07ef51260a
 --- /dev/null
 +++ w/src/internal_binding/binding_sqlite.cc
-@@ -0,0 +1,1097 @@
+@@ -0,0 +1,1196 @@
 +#include "internal_binding/binding_initializers.h"
 +
 +#if defined(EDGE_HAS_SQLITE)
@@ -250,6 +253,7 @@ index 0000000000000000000000000000000000000000..2729b471053c7ea2e4ba2cee66991e07
 +struct SharedDatabase {
 +  sqlite3* database = nullptr;
 +  std::string key;
++  bool read_only = false;
 +  size_t references = 0;
 +};
 +
@@ -259,6 +263,7 @@ index 0000000000000000000000000000000000000000..2729b471053c7ea2e4ba2cee66991e07
 +struct DatabaseHandle {
 +  BindingState* binding = nullptr;
 +  sqlite3* database = nullptr;
++  bool read_only = false;
 +#if defined(EDGE_SQLITE_EXCLUSIVE_LOCKING)
 +  SharedDatabase* shared_database = nullptr;
 +#endif
@@ -270,6 +275,68 @@ index 0000000000000000000000000000000000000000..2729b471053c7ea2e4ba2cee66991e07
 +  sqlite3_stmt* statement = nullptr;
 +  napi_ref owner_reference = nullptr;
 +};
++
++struct ReadOnlyAuthorizerState {
++  bool denied = false;
++};
++
++bool SqliteNameEquals(const char* actual, const char* expected) {
++  return actual != nullptr && sqlite3_stricmp(actual, expected) == 0;
++}
++
++bool IsAllowedReadOnlyPragma(const char* name, const char* argument) {
++  // These introspection pragmas use an argument but do not mutate the
++  // database or connection.
++  for (const char* allowed : {
++           "foreign_key_list",
++           "index_info",
++           "index_list",
++           "index_xinfo",
++           "table_info",
++           "table_xinfo",
++       }) {
++    if (SqliteNameEquals(name, allowed)) return true;
++  }
++  if (argument != nullptr) return false;
++  // Setting-style pragmas are safe only in their no-argument query form.
++  for (const char* allowed : {
++           "busy_timeout",
++           "collation_list",
++           "compile_options",
++           "database_list",
++           "foreign_keys",
++           "journal_mode",
++           "locking_mode",
++           "query_only",
++           "schema_version",
++           "synchronous",
++           "user_version",
++           "wal_autocheckpoint",
++       }) {
++    if (SqliteNameEquals(name, allowed)) return true;
++  }
++  return false;
++}
++
++int ReadOnlyAuthorizer(void* data, int action, const char* argument1,
++                       const char* argument2, const char*, const char*) {
++  switch (action) {
++    case SQLITE_FUNCTION:
++    case SQLITE_READ:
++    case SQLITE_RECURSIVE:
++    case SQLITE_SAVEPOINT:
++    case SQLITE_SELECT:
++    case SQLITE_TRANSACTION:
++      return SQLITE_OK;
++    case SQLITE_PRAGMA:
++      if (IsAllowedReadOnlyPragma(argument1, argument2)) return SQLITE_OK;
++      break;
++    default:
++      break;
++  }
++  static_cast<ReadOnlyAuthorizerState*>(data)->denied = true;
++  return SQLITE_DENY;
++}
 +
 +std::string ValueToUtf8(napi_env env, napi_value value) {
 +  if (value == nullptr) return {};
@@ -976,16 +1043,21 @@ index 0000000000000000000000000000000000000000..2729b471053c7ea2e4ba2cee66991e07
 +  const std::string filename = ValueToUtf8(env, argv[0]);
 +  auto* handle = new DatabaseHandle();
 +  handle->binding = static_cast<BindingState*>(callback_data);
++  handle->read_only = read_only;
 +  bool reused_database = false;
 +#if defined(EDGE_SQLITE_EXCLUSIVE_LOCKING)
 +  const bool shareable_database =
 +      filename != ":memory:" &&
 +      filename.find("mode=memory") == std::string::npos;
-+  const std::string shared_key =
-+      std::string(read_only ? "ro:" : "rw:") + filename;
++  const std::string shared_key = filename;
 +  if (shareable_database) {
 +    const auto existing = shared_databases.find(shared_key);
-+    if (existing != shared_databases.end()) {
++    // A logical read-only DatabaseSync can safely share an already-open
++    // writable connection as long as this wrapper rejects mutating SQL.
++    // This is required under WASIX exclusive locking: opening a second
++    // physical connection to the same file would conflict with our own lock.
++    if (existing != shared_databases.end() &&
++        (read_only || !existing->second->read_only)) {
 +      handle->database = existing->second->database;
 +      handle->shared_database = existing->second;
 +      ++handle->shared_database->references;
@@ -1060,6 +1132,7 @@ index 0000000000000000000000000000000000000000..2729b471053c7ea2e4ba2cee66991e07
 +    auto* shared = new SharedDatabase();
 +    shared->database = handle->database;
 +    shared->key = shared_key;
++    shared->read_only = read_only;
 +    shared->references = 1;
 +    handle->shared_database = shared;
 +    shared_databases.emplace(shared_key, shared);
@@ -1130,9 +1203,24 @@ index 0000000000000000000000000000000000000000..2729b471053c7ea2e4ba2cee66991e07
 +    return nullptr;
 +  }
 +  const std::string sql = ValueToUtf8(env, argv[0]);
++  ReadOnlyAuthorizerState authorizer;
++  if (handle->read_only) {
++    sqlite3_set_authorizer(
++        handle->database, ReadOnlyAuthorizer, &authorizer);
++  }
 +  char* error = nullptr;
 +  const int result =
 +      sqlite3_exec(handle->database, sql.c_str(), nullptr, nullptr, &error);
++  if (handle->read_only) {
++    sqlite3_set_authorizer(handle->database, nullptr, nullptr);
++  }
++  if (authorizer.denied) {
++    if (error != nullptr) sqlite3_free(error);
++    napi_throw_error(
++        env, "ERR_SQLITE_READONLY",
++        "Cannot execute mutating SQL on a read-only database");
++    return nullptr;
++  }
 +  if (result != SQLITE_OK) {
 +    std::string message = "SQLite exec failed";
 +    if (error != nullptr) {
@@ -1169,14 +1257,28 @@ index 0000000000000000000000000000000000000000..2729b471053c7ea2e4ba2cee66991e07
 +  const std::string sql = ValueToUtf8(env, argv[0]);
 +  auto* statement = new StatementHandle();
 +  statement->owner = handle;
++  ReadOnlyAuthorizerState authorizer;
++  if (handle->read_only) {
++    sqlite3_set_authorizer(
++        handle->database, ReadOnlyAuthorizer, &authorizer);
++  }
 +  const int result = sqlite3_prepare_v2(
 +      handle->database, sql.c_str(), static_cast<int>(sql.size()),
 +      &statement->statement, nullptr);
++  if (handle->read_only) {
++    sqlite3_set_authorizer(handle->database, nullptr, nullptr);
++  }
 +  if (result != SQLITE_OK || statement->statement == nullptr) {
-+    ThrowSqliteError(env, handle->database, result,
-+                     "Could not prepare statement");
 +    if (statement->statement != nullptr) sqlite3_finalize(statement->statement);
 +    delete statement;
++    if (authorizer.denied) {
++      napi_throw_error(
++          env, "ERR_SQLITE_READONLY",
++          "Cannot prepare mutating SQL on a read-only database");
++    } else {
++      ThrowSqliteError(env, handle->database, result,
++                       "Could not prepare statement");
++    }
 +    return nullptr;
 +  }
 +  if (napi_create_reference(env, self, 1, &statement->owner_reference) !=
@@ -1321,7 +1423,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..6de7307369cd0cdafad5369aa90e2eef8e27cd8b
 --- /dev/null
 +++ w/tests/js/openclaw-sqlite-contract.js
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,219 @@
 +'use strict';
 +
 +const fs = require('node:fs');
@@ -1409,9 +1511,45 @@ index 0000000000000000000000000000000000000000..6de7307369cd0cdafad5369aa90e2eef
 +);
 +overlapping.exec('COMMIT');
 +overlapping.close();
++const overlappingReadOnly = new DatabaseSync(databasePath, {
++  readOnly: true,
++  timeout: 1000
++});
++check(
++  overlappingReadOnly
++    .prepare('SELECT count(*) AS count FROM parents')
++    .get().count === 2,
++  'overlapping read-only database should share the exclusive connection'
++);
++let overlappingReadOnlyPrepareRejected = false;
++try {
++  overlappingReadOnly
++    .prepare('INSERT INTO parents(label) VALUES (?)')
++    .run('forbidden-prepare');
++} catch (error) {
++  overlappingReadOnlyPrepareRejected =
++    error?.code === 'ERR_SQLITE_READONLY';
++}
++check(
++  overlappingReadOnlyPrepareRejected,
++  'overlapping read-only prepare should reject writes'
++);
++let overlappingReadOnlyExecRejected = false;
++try {
++  overlappingReadOnly.exec(
++    "INSERT INTO parents(label) VALUES ('forbidden-exec')"
++  );
++} catch (error) {
++  overlappingReadOnlyExecRejected = error?.code === 'ERR_SQLITE_READONLY';
++}
++check(
++  overlappingReadOnlyExecRejected,
++  'overlapping read-only exec should reject writes'
++);
++overlappingReadOnly.close();
 +check(
 +  database.prepare('SELECT count(*) AS count FROM parents').get().count === 2,
-+  'closing the overlapping database must preserve the long-lived connection'
++  'closing overlapping databases must preserve the long-lived connection'
 +);
 +
 +const iterated = Array.from(
@@ -1488,7 +1626,7 @@ index 0000000000000000000000000000000000000000..6de7307369cd0cdafad5369aa90e2eef
 +try {
 +  readOnly.prepare('INSERT INTO parents(label) VALUES (?)').run('gamma');
 +} catch (error) {
-+  writeRejected = error?.code === 'ERR_SQLITE_ERROR';
++  writeRejected = error?.code === 'ERR_SQLITE_READONLY';
 +}
 +check(writeRejected, 'read-only write should fail');
 +readOnly.close();
@@ -1499,6 +1637,7 @@ index 0000000000000000000000000000000000000000..6de7307369cd0cdafad5369aa90e2eef
 +  wal: true,
 +  persistence: true,
 +  overlappingConnections: true,
++  overlappingReadOnlyConnection: true,
 +  statementFinalization: true,
 +  readOnly: true,
 +  extensionLoading: false,
