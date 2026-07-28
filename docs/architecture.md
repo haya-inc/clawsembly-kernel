@@ -196,18 +196,25 @@ payload launches. A WASIX sleep therefore leaves a pending JavaScript timer on
 that Worker, which can then receive a synchronous WASM process that blocks the
 timer's event loop. Under concurrent Gateway/client execution this starves the
 sleeping process even though its TCP data is already readable. The audited
-patch keeps the Worker busy through Future completion; the throttled browser
-loopback test is the regression proof.
+patch keeps the Worker busy through Future completion. Because a browser does
+not await an asynchronous `message` event listener, the Worker itself sends
+the release acknowledgement only after its JavaScript handler promise
+resolves; dropping a Rust-side guard is not treated as completion. WASIX
+sleep timers are likewise tracked as asynchronous jobs until their JavaScript
+timers resolve, rather than detached from an already-completed synchronous
+handler. The throttled browser loopback test is the regression proof.
 
 The pinned `wasmer-wasix@0.601.0` also promotes a successful `Exit(0)` returned
 by a spawned, non-main WASM thread into `WasiProcess::terminate(0)`. Edge.js's
 WASIX libc thread trampoline can take that path after routine background work,
 which previously ended a live Gateway or client with code 0 and no Node
 shutdown event. The audited dependency patch keeps successful spawned-thread
-completion local while preserving process-wide propagation for nonzero exits.
-Three consecutive official Gateway health proofs pass with this rule; the
-preceding diagnostic build reproduced the faulty child-thread termination path
-twice with a unique exit code.
+completion local and skips `WasiFunctionEnv::on_exit` for that one path,
+because it also shuts down the process-wide instance group even when no exit
+code is propagated. Nonzero child exits retain the existing process-wide
+termination and cleanup. Three consecutive official Gateway health proofs pass
+with this rule; the preceding diagnostic build reproduced the faulty
+child-thread termination path twice with a unique exit code.
 
 The pinned Wasmer JS source also constructs a configured `WasiEnvBuilder` but
 then executes a different, unconfigured `WasiRunner`. That loses command-line

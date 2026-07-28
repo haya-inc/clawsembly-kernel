@@ -346,9 +346,13 @@ async function runProbe(): Promise<void> {
         "OpenClaw Gateway WASIX requires a cross-origin-isolated context"
       );
     }
-    const { Directory, init, Runtime, runWasix } =
+    const { Directory, init, initializeLogger, Runtime, runWasix } =
       await import("@wasmer/sdk");
     await init();
+    const runtimeLogLevel = searchParams.get("debug");
+    if (runtimeLogLevel === "debug" || runtimeLogLevel === "trace") {
+      initializeLogger(runtimeLogLevel);
+    }
     if (agentTurnProof && !relayToken) {
       throw new Error("The agent-turn relay capability token is required");
     }

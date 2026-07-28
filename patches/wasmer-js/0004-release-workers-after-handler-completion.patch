@@ -1,0 +1,111 @@
+diff --git a/src-js/worker.js b/src-js/worker.js
+index 52ca393..eac63eb 100644
+--- a/src-js/worker.js
++++ b/src-js/worker.js
+@@ -6,6 +6,9 @@ let worker = undefined;
+ let handleMessage = async data => {
+   if (worker) {
+     await worker.handle(data);
++    if (data.type !== "cache-module") {
++      globalThis.postMessage({ type: "idle" });
++    }
+   } else {
+     // We start off by buffering up all messages until we finish initializing.
+     pendingMessages.push(data);
+@@ -22,7 +25,7 @@ globalThis.onmessage = async ev => {
+ 
+     // Now that we're initialized, we need to handle any buffered messages
+     for (const msg of pendingMessages.splice(0, pendingMessages.length)) {
+-      await worker.handle(msg);
++      await handleMessage(msg);
+     }
+   } else {
+     // Handle the message like normal.
+diff --git a/src/tasks/thread_pool.rs b/src/tasks/thread_pool.rs
+index 97b57da..ef3c4b5 100644
+--- a/src/tasks/thread_pool.rs
++++ b/src/tasks/thread_pool.rs
+@@ -79,13 +79,12 @@ impl VirtualTaskManager for ThreadPool {
+             i32::MAX
+         };
+ 
+-        // Note: We can't use wasm_bindgen_futures::spawn_local() directly
+-        // because we might be invoked from inside a syscall. This causes a
+-        // deadlock because the syscall will block block until the future
+-        // resolves, but the JsFuture will never get a chance to mark itself as
+-        // resolved because the JavaScript VM is still blocked by the syscall.
+-        let _ = self.task_dedicated(Box::new(move || {
+-            wasm_bindgen_futures::spawn_local(async move {
++        // Run the timer Future as a tracked async job on another Worker. A
++        // detached spawn_local() would make the handler appear complete before
++        // the timer resolves, allowing a blocking WASM job to reuse the Worker
++        // and starve its JavaScript event loop.
++        let _ = self.spawn(Box::new(move || {
++            Box::pin(async move {
+                 let global = GlobalScope::current();
+                 let _ = JsFuture::from(global.sleep(time)).await;
+                 let _ = tx.send(());
+diff --git a/src/tasks/thread_pool_worker.rs b/src/tasks/thread_pool_worker.rs
+index 5a2c1e8..03762d7 100644
+--- a/src/tasks/thread_pool_worker.rs
++++ b/src/tasks/thread_pool_worker.rs
+@@ -1,6 +1,6 @@
+ use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
+ 
+-use crate::tasks::{AsyncJob, BlockingJob, Notification, PostMessagePayload, WorkerMessage};
++use crate::tasks::{AsyncJob, BlockingJob, Notification, PostMessagePayload};
+ 
+ /// The Rust state for a worker in the threadpool.
+ #[wasm_bindgen(skip_typescript)]
+@@ -10,19 +10,6 @@ pub struct ThreadPoolWorker {
+ }
+ 
+ impl ThreadPoolWorker {
+-    fn busy(&self) -> impl Drop {
+-        struct BusyGuard;
+-        impl Drop for BusyGuard {
+-            fn drop(&mut self) {
+-                let _ = WorkerMessage::MarkIdle.emit();
+-            }
+-        }
+-
+-        let _ = WorkerMessage::MarkBusy.emit();
+-
+-        BusyGuard
+-    }
+-
+     #[tracing::instrument(level = "debug", skip_all, fields(worker.id = self.id))]
+     pub async fn handle(&self, msg: JsValue) -> Result<(), crate::utils::Error> {
+         // Safety: The message was created using PostMessagePayload::to_js()
+@@ -42,7 +29,6 @@ impl ThreadPoolWorker {
+     }
+ 
+     async fn execute_async(&self, job: AsyncJob) -> Result<(), crate::utils::Error> {
+-        let _guard = self.busy();
+         match job {
+             AsyncJob::Thunk(thunk) => {
+                 thunk().await;
+@@ -55,7 +41,6 @@ impl ThreadPoolWorker {
+     async fn execute_blocking(&self, job: BlockingJob) -> Result<(), crate::utils::Error> {
+         match job {
+             BlockingJob::Thunk(thunk) => {
+-                let _guard = self.busy();
+                 thunk();
+             }
+             BlockingJob::SpawnWithModule {
+@@ -63,7 +48,6 @@ impl ThreadPoolWorker {
+                 module_bytes,
+                 task,
+             } => {
+-                let _guard = self.busy();
+                 task(wasmer::Module::from((module, module_bytes)));
+             }
+             BlockingJob::SpawnWithModuleAndMemory {
+@@ -72,7 +56,6 @@ impl ThreadPoolWorker {
+                 spawn_wasm,
+             } => {
+                 let task = spawn_wasm.begin().await;
+-                let _guard = self.busy();
+                 task.execute(module, memory.into()).await?;
+             }
+         }

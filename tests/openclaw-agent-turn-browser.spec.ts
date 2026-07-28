@@ -84,6 +84,7 @@ const relayToken = "clawsembly-openclaw-agent-turn-proof";
 const fixturePort = 18_794;
 const relayPort = 18_792;
 const responseMarker = "CLAWSEMBLY_AGENT_TURN_OK";
+const runtimeDebug = process.env.CLAWSEMBLY_WASMER_DEBUG === "1";
 const proofTimeoutMs = Number(
   process.env.CLAWSEMBLY_OPENCLAW_AGENT_TURN_TIMEOUT_MS ?? "240000"
 );
@@ -116,7 +117,10 @@ test("unmodified OpenClaw completes an agent turn through capability egress", as
     });
     page.on("console", (message) => {
       if (
-        /network|resolve|getaddrinfo|permission|denied|connect_tcp/iu.test(
+        (runtimeDebug
+          && /wasmer_js::(?:run|tasks|net)|CLAWSEMBLY/iu.test(message.text()))
+        ||
+        /getaddrinfo|permission|denied|connect_tcp/iu.test(
           message.text()
         )
       ) {
@@ -134,6 +138,7 @@ test("unmodified OpenClaw completes an agent turn through capability egress", as
       + (process.env.CLAWSEMBLY_OPENCLAW_ERROR_DETAIL === "1"
         ? "&errorDetail=1"
         : "")
+      + (runtimeDebug ? "&debug=trace" : "")
       + `&timeoutMs=${proofTimeoutMs}`
     );
     const status = page.locator("#status");

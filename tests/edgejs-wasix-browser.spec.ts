@@ -12,6 +12,8 @@ type BrowserBuildContract = {
     package: string;
     schedulerStress: {
       asyncWorkerReservation: "until-future-completion";
+      workerRelease: "after-javascript-handler-completion";
+      sleepTimerReservation: "until-javascript-timer-resolution";
       browserCpuThrottlingRate: number;
     };
     version: string;

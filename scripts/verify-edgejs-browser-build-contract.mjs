@@ -27,7 +27,7 @@ const nestedWasmLock = readFileSync(
   "utf8"
 );
 
-assert.equal(contract.schemaVersion, 10);
+assert.equal(contract.schemaVersion, 11);
 assert.equal(contract.runtimeProvider, "quickjs");
 assert.equal(contract.upstream.commit, edgeArtifact.source.commit);
 assert.equal(contract.upstream.repository, edgeArtifact.source.repository);
@@ -155,6 +155,7 @@ for (const patch of contract.browserExecutor.dependencyPatches) {
 }
 assert.deepEqual(contract.browserExecutor.threadExitPolicy, {
   successfulSpawnedThreadExit: "thread-local",
+  successfulSpawnedThreadCleanup: "skip-process-wide-instance-group-shutdown",
   nonzeroSpawnedThreadExit: "process-terminating"
 });
 assert.deepEqual(contract.browserExecutor.networkCapability, {
@@ -178,6 +179,14 @@ assert.deepEqual(contract.browserExecutor.networkCapability, {
 assert.equal(
   contract.browserExecutor.schedulerStress.asyncWorkerReservation,
   "until-future-completion"
+);
+assert.equal(
+  contract.browserExecutor.schedulerStress.workerRelease,
+  "after-javascript-handler-completion"
+);
+assert.equal(
+  contract.browserExecutor.schedulerStress.sleepTimerReservation,
+  "until-javascript-timer-resolution"
 );
 assert.equal(
   contract.browserExecutor.schedulerStress.browserCpuThrottlingRate,

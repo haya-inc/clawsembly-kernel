@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 10,
+  "schemaVersion": 11,
   "runtimeProvider": "quickjs",
   "upstream": {
     "repository": "https://github.com/wasmerio/edgejs",
@@ -103,6 +103,10 @@
       {
         "path": "patches/wasmer-js/0003-reserve-workers-for-pending-async-jobs.patch",
         "sha256": "7533ee1f877f95094e36c22a44ed91c9cf5a8abd1397e8d05d4afa36c23c1f23"
+      },
+      {
+        "path": "patches/wasmer-js/0004-release-workers-after-handler-completion.patch",
+        "sha256": "a45a51ea83dd12cbd14c59cf33f7600bfd49c9beb70f45903407d6c173fc8a04"
       }
     ],
     "dependencyPatches": [
@@ -110,7 +114,7 @@
         "package": "wasmer-wasix",
         "version": "0.601.0",
         "path": "patches/wasmer-wasix/0001-keep-successful-child-thread-exit-local.patch",
-        "sha256": "6d507c0920c8f2778cd88468684b6126decad70e60a276345222810d0c217d2e"
+        "sha256": "0f10b10e4dda80baf281d26d0a5b390c0e2537ec2c4b78fd51f06c41a47d2228"
       },
       {
         "package": "virtual-net",
@@ -141,10 +145,13 @@
     },
     "threadExitPolicy": {
       "successfulSpawnedThreadExit": "thread-local",
+      "successfulSpawnedThreadCleanup": "skip-process-wide-instance-group-shutdown",
       "nonzeroSpawnedThreadExit": "process-terminating"
     },
     "schedulerStress": {
       "asyncWorkerReservation": "until-future-completion",
+      "workerRelease": "after-javascript-handler-completion",
+      "sleepTimerReservation": "until-javascript-timer-resolution",
       "browserCpuThrottlingRate": 12
     },
     "build": {
