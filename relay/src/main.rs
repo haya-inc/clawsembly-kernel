@@ -285,7 +285,49 @@ fn validate_token(token: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use virtual_net::ruleset::Direction;
+    use std::{
+        mem::MaybeUninit,
+        sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+    use virtual_net::{
+        meta::{MessageRequest, MessageResponse, RequestType, ResponseType},
+        ruleset::Direction,
+        InterestHandler, InterestType, RemoteNetworkingClient,
+    };
+
+    #[derive(Clone, Debug, Default)]
+    struct CollapsingReadableState {
+        pushes: Arc<AtomicUsize>,
+        readable: Arc<AtomicBool>,
+    }
+
+    impl CollapsingReadableState {
+        fn pop(&self) -> bool {
+            self.readable.swap(false, Ordering::SeqCst)
+        }
+    }
+
+    #[derive(Debug)]
+    struct CollapsingReadableHandler {
+        state: CollapsingReadableState,
+    }
+
+    impl InterestHandler for CollapsingReadableHandler {
+        fn push_interest(&mut self, interest: InterestType) {
+            if interest == InterestType::Readable {
+                self.state.readable.store(true, Ordering::SeqCst);
+                self.state.pushes.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        fn pop_interest(&mut self, interest: InterestType) -> bool {
+            interest == InterestType::Readable && self.state.pop()
+        }
+
+        fn has_interest(&self, interest: InterestType) -> bool {
+            interest == InterestType::Readable && self.state.readable.load(Ordering::SeqCst)
+        }
+    }
 
     #[test]
     fn exact_dns_rule_expands_only_to_the_granted_port() {
@@ -364,5 +406,84 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, NetworkError::PermissionDenied));
+    }
+
+    #[tokio::test]
+    async fn queued_remote_tcp_frames_rearm_collapsed_readiness_and_preserve_eof() {
+        let (request_tx, mut request_rx) = mpsc::channel::<MessageRequest>(100);
+        let (response_tx, response_rx) = mpsc::channel::<MessageResponse>(100);
+        let (client, driver) = RemoteNetworkingClient::new_from_mpsc(request_tx, response_rx);
+        let driver = tokio::spawn(driver);
+        let connect_response_tx = response_tx.clone();
+        let (socket_id_tx, socket_id_rx) = tokio::sync::oneshot::channel();
+        let connect_responder = tokio::spawn(async move {
+            let request = request_rx.recv().await.unwrap();
+            let MessageRequest::Interface {
+                req:
+                    RequestType::ConnectTcp {
+                        socket_id,
+                        addr: _,
+                        peer: _,
+                    },
+                req_id: Some(req_id),
+            } = request
+            else {
+                panic!("expected a remote TCP connect request");
+            };
+            socket_id_tx.send(socket_id).unwrap();
+            connect_response_tx
+                .send(MessageResponse::ResponseToRequest {
+                    req_id,
+                    res: ResponseType::Socket(socket_id),
+                })
+                .await
+                .unwrap();
+        });
+        let mut socket = client
+            .connect_tcp(
+                "0.0.0.0:0".parse().unwrap(),
+                "127.0.0.1:18794".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+        connect_responder.await.unwrap();
+
+        let state = CollapsingReadableState::default();
+        socket
+            .set_handler(Box::new(CollapsingReadableHandler {
+                state: state.clone(),
+            }))
+            .unwrap();
+        let socket_id = socket_id_rx.await.unwrap();
+        for data in [b"assistant".to_vec(), b"finish".to_vec(), Vec::new()] {
+            response_tx
+                .send(MessageResponse::Recv { socket_id, data })
+                .await
+                .unwrap();
+        }
+        for _ in 0..10_000 {
+            if state.pushes.load(Ordering::SeqCst) >= 3 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(state.pushes.load(Ordering::SeqCst), 3);
+        assert!(state.pop());
+
+        let mut buffer = [MaybeUninit::<u8>::uninit(); 16];
+        let first = socket.try_recv(&mut buffer, false).unwrap();
+        assert_eq!(assume_initialized(&buffer[..first]), b"assistant");
+        assert!(state.pop(), "queued finish frame did not rearm readable");
+
+        let second = socket.try_recv(&mut buffer, false).unwrap();
+        assert_eq!(assume_initialized(&buffer[..second]), b"finish");
+        assert!(state.pop(), "queued EOF frame did not rearm readable");
+        assert_eq!(socket.try_recv(&mut buffer, false).unwrap(), 0);
+
+        driver.abort();
+    }
+
+    fn assume_initialized(bytes: &[MaybeUninit<u8>]) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast(), bytes.len()) }
     }
 }

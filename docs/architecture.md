@@ -300,11 +300,14 @@ resolver. Browser evidence therefore exercises an unmodified
 Two transport adapters close upstream lifecycle gaps. `virtual-net@0.601.0`
 does not forward a remote TCP EOF frame and its relay ignores a host socket's
 closed readiness. The audited dependency patch drains both readable and closed
-events, then forwards EOF as an empty receive response. This preserves the
-final fragmented SSE bytes and terminates the guest response stream. Its remote
-client also reports writable readiness continuously after connection; the
-capability socket emits the single initial completion required by libuv and
-waits for real backpressure before signaling another writable event.
+events, then forwards EOF as an empty receive response. The remote client also
+re-arms readable readiness while received frames remain queued and returns that
+empty frame as a zero-length read. This prevents readiness-bit coalescing from
+stranding fragmented SSE finish and `[DONE]` frames behind the first assistant
+frame. Its remote client also reports writable readiness continuously after
+connection; the capability socket emits the single initial completion required
+by libuv and waits for real backpressure before signaling another writable
+event.
 
 The same namespace now carries the real OpenClaw protocol. The
 single source-built compatibility artifact starts the exact unmodified

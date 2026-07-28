@@ -1,3 +1,99 @@
+diff --git a/src/client.rs b/src/client.rs
+index 7219fc5..b852b94 100644
+--- a/src/client.rs
++++ b/src/client.rs
+@@ -938,6 +938,43 @@ impl RemoteSocket {
+         self.pending_accept.replace((child_id, rx_recv));
+         Ok(())
+     }
++
++    fn try_recv_buffered(
++        &mut self,
++        buf: &mut [std::mem::MaybeUninit<u8>],
++        peek: bool,
++    ) -> Result<usize> {
++        loop {
++            if !self.rx_buffer.is_empty() {
++                let amt = self.rx_buffer.len().min(buf.len());
++                let buf: &mut [u8] = unsafe { std::mem::transmute(buf) };
++                buf[..amt].copy_from_slice(&self.rx_buffer[..amt]);
++                if !peek {
++                    self.rx_buffer.advance(amt);
++                }
++                if !self.rx_buffer.is_empty() || !self.rx_recv.is_empty() {
++                    if let Some(handler) = self
++                        .common
++                        .handlers
++                        .lock()
++                        .unwrap()
++                        .get_mut(&self.socket_id)
++                    {
++                        handler.push_interest(InterestType::Readable);
++                    }
++                }
++                return Ok(amt);
++            }
++            match self.rx_recv.try_recv() {
++                Ok(data) if data.is_empty() => return Ok(0),
++                Ok(data) => self.rx_buffer.extend_from_slice(&data),
++                Err(TryRecvError::Disconnected) => {
++                    return Err(NetworkError::ConnectionAborted)
++                }
++                Err(TryRecvError::Empty) => return Err(NetworkError::WouldBlock),
++            }
++        }
++    }
+ }
+ 
+ impl VirtualIoSource for RemoteSocket {
+@@ -1196,22 +1233,7 @@ impl VirtualRawSocket for RemoteSocket {
+     }
+ 
+     fn try_recv(&mut self, buf: &mut [std::mem::MaybeUninit<u8>], peek: bool) -> Result<usize> {
+-        loop {
+-            if !self.rx_buffer.is_empty() {
+-                let amt = self.rx_buffer.len().min(buf.len());
+-                let buf: &mut [u8] = unsafe { std::mem::transmute(buf) };
+-                buf[..amt].copy_from_slice(&self.rx_buffer[..amt]);
+-                if !peek {
+-                    self.rx_buffer.advance(amt);
+-                }
+-                return Ok(amt);
+-            }
+-            match self.rx_recv.try_recv() {
+-                Ok(data) => self.rx_buffer.extend_from_slice(&data),
+-                Err(TryRecvError::Disconnected) => return Err(NetworkError::ConnectionAborted),
+-                Err(TryRecvError::Empty) => return Err(NetworkError::WouldBlock),
+-            }
+-        }
++        self.try_recv_buffered(buf, peek)
+     }
+ 
+     fn set_promiscuous(&mut self, promiscuous: bool) -> Result<()> {
+@@ -1432,22 +1454,7 @@ impl VirtualConnectedSocket for RemoteSocket {
+     }
+ 
+     fn try_recv(&mut self, buf: &mut [std::mem::MaybeUninit<u8>], peek: bool) -> Result<usize> {
+-        loop {
+-            if !self.rx_buffer.is_empty() {
+-                let amt = self.rx_buffer.len().min(buf.len());
+-                let buf: &mut [u8] = unsafe { std::mem::transmute(buf) };
+-                buf[..amt].copy_from_slice(&self.rx_buffer[..amt]);
+-                if !peek {
+-                    self.rx_buffer.advance(amt);
+-                }
+-                return Ok(amt);
+-            }
+-            match self.rx_recv.try_recv() {
+-                Ok(data) => self.rx_buffer.extend_from_slice(&data),
+-                Err(TryRecvError::Disconnected) => return Err(NetworkError::ConnectionAborted),
+-                Err(TryRecvError::Empty) => return Err(NetworkError::WouldBlock),
+-            }
+-        }
++        self.try_recv_buffered(buf, peek)
+     }
+ }
+ 
 diff --git a/src/server.rs b/src/server.rs
 index 816ac49..d180c11 100644
 --- a/src/server.rs

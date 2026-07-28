@@ -27,7 +27,7 @@ const nestedWasmLock = readFileSync(
   "utf8"
 );
 
-assert.equal(contract.schemaVersion, 12);
+assert.equal(contract.schemaVersion, 13);
 assert.equal(contract.runtimeProvider, "quickjs");
 assert.equal(contract.upstream.commit, edgeArtifact.source.commit);
 assert.equal(contract.upstream.repository, edgeArtifact.source.repository);
@@ -174,7 +174,8 @@ assert.deepEqual(contract.browserExecutor.networkCapability, {
     privateNetwork: "deny-unless-explicit",
     tcpReceiveLifecycle: {
       closedInterest: "drain-and-forward-eof",
-      eofFrame: "empty-receive"
+      eofFrame: "empty-receive-returned-as-zero-length-read",
+      queuedFrames: "rearm-readable-until-drained"
     },
     exposes: ["dns-resolution", "outbound-tcp"]
   }
