@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync
+} from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
@@ -63,6 +69,7 @@ assert.equal(
   `cargo metadata failed for ${manifestPath}`
 );
 const metadata = JSON.parse(metadataResult.stdout);
+const patchGroups = new Map();
 
 for (const dependencyPatch of patches) {
   const matches = metadata.packages.filter(
@@ -86,7 +93,115 @@ for (const dependencyPatch of patches) {
     `Cargo dependency patch integrity mismatch: ${dependencyPatch.path}`
   );
 
-  const commonArguments = [
+  const groupKey =
+    `${dependencyPatch.package}@${dependencyPatch.version}:${dependencySource}`;
+  const group = patchGroups.get(groupKey) ?? {
+    dependencySource,
+    packageName: dependencyPatch.package,
+    patches: [],
+    version: dependencyPatch.version
+  };
+  group.patches.push({
+    bytes: patchBytes,
+    path: dependencyPatch.path
+  });
+  patchGroups.set(groupKey, group);
+}
+
+for (const group of patchGroups.values()) {
+  const appliedPrefix = detectAppliedPrefix(
+    group.dependencySource,
+    group.patches
+  );
+  if (appliedPrefix < 0) {
+    throw new Error(
+      `${group.patches.map((patch) => patch.path).join(", ")} apply neither `
+        + `as an ordered forward series nor as an already-applied prefix to `
+        + `${group.packageName}@${group.version}`
+    );
+  }
+
+  for (const dependencyPatch of group.patches.slice(0, appliedPrefix)) {
+    console.log(
+      `Already applied ${dependencyPatch.path} to `
+        + `${group.packageName}@${group.version}`
+    );
+  }
+
+  for (const dependencyPatch of group.patches.slice(appliedPrefix)) {
+    const applied = applyPatch(
+      group.dependencySource,
+      dependencyPatch.bytes,
+      false,
+      ["pipe", "inherit", "inherit"]
+    );
+    assert.equal(
+      applied,
+      true,
+      `Failed to apply ${dependencyPatch.path}`
+    );
+    console.log(
+      `Applied ${dependencyPatch.path} to `
+        + `${group.packageName}@${group.version}`
+    );
+  }
+}
+
+/**
+ * Identify a valid state where the first N patches in an ordered series are
+ * already present and the remaining patches are not. Later patches may edit
+ * lines introduced by earlier ones, so checking every patch independently in
+ * reverse is not sufficient.
+ */
+function detectAppliedPrefix(dependencySource, dependencyPatches) {
+  for (
+    let appliedPrefix = 0;
+    appliedPrefix <= dependencyPatches.length;
+    appliedPrefix += 1
+  ) {
+    const temporaryRoot = mkdtempSync(
+      path.join(tmpdir(), "clawsembly-cargo-patches-")
+    );
+    const temporarySource = path.join(temporaryRoot, "source");
+    try {
+      cpSync(dependencySource, temporarySource, { recursive: true });
+      let valid = true;
+      for (
+        let index = appliedPrefix - 1;
+        index >= 0 && valid;
+        index -= 1
+      ) {
+        valid = applyPatch(
+          temporarySource,
+          dependencyPatches[index].bytes,
+          true
+        );
+      }
+      for (
+        let index = 0;
+        index < dependencyPatches.length && valid;
+        index += 1
+      ) {
+        valid = applyPatch(
+          temporarySource,
+          dependencyPatches[index].bytes
+        );
+      }
+      if (valid) return appliedPrefix;
+    } finally {
+      rmSync(temporaryRoot, { force: true, recursive: true });
+    }
+  }
+  return -1;
+}
+
+function applyPatch(
+  dependencySource,
+  patchBytes,
+  reverse = false,
+  stdio = ["pipe", "ignore", "ignore"]
+) {
+  const arguments_ = [
     "--force",
     "--silent",
     "--directory",
@@ -94,43 +209,9 @@ for (const dependencyPatch of patches) {
     "--strip",
     "1"
   ];
-  if (patchSucceeds([...commonArguments, "--dry-run"], patchBytes)) {
-    const applied = spawnSync("patch", commonArguments, {
-      input: patchBytes,
-      stdio: ["pipe", "inherit", "inherit"]
-    });
-    assert.equal(
-      applied.status,
-      0,
-      `Failed to apply ${dependencyPatch.path}`
-    );
-    console.log(
-      `Applied ${dependencyPatch.path} to `
-        + `${dependencyPatch.package}@${dependencyPatch.version}`
-    );
-    continue;
-  }
-  if (
-    patchSucceeds(
-      [...commonArguments, "--reverse", "--dry-run"],
-      patchBytes
-    )
-  ) {
-    console.log(
-      `Already applied ${dependencyPatch.path} to `
-        + `${dependencyPatch.package}@${dependencyPatch.version}`
-    );
-    continue;
-  }
-  throw new Error(
-    `${dependencyPatch.path} applies neither forward nor in reverse to `
-      + `${dependencyPatch.package}@${dependencyPatch.version}`
-  );
-}
-
-function patchSucceeds(arguments_, input) {
+  if (reverse) arguments_.push("--reverse");
   return spawnSync("patch", arguments_, {
-    input,
-    stdio: ["pipe", "ignore", "ignore"]
+    input: patchBytes,
+    stdio
   }).status === 0;
 }
