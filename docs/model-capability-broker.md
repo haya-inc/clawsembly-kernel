@@ -17,8 +17,8 @@ The broker:
 
 - binds only to an IPv4 or IPv6 loopback address;
 - compares the opaque bearer capability in constant time;
-- accepts only JSON, one configured model, non-empty messages, and streaming
-  requests;
+- accepts only JSON, one configured model, non-empty messages, streaming
+  requests, and temperature zero;
 - caps request and response bodies at 2 MiB;
 - permits one concurrent request and a bounded lifetime request budget;
 - discards guest headers other than the validated body semantics;
@@ -51,7 +51,8 @@ The public proof uses:
 - GGUF SHA-256
   `74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db`;
   and
-- a full 32,768-token model context and a one-request broker budget.
+- a full 32,768-token model context, temperature zero, and a one-request broker
+  budget.
 
 Run the broker after starting llama.cpp on `127.0.0.1:18795`:
 
@@ -84,8 +85,8 @@ operation capability, and observes:
    official CLI;
 4. no model-service credential in the browser URL, guest evidence, process
    logs, or uploaded artifacts; and
-5. exact model, endpoint, concurrency, request-size, response-size, and request
-   count bounds independent of OpenClaw.
+5. exact model, endpoint, zero-temperature sampling, concurrency, request-size,
+   response-size, and request-count bounds independent of OpenClaw.
 
 The assistant marker is not searched recursively. OpenClaw retains the input
 under metadata such as `finalPromptText`, so recursive matching can falsely

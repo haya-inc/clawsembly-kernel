@@ -176,7 +176,8 @@ Experimental. Current execution milestones:
   A checksum-pinned llama.cpp release loads the Apache-2.0 Qwen2.5 0.5B
   Instruct GGUF on host loopback. The unmodified OpenClaw CLI asks the
   unmodified Gateway for one agent turn and receives the strict assistant
-  marker. Only a one-request operation capability enters the browser; the
+  marker under a broker-enforced zero-temperature request. Only a one-request
+  operation capability enters the browser; the
   GGUF, inference process, and model-service API key remain outside both WASIX
   guests. The proof job has no repository or external AI-service permission.
 

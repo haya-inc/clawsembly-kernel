@@ -325,6 +325,7 @@ const providerApiKey = selfHostedModelProof
 const providerDisplayName = selfHostedModelProof
   ? "Clawsembly self-hosted OSS model proof"
   : "Clawsembly deterministic proof fixture";
+const selfHostedModelTemperature = 0;
 const sensitiveValues = selfHostedModelProof
   ? [
       relayToken,
@@ -334,6 +335,11 @@ const sensitiveValues = selfHostedModelProof
     )
   : [];
 const agentTurnMarker = "CLAWSEMBLY_AGENT_TURN_OK";
+const agentTurnPrompt =
+  "A human is waiting for a visible answer. Reply with exactly the text "
+  + "between the tags and nothing else: <answer>"
+  + agentTurnMarker
+  + "</answer>";
 const agentTurnTimeoutSeconds = 120;
 const readinessMarker = "http server listening";
 const clientLaunchMarker = "agent runtime plugins pre-warmed";
@@ -614,7 +620,18 @@ async function runProbe(): Promise<void> {
               ? {
                   model: {
                     primary: `${providerName}/${providerModel}`
-                  }
+                  },
+                  ...(selfHostedModelProof
+                    ? {
+                        models: {
+                          [`${providerName}/${providerModel}`]: {
+                            params: {
+                              temperature: selfHostedModelTemperature
+                            }
+                          }
+                        }
+                      }
+                    : {})
                 }
               : {})
           }
@@ -817,7 +834,7 @@ async function runProbe(): Promise<void> {
           "--agent",
           "main",
           "--message",
-          `Reply exactly: ${agentTurnMarker}`,
+          agentTurnPrompt,
           "--thinking",
           "off",
           "--timeout",
@@ -1153,6 +1170,9 @@ async function runProbe(): Promise<void> {
                 streamingRequired: true
               },
               expectedMarker: agentTurnMarker,
+              generation: {
+                temperature: selfHostedModelTemperature
+              },
               model: `${providerName}/${providerModel}`,
               runtime: {
                 implementation: "llama.cpp",

@@ -202,7 +202,22 @@ the release acknowledgement only after its JavaScript handler promise
 resolves; dropping a Rust-side guard is not treated as completion. WASIX
 sleep timers are likewise tracked as asynchronous jobs until their JavaScript
 timers resolve, rather than detached from an already-completed synchronous
-handler. The throttled browser loopback test is the regression proof.
+handler.
+
+Arbitrary `task_shared` Futures run one per Worker in a lazily allocated pool
+with a hard ceiling of 32 Workers. A Worker returns to the idle queue only
+after the JavaScript handler promise settles; overflow waits in a FIFO queue.
+This prevents an import-time burst from creating Workers without bound while
+avoiding concurrent arbitrary Rust Futures in one Wasm instance.
+
+`sleep_now` uses a separate timer-only Worker. Timer Futures may wait
+concurrently on that Worker's JavaScript event loop, and buffered timers are
+started concurrently after Worker initialization. The timer Worker never
+receives module-cache work or arbitrary shared tasks. This prevents each WASIX
+sleep from consuming a complete SDK Worker and keeps timer delivery independent
+of the bounded shared-task pool. Rust wakers remain off the browser main
+thread, where `Atomics.wait` is forbidden. The throttled browser loopback test
+and full self-hosted agent turn are the regression proofs.
 
 The pinned `wasmer-wasix@0.601.0` also promotes a successful `Exit(0)` returned
 by a spawned, non-main WASM thread into `WasiProcess::terminate(0)`. Edge.js's
@@ -335,7 +350,10 @@ Qwen2.5 0.5B Instruct Q4_K_M from immutable public revisions, verifies the
 release archive, executable, GGUF SHA-256, and GGUF byte length, and then binds
 both processes to host loopback. The model runs with its full 32K context so
 OpenClaw completes the requested turn without widening the one-request
-capability for automatic compaction.
+capability for automatic compaction. OpenClaw's supported per-model parameters
+set temperature to zero, and the broker rejects any request that does not carry
+that exact value, making the small-model proof reproducible rather than
+sampling-dependent.
 
 An OSS broker is the only inference endpoint visible to the browser kernel.
 The browser receives a bearer token authorizing one streaming completion for

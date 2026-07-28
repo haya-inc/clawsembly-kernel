@@ -85,6 +85,9 @@ type SelfHostedAgentTurnEvidence = {
       };
     };
     expectedMarker: string;
+    generation: {
+      temperature: number;
+    };
     guestEndpoint: string;
     guestOperationCapability: {
       authority: string;
@@ -146,6 +149,11 @@ const modelPort = 18_795;
 const relayPort = 18_792;
 const modelId = "qwen2.5-0.5b-instruct";
 const responseMarker = "CLAWSEMBLY_AGENT_TURN_OK";
+const agentTurnPrompt =
+  "A human is waiting for a visible answer. Reply with exactly the text "
+  + "between the tags and nothing else: <answer>"
+  + responseMarker
+  + "</answer>";
 const llamaRelease = "b9637";
 const llamaSourceCommit = "aedb2a5e9ca3d4064148bbb919e0ddc0c1b70ab3";
 const expectedLlamaBinarySha256 =
@@ -193,6 +201,10 @@ test(
     let modelServer: CapturedProcess | undefined;
     let broker: CapturedProcess | undefined;
     let relay: CapturedProcess | undefined;
+    const browserConsole: string[] = [];
+    page.on("console", (message) => {
+      browserConsole.push(`[${message.type()}] ${message.text()}`);
+    });
     try {
       modelServer = await startModelServer(
         path.resolve(llamaServerPath!),
@@ -293,6 +305,9 @@ test(
         selfHostedModel: {
           api: "openai-completions",
           browserReceivesModelServiceCredential: false,
+          generation: {
+            temperature: 0
+          },
           guestEndpoint: "http://localhost:18794/v1",
           guestOperationCapability: {
             authority:
@@ -369,7 +384,7 @@ test(
             "--agent",
             "main",
             "--message",
-            `Reply exactly: ${responseMarker}`,
+            agentTurnPrompt,
             "--thinking",
             "off",
             "--timeout",
@@ -419,7 +434,8 @@ test(
         model: modelId,
         maxRequests: 1,
         maxConcurrency: 1,
-        providerCredentialRecorded: false
+        providerCredentialRecorded: false,
+        temperature: 0
       });
       expect(upstreamResponse).toMatchObject({
         status: "upstream-response",
@@ -429,6 +445,7 @@ test(
         model: modelId,
         stream: true,
         providerCredentialRecorded: false,
+        temperature: 0,
         requestBodyRecorded: false
       });
 
@@ -484,6 +501,48 @@ test(
           contentType: "application/json"
         }
       );
+    } catch (error) {
+      const diagnostics = redactSensitiveText(JSON.stringify({
+        browser: {
+          console: boundedTail(browserConsole.join("\n")),
+          result: await page.locator("#result").innerText().catch(() => ""),
+          status: await page.locator("#status").getAttribute("data-state")
+            .catch(() => null)
+        },
+        error: error instanceof Error
+          ? {
+              message: error.message,
+              name: error.name,
+              stack: error.stack
+            }
+          : String(error),
+        processes: {
+          broker: {
+            stderr: boundedTail(broker?.stderr() ?? ""),
+            stdout: boundedTail(broker?.stdout() ?? "")
+          },
+          modelServer: {
+            stderr: boundedTail(modelServer?.stderr() ?? ""),
+            stdout: boundedTail(modelServer?.stdout() ?? "")
+          },
+          relay: {
+            stderr: boundedTail(relay?.stderr() ?? ""),
+            stdout: boundedTail(relay?.stdout() ?? "")
+          }
+        }
+      }, null, 2));
+      const diagnosticsPath = testInfo.outputPath(
+        "openclaw-self-hosted-agent-turn-browser-diagnostics.json"
+      );
+      writeFileSync(diagnosticsPath, diagnostics);
+      await testInfo.attach(
+        "openclaw-self-hosted-agent-turn-browser-diagnostics",
+        {
+          contentType: "application/json",
+          path: diagnosticsPath
+        }
+      );
+      throw error;
     } finally {
       relay?.child.kill("SIGTERM");
       broker?.child.kill("SIGTERM");
@@ -491,6 +550,21 @@ test(
     }
   }
 );
+
+function boundedTail(value: string, maxChars = 64 * 1024): string {
+  return value.length <= maxChars ? value : value.slice(-maxChars);
+}
+
+function redactSensitiveText(value: string): string {
+  return [
+    modelServiceApiKey,
+    brokerToken,
+    relayToken
+  ].reduce(
+    (redacted, sensitive) => redacted.replaceAll(sensitive, "[REDACTED]"),
+    value
+  );
+}
 
 async function startModelServer(
   executable: string,

@@ -27,7 +27,7 @@ const nestedWasmLock = readFileSync(
   "utf8"
 );
 
-assert.equal(contract.schemaVersion, 14);
+assert.equal(contract.schemaVersion, 15);
 assert.equal(contract.runtimeProvider, "quickjs");
 assert.equal(contract.upstream.commit, edgeArtifact.source.commit);
 assert.equal(contract.upstream.repository, edgeArtifact.source.repository);
@@ -187,6 +187,26 @@ assert.deepEqual(contract.browserExecutor.networkCapability, {
 assert.equal(
   contract.browserExecutor.schedulerStress.asyncWorkerReservation,
   "until-future-completion"
+);
+assert.equal(
+  contract.browserExecutor.schedulerStress.asyncWorkerAllocation,
+  "lazy-bounded-pool"
+);
+assert.equal(
+  contract.browserExecutor.schedulerStress.maxAsyncWorkers,
+  32
+);
+assert.equal(
+  contract.browserExecutor.schedulerStress.asyncOverflow,
+  "fifo-pending-queue"
+);
+assert.equal(
+  contract.browserExecutor.schedulerStress.timerWorkerAllocation,
+  "one-dedicated-timer-worker-per-scheduler"
+);
+assert.equal(
+  contract.browserExecutor.schedulerStress.timerConcurrency,
+  "concurrent-timer-futures"
 );
 assert.equal(
   contract.browserExecutor.schedulerStress.workerRelease,

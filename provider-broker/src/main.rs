@@ -210,6 +210,7 @@ async fn main() -> anyhow::Result<()> {
             "maxConcurrency": 1,
             "upstreamScheme": upstream_scheme,
             "loopbackHttpExplicitlyAllowed": config.allow_loopback_http_upstream,
+            "temperature": 0,
             "providerCredentialRecorded": false
         })
     );
@@ -283,6 +284,7 @@ async fn chat_completions(
             "elapsedMs": started.elapsed().as_millis(),
             "model": state.model,
             "stream": true,
+            "temperature": 0,
             "providerCredentialRecorded": false,
             "requestBodyRecorded": false
         })
@@ -361,6 +363,9 @@ fn validate_request_body(body: &[u8], expected_model: &str) -> Result<(), &'stat
     }
     if object.get("stream").and_then(Value::as_bool) != Some(true) {
         return Err("streaming_required");
+    }
+    if object.get("temperature").and_then(Value::as_f64) != Some(0.0) {
+        return Err("temperature_zero_required");
     }
     let Some(messages) = object.get("messages").and_then(Value::as_array) else {
         return Err("messages_required");
@@ -570,10 +575,11 @@ mod tests {
     }
 
     #[test]
-    fn request_is_bound_to_model_streaming_and_messages() {
+    fn request_is_bound_to_model_streaming_temperature_and_messages() {
         let allowed = json!({
             "model": DEFAULT_MODEL,
             "stream": true,
+            "temperature": 0,
             "messages": [{"role": "user", "content": "hello"}]
         });
         assert!(
@@ -583,6 +589,12 @@ mod tests {
             json!({"model": "other", "stream": true, "messages": [{}]}),
             json!({"model": DEFAULT_MODEL, "stream": false, "messages": [{}]}),
             json!({"model": DEFAULT_MODEL, "stream": true, "messages": []}),
+            json!({
+                "model": DEFAULT_MODEL,
+                "stream": true,
+                "temperature": 0.7,
+                "messages": [{}]
+            }),
         ] {
             assert!(
                 validate_request_body(&serde_json::to_vec(&denied).unwrap(), DEFAULT_MODEL)

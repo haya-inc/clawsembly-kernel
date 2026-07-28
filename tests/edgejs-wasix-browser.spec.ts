@@ -11,7 +11,12 @@ type BrowserBuildContract = {
   browserExecutor: {
     package: string;
     schedulerStress: {
+      asyncOverflow: "fifo-pending-queue";
+      asyncWorkerAllocation: "lazy-bounded-pool";
       asyncWorkerReservation: "until-future-completion";
+      maxAsyncWorkers: 32;
+      timerConcurrency: "concurrent-timer-futures";
+      timerWorkerAllocation: "one-dedicated-timer-worker-per-scheduler";
       workerRelease: "after-javascript-handler-completion";
       sleepTimerReservation: "until-javascript-timer-resolution";
       browserCpuThrottlingRate: number;

@@ -84,6 +84,11 @@ const relayToken = "clawsembly-openclaw-agent-turn-proof";
 const fixturePort = 18_794;
 const relayPort = 18_792;
 const responseMarker = "CLAWSEMBLY_AGENT_TURN_OK";
+const agentTurnPrompt =
+  "A human is waiting for a visible answer. Reply with exactly the text "
+  + "between the tags and nothing else: <answer>"
+  + responseMarker
+  + "</answer>";
 const runtimeDebug = process.env.CLAWSEMBLY_WASMER_DEBUG === "1";
 const proofTimeoutMs = Number(
   process.env.CLAWSEMBLY_OPENCLAW_AGENT_TURN_TIMEOUT_MS ?? "240000"
@@ -225,7 +230,7 @@ test("unmodified OpenClaw completes an agent turn through capability egress", as
           "--agent",
           "main",
           "--message",
-          `Reply exactly: ${responseMarker}`,
+          agentTurnPrompt,
           "--thinking",
           "off",
           "--timeout",
@@ -326,7 +331,7 @@ async function handleFixtureRequest(
       request.headers.authorization === "Bearer clawsembly-fixture-key",
     bodySha256: createHash("sha256").update(serializedBody).digest("hex"),
     inputContainsInstruction: serializedBody.includes(
-      `Reply exactly: ${responseMarker}`
+      agentTurnPrompt
     ),
     messageCount: body.messages?.length ?? 0,
     messageRoles: (body.messages ?? [])
