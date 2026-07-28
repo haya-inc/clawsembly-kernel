@@ -3,18 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Clawsembly Kernel · SQLite capability probe</title>
+    <title>Clawsembly Kernel · OpenClaw state contract</title>
   </head>
   <body>
     <main>
-      <p class="eyebrow">Clawsembly Kernel · Milestone 0</p>
-      <h1>Browser-native <code>node:sqlite</code></h1>
+      <p class="eyebrow">Clawsembly Kernel · Artifact-derived contract</p>
+      <h1>Official OpenClaw state, browser-native</h1>
       <p>
-        The probe writes through a Node-compatible synchronous API, releases
-        the database worker, then verifies the same OPFS database from a fresh
-        worker.
+        The probe executes the exact state schema extracted from the pinned
+        OpenClaw artifact through a Node-compatible synchronous API, then
+        verifies the same OPFS database from a fresh Worker.
       </p>
-      <button id="run" type="button">Run persistence probe</button>
+      <button id="run" type="button">Run OpenClaw contract probe</button>
       <output id="status" data-state="idle">Idle</output>
       <pre id="result" aria-live="polite"></pre>
     </main>

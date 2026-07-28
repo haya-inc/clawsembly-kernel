@@ -84,6 +84,7 @@ export function createNodeSqliteModule(
     columns(): ColumnMetadata[] {
       const statement = this.#database.prepare(this.#sql);
       try {
+        if (statement.columnCount === 0) return [];
         return statement.getColumnNames().map((name) => ({
           column: name,
           database: null,
@@ -156,6 +157,9 @@ export function createNodeSqliteModule(
           flags,
           vfs: vfsName
         });
+        // SQLite Wasm cannot use WAL over OPFS without exclusive locking.
+        // This VFS precondition must run before OpenClaw issues its first SQL.
+        this.#database.exec("PRAGMA locking_mode=EXCLUSIVE;");
       }
     }
 

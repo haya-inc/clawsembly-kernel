@@ -1,0 +1,50 @@
+diff --git a/src/edge_runtime.cc b/src/edge_runtime.cc
+--- a/src/edge_runtime.cc
++++ b/src/edge_runtime.cc
+@@ -2928,6 +2928,46 @@ int RunScriptWithGlobals(napi_env env,
+     if (should_abort_worker_bootstrap()) return 1;
+     return 1;
+   }
++#if defined(EDGE_NAPI_QUICKJS)
++  {
++    // QuickJS's ref-counted WeakRef target can disappear as soon as the
++    // constructor's argument temporary is released. ECMAScript instead keeps
++    // targets observed by a WeakRef alive until the end of the current job.
++    // Undici relies on that guarantee when it wraps a freshly created Response
++    // and immediately dereferences it before resolving fetch().
++    static const char kWeakRefKeepDuringJobSource[] =
++        "(()=>{"
++        "const NativeWeakRef=globalThis.WeakRef;"
++        "if(typeof NativeWeakRef!=='function'||NativeWeakRef.__edgeKeepsTargetsDuringJob)return;"
++        "const kept=new Set();let clearScheduled=false;"
++        "const keep=(target)=>{"
++        "if(target===undefined)return target;"
++        "kept.add(target);"
++        "if(!clearScheduled){clearScheduled=true;queueMicrotask(()=>{kept.clear();clearScheduled=false})}"
++        "return target;"
++        "};"
++        "class WeakRef extends NativeWeakRef{"
++        "constructor(target){super(target);keep(target)}"
++        "deref(){return keep(super.deref())}"
++        "}"
++        "Object.defineProperty(WeakRef,'__edgeKeepsTargetsDuringJob',{value:true});"
++        "Object.defineProperty(globalThis,'WeakRef',{value:WeakRef,writable:true,configurable:true});"
++        "})()";
++    napi_value weakref_source = nullptr;
++    napi_value weakref_result = nullptr;
++    if (napi_create_string_utf8(env,
++                                kWeakRefKeepDuringJobSource,
++                                NAPI_AUTO_LENGTH,
++                                &weakref_source) != napi_ok ||
++        weakref_source == nullptr ||
++        napi_run_script(env, weakref_source, &weakref_result) != napi_ok) {
++      if (error_out != nullptr) {
++        *error_out = "Failed to install QuickJS WeakRef job keep-alive";
++      }
++      return 1;
++    }
++  }
++#endif
+ 
+   // Bridge V8 host dynamic import (napi/v8) into Node's module_wrap callback
+   // registry so import('node:...') from CJS follows Node's ESM pathway.

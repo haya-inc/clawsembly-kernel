@@ -1,0 +1,1645 @@
+diff --git i/AGENTS.md w/AGENTS.md
+index 52b93ff3fd0492bdbf606afd300f709bd8ee8ce4..9667ac3345d18438409283fd4a9717daeaa63db8 100644
+--- i/AGENTS.md
++++ w/AGENTS.md
+@@ -214 +214 @@ Most recent Node compatibility troubleshooting note:
+-plans/quickjs-wasm/development/troubleshooting/node-compat/edgejs/012_v8_ctest_environment_attach.md
++plans/quickjs-wasm/development/troubleshooting/node-compat/edgejs/013_openclaw_node_sqlite_binding.md
+diff --git i/CMakeLists.txt w/CMakeLists.txt
+index 795985c378ff57f72f20ddad29be2aa6d051ffea..b078bd2f44467668abfe0fd8e5f45f7c1c19104d 100644
+--- i/CMakeLists.txt
++++ w/CMakeLists.txt
+@@ -47,0 +48,14 @@ edge_configure_quickjs_webassembly()
++set(EDGE_SQLITE_AMALGAMATION_DIR "" CACHE PATH
++  "Directory containing an explicitly pinned sqlite3.c and sqlite3.h")
++set(EDGE_HAS_SQLITE OFF)
++if(NOT EDGE_SQLITE_AMALGAMATION_DIR STREQUAL "")
++  if(NOT EXISTS "${EDGE_SQLITE_AMALGAMATION_DIR}/sqlite3.c" OR
++     NOT EXISTS "${EDGE_SQLITE_AMALGAMATION_DIR}/sqlite3.h")
++    message(FATAL_ERROR
++      "EDGE_SQLITE_AMALGAMATION_DIR must contain sqlite3.c and sqlite3.h")
++  endif()
++  set(EDGE_HAS_SQLITE ON)
++  message(STATUS
++    "EDGE: enabling node:sqlite from ${EDGE_SQLITE_AMALGAMATION_DIR}")
++endif()
++
+@@ -208,0 +223,5 @@ function(edge_apply_runtime_compile_surface target_name)
++  if(EDGE_HAS_SQLITE)
++    target_include_directories("${target_name}" PRIVATE
++      "${EDGE_SQLITE_AMALGAMATION_DIR}")
++    target_compile_definitions("${target_name}" PRIVATE EDGE_HAS_SQLITE=1)
++  endif()
+@@ -271,0 +291,15 @@ edge_apply_runtime_compile_surface(edge_bindings)
++if(EDGE_HAS_SQLITE)
++  target_compile_definitions(edge_bindings PRIVATE
++    $<$<BOOL:${EDGE_IS_WASIX_TARGET}>:EDGE_SQLITE_EXCLUSIVE_LOCKING=1>
++    SQLITE_DEFAULT_MEMSTATUS=0
++    SQLITE_DQS=0
++    SQLITE_ENABLE_COLUMN_METADATA=1
++    SQLITE_ENABLE_FTS5=1
++    SQLITE_ENABLE_RTREE=1
++    SQLITE_LIKE_DOESNT_MATCH_BLOBS=1
++    SQLITE_OMIT_DEPRECATED=1
++    SQLITE_OMIT_LOAD_EXTENSION=1
++    SQLITE_THREADSAFE=1
++    SQLITE_USE_URI=1
++  )
++endif()
+diff --git i/plans/quickjs-wasm/development/troubleshooting/README.md w/plans/quickjs-wasm/development/troubleshooting/README.md
+index d8c045b940c73145956ff31d9c913ea10b2ddd5d..7179d987933a9c86cc2de320f13c0407d1787283 100644
+--- i/plans/quickjs-wasm/development/troubleshooting/README.md
++++ w/plans/quickjs-wasm/development/troubleshooting/README.md
+@@ -39,0 +40 @@ duplicating issue details.
++| ▶️ | High | [013_openclaw_node_sqlite_binding.md](node-compat/edgejs/013_openclaw_node_sqlite_binding.md) | OpenClaw `node:sqlite` binding |
+diff --git i/plans/quickjs-wasm/development/troubleshooting/node-compat/edgejs/013_openclaw_node_sqlite_binding.md w/plans/quickjs-wasm/development/troubleshooting/node-compat/edgejs/013_openclaw_node_sqlite_binding.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..c03a687c9eb8d7624c5ff31d99cc7aeaea0041a3
+--- /dev/null
++++ w/plans/quickjs-wasm/development/troubleshooting/node-compat/edgejs/013_openclaw_node_sqlite_binding.md
+@@ -0,0 +1,95 @@
++# Edge.js: OpenClaw `node:sqlite` binding
++
++| | | Remarks |
++| --- | --- | --- |
++| **Status** | ▶️ | The pinned binding compiles and passes its native contract; Chromium/WASIX proof remains. |
++| **Severity** | High | The official OpenClaw Gateway stops before startup without a safe synchronous SQLite implementation. |
++
++## Issue
++
++The complete, integrity-verified `openclaw@2026.7.1-2` package graph reaches
++its unmodified Gateway startup path in Chromium through the self-contained
++QuickJS Edge.js WASIX build. After a diagnostic-only Node version label
++replacement exposes the next boundary, OpenClaw fails in
++`requireNodeSqlite()` because `require("node:sqlite")` has no usable
++`DatabaseSync` implementation.
++
++The release immediately constructs an in-memory database, executes
++`SELECT sqlite_version()`, and rejects SQLite versions affected by the
++WAL-reset corruption bug. The browser runtime therefore cannot claim Node
++24.15 compatibility merely by changing its version string.
++
++## Action Plan
++
++1. Add an optional, explicitly configured SQLite amalgamation dependency to
++   the Edge.js build rather than silently depending on a host SQLite library.
++2. Register a portable N-API `internalBinding("sqlite")` implementation and
++   expose the existing `lib/sqlite.js` builtin only when that dependency is
++   present.
++3. Implement the synchronous OpenClaw-reached surface: `DatabaseSync`,
++   `StatementSync`, positional and named binding, `exec`, `prepare`, `get`,
++   `all`, `run`, `iterate`, `columns`, read-only open, and close. Closing a
++   database must finalize all retained statements, matching Node's
++   `DatabaseSync` lifecycle and releasing exclusive WAL ownership.
++4. Compile a pinned SQLite 3.53.4 amalgamation into the QuickJS WASIX artifact
++   with extension loading disabled and column metadata enabled.
++5. Add focused Edge.js tests for module identity, SQLite version safety,
++   transactions, WAL checkpoint, persistence, bindings, result types, and
++   explicit extension-loading failure.
++6. Rebuild the self-contained WASIX artifact and run the exact unmodified
++   OpenClaw Gateway diagnostic in Chromium.
++7. Record the next boundary. Do not change the normal runtime's Node version
++   claim until the SQLite proof and the broader OpenClaw compatibility profile
++   both pass.
++
++## Reproduction
++
++With the complete official package mounted at `/openclaw`, the diagnostic
++Gateway invocation exits with:
++
++```text
++SQLite support is unavailable or unsafe in this Node runtime.
++```
++
++The stack begins in the unmodified artifact:
++
++```text
++requireNodeSqlite
++withOpenClawStateStartupMigrationCheckpointDatabase
++readStartupMigrationVersion
++runDoctorConfigPreflight
++```
++
++The current builtin catalog intentionally places `sqlite` in
++`cannot_be_required`, while `lib/sqlite.js` delegates directly to
++`internalBinding("sqlite")`.
++
++## Progress
++
++- The optional CMake surface rejects an incomplete amalgamation directory.
++- SQLite 3.53.4 is compiled into the binding with extension loading disabled,
++  column metadata enabled, DQS disabled, and no host SQLite dependency.
++- A native QuickJS Edge build passes the OpenClaw-reached surface for
++  `exec`, `prepare`, `get`, `all`, `run`, `iterate`, `columns`, positional and
++  named bindings, transactions, savepoints, WAL checkpointing, read-only
++  reopen, foreign keys, persistence, retained-statement finalization, and
++  rejection of duplicate close.
++- WASIX applies `locking_mode=EXCLUSIVE` before the first guest statement.
++  Wasmer's mounted virtual filesystem cannot provide SQLite's normal
++  cross-process shared-memory locking, while exclusive mode permits WAL for
++  the kernel's single-owner database capability. Native builds retain Node's
++  normal locking mode.
++- WASIX multiplexes overlapping read-write and read-only `DatabaseSync`
++  wrappers for the same file onto one in-process SQLite connection. This
++  preserves the single-owner WAL constraint while supporting OpenClaw's
++  long-lived state connection and read-only startup migration inspection.
++  Logical read-only wrappers install an SQLite authorizer while compiling SQL,
++  rejecting mutations from both `prepare()` and `exec()` while allowing
++  introspection queries. Each wrapper retains independent open/close and
++  statement-finalization state; the underlying connection closes only after
++  the final wrapper releases it.
++- The normal runtime still reports Node 24.13.2. Only the diagnostic build may
++  cross the OpenClaw Node floor until the broader compatibility profile passes.
++
++## Ownership
++
++The implementation belongs to the Edge.js internal-binding layer and build
++graph. OpenClaw remains unmodified. SQLite source identity and browser evidence
++belong to the downstream Clawsembly kernel proof.
+diff --git i/quickjs-wasm/build.sh w/quickjs-wasm/build.sh
+index b4f8a633496b5d2634cadcf5b12fd254337584f6..c3b0072a29a37a8836d8feff5d90558983b066bc 100755
+--- i/quickjs-wasm/build.sh
++++ w/quickjs-wasm/build.sh
+@@ -208 +207,0 @@ cmake \
+-  -DEDGE_BUILD_CLI=ON \
+@@ -209,0 +209,2 @@ cmake \
++  -DEDGE_SQLITE_AMALGAMATION_DIR="${EDGE_SQLITE_AMALGAMATION_DIR:-}" \
++  -DEDGE_BUILD_CLI=ON \
+diff --git i/src/binding_registry/binding_list.h w/src/binding_registry/binding_list.h
+index 047499eb689f8642c141dfd79b013c650282aa72..c4eba72f8914a3b34158f12b5229d7455474bebe 100644
+--- i/src/binding_registry/binding_list.h
++++ w/src/binding_registry/binding_list.h
+@@ -5,0 +6,6 @@
++#if defined(EDGE_HAS_SQLITE)
++#define EDGE_SQLITE_BINDING(V) V(sqlite, internal_binding::InitSqlite)
++#else
++#define EDGE_SQLITE_BINDING(V)
++#endif
++
+@@ -47,0 +54 @@
++  EDGE_SQLITE_BINDING(V)                       \
+diff --git i/src/binding_registry/binding_registry.cc w/src/binding_registry/binding_registry.cc
+index 9f75291f350a05bee1311e399a6eded03906e459..7ec281973ceaa42be495d96e244078fd951e1af9 100644
+--- i/src/binding_registry/binding_registry.cc
++++ w/src/binding_registry/binding_registry.cc
+@@ -47 +47 @@ struct BindingEntry {
+-constexpr std::array<BindingEntry, 63> kBindings = {{
++constexpr auto kBindings = std::to_array<BindingEntry>({
+@@ -49 +49 @@ constexpr std::array<BindingEntry, 63> kBindings = {{
+-}};
++});
+diff --git i/src/bindings/CMakeLists.txt w/src/bindings/CMakeLists.txt
+index d6364884a27b14b7a3142f5fb231732cbff5ed57..7dcfd1e9d5ad7ee6401e3808d35607fc70f3d120 100644
+--- i/src/bindings/CMakeLists.txt
++++ w/src/bindings/CMakeLists.txt
+@@ -67,0 +68,7 @@ set(EDGE_NATIVE_BINDING_SOURCES
++
++if(EDGE_HAS_SQLITE)
++  list(APPEND EDGE_INTERNAL_BINDING_SOURCES
++    "${EDGE_ROOT}/src/internal_binding/binding_sqlite.cc"
++    "${EDGE_SQLITE_AMALGAMATION_DIR}/sqlite3.c"
++  )
++endif()
+diff --git i/src/builtin_catalog.cc w/src/builtin_catalog.cc
+index 2046bc7cbfb9c2f10ab45b1a95b53b166366c451..6a8bbaa674fb0c00188f57f3156673f8165ac517 100644
+--- i/src/builtin_catalog.cc
++++ w/src/builtin_catalog.cc
+@@ -114,0 +115 @@ BuiltinCategories BuildBuiltinCategories(const std::vector<std::string>& ids) {
++#if !defined(EDGE_HAS_SQLITE)
+@@ -115,0 +117 @@ BuiltinCategories BuildBuiltinCategories(const std::vector<std::string>& ids) {
++#endif
+diff --git i/src/internal_binding/binding_initializers.h w/src/internal_binding/binding_initializers.h
+index 2f0cb4652a95df3916aad65fe10cb7319069c392..481e1fdc9e10c21038a7934cf1dad1df939406d6 100644
+--- i/src/internal_binding/binding_initializers.h
++++ w/src/internal_binding/binding_initializers.h
+@@ -30,0 +31,3 @@ napi_value InitSerdes(napi_env env);
++#if defined(EDGE_HAS_SQLITE)
++napi_value InitSqlite(napi_env env);
++#endif
+diff --git i/src/internal_binding/binding_sqlite.cc w/src/internal_binding/binding_sqlite.cc
+new file mode 100644
+index 0000000000000000000000000000000000000000..2729b471053c7ea2e4ba2cee66991e07ef51260a
+--- /dev/null
++++ w/src/internal_binding/binding_sqlite.cc
+@@ -0,0 +1,1196 @@
++#include "internal_binding/binding_initializers.h"
++
++#if defined(EDGE_HAS_SQLITE)
++
++#include <cmath>
++#include <cstdint>
++#include <cstring>
++#include <limits>
++#include <string>
++#include <unordered_map>
++#include <unordered_set>
++#include <vector>
++
++#include <sqlite3.h>
++
++#include "internal_binding/helpers.h"
++
++namespace internal_binding {
++namespace {
++
++struct BindingState {
++  napi_ref database_constructor = nullptr;
++  napi_ref statement_constructor = nullptr;
++};
++
++struct StatementHandle;
++
++#if defined(EDGE_SQLITE_EXCLUSIVE_LOCKING)
++struct SharedDatabase {
++  sqlite3* database = nullptr;
++  std::string key;
++  bool read_only = false;
++  size_t references = 0;
++};
++
++std::unordered_map<std::string, SharedDatabase*> shared_databases;
++#endif
++
++struct DatabaseHandle {
++  BindingState* binding = nullptr;
++  sqlite3* database = nullptr;
++  bool read_only = false;
++#if defined(EDGE_SQLITE_EXCLUSIVE_LOCKING)
++  SharedDatabase* shared_database = nullptr;
++#endif
++  std::unordered_set<StatementHandle*> statements;
++};
++
++struct StatementHandle {
++  DatabaseHandle* owner = nullptr;
++  sqlite3_stmt* statement = nullptr;
++  napi_ref owner_reference = nullptr;
++};
++
++struct ReadOnlyAuthorizerState {
++  bool denied = false;
++};
++
++bool SqliteNameEquals(const char* actual, const char* expected) {
++  return actual != nullptr && sqlite3_stricmp(actual, expected) == 0;
++}
++
++bool IsAllowedReadOnlyPragma(const char* name, const char* argument) {
++  // These introspection pragmas use an argument but do not mutate the
++  // database or connection.
++  for (const char* allowed : {
++           "foreign_key_list",
++           "index_info",
++           "index_list",
++           "index_xinfo",
++           "table_info",
++           "table_xinfo",
++       }) {
++    if (SqliteNameEquals(name, allowed)) return true;
++  }
++  if (argument != nullptr) return false;
++  // Setting-style pragmas are safe only in their no-argument query form.
++  for (const char* allowed : {
++           "busy_timeout",
++           "collation_list",
++           "compile_options",
++           "database_list",
++           "foreign_keys",
++           "journal_mode",
++           "locking_mode",
++           "query_only",
++           "schema_version",
++           "synchronous",
++           "user_version",
++           "wal_autocheckpoint",
++       }) {
++    if (SqliteNameEquals(name, allowed)) return true;
++  }
++  return false;
++}
++
++int ReadOnlyAuthorizer(void* data, int action, const char* argument1,
++                       const char* argument2, const char*, const char*) {
++  switch (action) {
++    case SQLITE_FUNCTION:
++    case SQLITE_READ:
++    case SQLITE_RECURSIVE:
++    case SQLITE_SAVEPOINT:
++    case SQLITE_SELECT:
++    case SQLITE_TRANSACTION:
++      return SQLITE_OK;
++    case SQLITE_PRAGMA:
++      if (IsAllowedReadOnlyPragma(argument1, argument2)) return SQLITE_OK;
++      break;
++    default:
++      break;
++  }
++  static_cast<ReadOnlyAuthorizerState*>(data)->denied = true;
++  return SQLITE_DENY;
++}
++
++std::string ValueToUtf8(napi_env env, napi_value value) {
++  if (value == nullptr) return {};
++  size_t length = 0;
++  if (napi_get_value_string_utf8(env, value, nullptr, 0, &length) != napi_ok) {
++    return {};
++  }
++  std::string result(length + 1, '\0');
++  size_t copied = 0;
++  if (napi_get_value_string_utf8(
++          env, value, result.data(), result.size(), &copied) != napi_ok) {
++    return {};
++  }
++  result.resize(copied);
++  return result;
++}
++
++napi_value Null(napi_env env) {
++  napi_value value = nullptr;
++  napi_get_null(env, &value);
++  return value;
++}
++
++bool IsNull(napi_env env, napi_value value) {
++  if (value == nullptr) return false;
++  napi_value null_value = Null(env);
++  bool equal = false;
++  return null_value != nullptr &&
++         napi_strict_equals(env, value, null_value, &equal) == napi_ok &&
++         equal;
++}
++
++void ThrowSqliteError(napi_env env, sqlite3* database, int code,
++                      const char* context) {
++  const char* detail = database != nullptr
++                           ? sqlite3_errmsg(database)
++                           : sqlite3_errstr(code);
++  std::string message = context != nullptr ? context : "SQLite error";
++  if (detail != nullptr && *detail != '\0') {
++    message.append(": ");
++    message.append(detail);
++  }
++  napi_throw_error(env, "ERR_SQLITE_ERROR", message.c_str());
++}
++
++void ThrowInvalidState(napi_env env, const char* message) {
++  napi_throw_error(env, "ERR_INVALID_STATE", message);
++}
++
++bool GetNamedBool(napi_env env, napi_value object, const char* name,
++                  bool default_value, bool* result) {
++  if (result == nullptr) return false;
++  *result = default_value;
++  if (object == nullptr) return true;
++  bool has = false;
++  if (napi_has_named_property(env, object, name, &has) != napi_ok) return false;
++  if (!has) return true;
++  napi_value value = nullptr;
++  if (napi_get_named_property(env, object, name, &value) != napi_ok ||
++      value == nullptr) {
++    return false;
++  }
++  return napi_get_value_bool(env, value, result) == napi_ok;
++}
++
++bool GetNamedInt32(napi_env env, napi_value object, const char* name,
++                   int32_t default_value, int32_t* result) {
++  if (result == nullptr) return false;
++  *result = default_value;
++  if (object == nullptr) return true;
++  bool has = false;
++  if (napi_has_named_property(env, object, name, &has) != napi_ok) return false;
++  if (!has) return true;
++  napi_value value = nullptr;
++  if (napi_get_named_property(env, object, name, &value) != napi_ok ||
++      value == nullptr) {
++    return false;
++  }
++  return napi_get_value_int32(env, value, result) == napi_ok;
++}
++
++DatabaseHandle* UnwrapDatabase(napi_env env, napi_value self,
++                               bool require_open = true) {
++  void* data = nullptr;
++  if (self == nullptr || napi_unwrap(env, self, &data) != napi_ok ||
++      data == nullptr) {
++    ThrowInvalidState(env, "Invalid DatabaseSync receiver");
++    return nullptr;
++  }
++  auto* handle = static_cast<DatabaseHandle*>(data);
++  if (require_open && handle->database == nullptr) {
++    ThrowInvalidState(env, "The database is not open");
++    return nullptr;
++  }
++  return handle;
++}
++
++StatementHandle* UnwrapStatement(napi_env env, napi_value self) {
++  void* data = nullptr;
++  if (self == nullptr || napi_unwrap(env, self, &data) != napi_ok ||
++      data == nullptr) {
++    ThrowInvalidState(env, "Invalid StatementSync receiver");
++    return nullptr;
++  }
++  auto* handle = static_cast<StatementHandle*>(data);
++  if (handle->statement == nullptr || handle->owner == nullptr ||
++      handle->owner->database == nullptr) {
++    ThrowInvalidState(env, "The statement's database is not open");
++    return nullptr;
++  }
++  return handle;
++}
++
++void DetachStatement(napi_env env, StatementHandle* handle) {
++  if (handle == nullptr) return;
++  if (handle->owner != nullptr) {
++    handle->owner->statements.erase(handle);
++    handle->owner = nullptr;
++  }
++  if (handle->statement != nullptr) {
++    sqlite3_finalize(handle->statement);
++    handle->statement = nullptr;
++  }
++  if (handle->owner_reference != nullptr) {
++    napi_delete_reference(env, handle->owner_reference);
++    handle->owner_reference = nullptr;
++  }
++}
++
++void FinalizeDatabaseStatements(napi_env env, DatabaseHandle* handle) {
++  if (handle == nullptr) return;
++  while (!handle->statements.empty()) {
++    DetachStatement(env, *handle->statements.begin());
++  }
++}
++
++int CloseDatabaseHandle(DatabaseHandle* handle) {
++  if (handle == nullptr || handle->database == nullptr) return SQLITE_OK;
++  sqlite3* database = handle->database;
++  handle->database = nullptr;
++#if defined(EDGE_SQLITE_EXCLUSIVE_LOCKING)
++  if (handle->shared_database != nullptr) {
++    SharedDatabase* shared = handle->shared_database;
++    handle->shared_database = nullptr;
++    if (shared->references > 0) --shared->references;
++    if (shared->references > 0) return SQLITE_OK;
++    shared_databases.erase(shared->key);
++    const int result = sqlite3_close_v2(database);
++    delete shared;
++    return result;
++  }
++#endif
++  return sqlite3_close_v2(database);
++}
++
++void DatabaseFinalize(napi_env env, void* data, void*) {
++  auto* handle = static_cast<DatabaseHandle*>(data);
++  if (handle == nullptr) return;
++  FinalizeDatabaseStatements(env, handle);
++  CloseDatabaseHandle(handle);
++  delete handle;
++}
++
++void StatementFinalize(napi_env env, void* data, void*) {
++  auto* handle = static_cast<StatementHandle*>(data);
++  if (handle == nullptr) return;
++  DetachStatement(env, handle);
++  delete handle;
++}
++
++void BindingFinalize(napi_env env, void* data, void*) {
++  auto* state = static_cast<BindingState*>(data);
++  if (state == nullptr) return;
++  if (state->database_constructor != nullptr) {
++    napi_delete_reference(env, state->database_constructor);
++  }
++  if (state->statement_constructor != nullptr) {
++    napi_delete_reference(env, state->statement_constructor);
++  }
++  delete state;
++}
++
++bool IsByteArray(napi_env env, napi_value value) {
++  bool is_buffer = false;
++  if (napi_is_buffer(env, value, &is_buffer) == napi_ok && is_buffer) {
++    return true;
++  }
++  bool is_typed_array = false;
++  if (napi_is_typedarray(env, value, &is_typed_array) != napi_ok ||
++      !is_typed_array) {
++    return false;
++  }
++  napi_typedarray_type type = napi_int8_array;
++  size_t length = 0;
++  void* data = nullptr;
++  napi_value array_buffer = nullptr;
++  size_t byte_offset = 0;
++  return napi_get_typedarray_info(env, value, &type, &length, &data,
++                                  &array_buffer, &byte_offset) == napi_ok &&
++         (type == napi_uint8_array || type == napi_uint8_clamped_array);
++}
++
++bool BindByteArray(napi_env env, sqlite3_stmt* statement, int index,
++                   napi_value value) {
++  bool is_buffer = false;
++  if (napi_is_buffer(env, value, &is_buffer) == napi_ok && is_buffer) {
++    void* data = nullptr;
++    size_t length = 0;
++    if (napi_get_buffer_info(env, value, &data, &length) != napi_ok) {
++      return false;
++    }
++    return sqlite3_bind_blob64(statement, index, data, length,
++                               SQLITE_TRANSIENT) == SQLITE_OK;
++  }
++
++  napi_typedarray_type type = napi_int8_array;
++  size_t length = 0;
++  void* data = nullptr;
++  napi_value array_buffer = nullptr;
++  size_t byte_offset = 0;
++  if (napi_get_typedarray_info(env, value, &type, &length, &data,
++                               &array_buffer, &byte_offset) != napi_ok ||
++      (type != napi_uint8_array && type != napi_uint8_clamped_array)) {
++    return false;
++  }
++  return sqlite3_bind_blob64(statement, index, data, length,
++                             SQLITE_TRANSIENT) == SQLITE_OK;
++}
++
++bool BindValue(napi_env env, sqlite3_stmt* statement, int index,
++               napi_value value) {
++  if (value == nullptr || IsNull(env, value)) {
++    return sqlite3_bind_null(statement, index) == SQLITE_OK;
++  }
++  napi_valuetype type = napi_undefined;
++  if (napi_typeof(env, value, &type) != napi_ok) return false;
++  switch (type) {
++    case napi_number: {
++      double number = 0;
++      if (napi_get_value_double(env, value, &number) != napi_ok) return false;
++      if (std::isfinite(number) && std::trunc(number) == number &&
++          number >= static_cast<double>(std::numeric_limits<int64_t>::min()) &&
++          number <= static_cast<double>(std::numeric_limits<int64_t>::max())) {
++        return sqlite3_bind_int64(statement, index,
++                                  static_cast<int64_t>(number)) == SQLITE_OK;
++      }
++      return sqlite3_bind_double(statement, index, number) == SQLITE_OK;
++    }
++    case napi_bigint: {
++      int64_t integer = 0;
++      bool lossless = false;
++      if (napi_get_value_bigint_int64(env, value, &integer, &lossless) !=
++              napi_ok ||
++          !lossless) {
++        napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
++                               "SQLite bigint parameter is outside int64");
++        return false;
++      }
++      return sqlite3_bind_int64(statement, index, integer) == SQLITE_OK;
++    }
++    case napi_string: {
++      const std::string text = ValueToUtf8(env, value);
++      return sqlite3_bind_text64(statement, index, text.data(), text.size(),
++                                 SQLITE_TRANSIENT, SQLITE_UTF8) == SQLITE_OK;
++    }
++    case napi_object:
++      if (IsByteArray(env, value)) {
++        return BindByteArray(env, statement, index, value);
++      }
++      break;
++    default:
++      break;
++  }
++  napi_throw_type_error(
++      env, "ERR_INVALID_ARG_TYPE",
++      "SQLite parameters must be null, numbers, bigints, strings, or Uint8Array");
++  return false;
++}
++
++int FindNamedParameter(sqlite3_stmt* statement, const std::string& name) {
++  int index = sqlite3_bind_parameter_index(statement, name.c_str());
++  if (index != 0 || name.empty() ||
++      name[0] == ':' || name[0] == '@' || name[0] == '$') {
++    return index;
++  }
++  for (const char prefix : {':', '@', '$'}) {
++    const std::string candidate = std::string(1, prefix) + name;
++    index = sqlite3_bind_parameter_index(statement, candidate.c_str());
++    if (index != 0) return index;
++  }
++  return 0;
++}
++
++bool BindNamed(napi_env env, sqlite3_stmt* statement, napi_value object) {
++  napi_value names = nullptr;
++  if (napi_get_property_names(env, object, &names) != napi_ok ||
++      names == nullptr) {
++    return false;
++  }
++  uint32_t length = 0;
++  if (napi_get_array_length(env, names, &length) != napi_ok) return false;
++  for (uint32_t offset = 0; offset < length; ++offset) {
++    napi_value key = nullptr;
++    napi_value value = nullptr;
++    if (napi_get_element(env, names, offset, &key) != napi_ok ||
++        key == nullptr ||
++        napi_get_property(env, object, key, &value) != napi_ok ||
++        value == nullptr) {
++      return false;
++    }
++    napi_value string_key = nullptr;
++    if (napi_coerce_to_string(env, key, &string_key) != napi_ok ||
++        string_key == nullptr) {
++      return false;
++    }
++    const std::string name = ValueToUtf8(env, string_key);
++    const int index = FindNamedParameter(statement, name);
++    if (index == 0) {
++      const std::string message =
++          "Unknown named SQLite parameter: " + name;
++      napi_throw_range_error(env, "ERR_INVALID_STATE", message.c_str());
++      return false;
++    }
++    if (!BindValue(env, statement, index, value)) return false;
++  }
++  return true;
++}
++
++bool BindArguments(napi_env env, sqlite3_stmt* statement, size_t argc,
++                   napi_value* argv) {
++  sqlite3_reset(statement);
++  sqlite3_clear_bindings(statement);
++  if (argc == 1 && argv[0] != nullptr) {
++    napi_valuetype type = napi_undefined;
++    if (napi_typeof(env, argv[0], &type) == napi_ok &&
++        type == napi_object && !IsNull(env, argv[0]) &&
++        !IsByteArray(env, argv[0])) {
++      return BindNamed(env, statement, argv[0]);
++    }
++  }
++  const int expected = sqlite3_bind_parameter_count(statement);
++  if (argc > static_cast<size_t>(expected)) {
++    napi_throw_range_error(env, "ERR_INVALID_STATE",
++                           "Too many positional SQLite parameters");
++    return false;
++  }
++  for (size_t index = 0; index < argc; ++index) {
++    if (!BindValue(env, statement, static_cast<int>(index + 1), argv[index])) {
++      return false;
++    }
++  }
++  return true;
++}
++
++napi_value ColumnValue(napi_env env, sqlite3_stmt* statement, int column) {
++  switch (sqlite3_column_type(statement, column)) {
++    case SQLITE_INTEGER: {
++      const sqlite3_int64 value = sqlite3_column_int64(statement, column);
++      constexpr sqlite3_int64 kMaxSafeInteger = 9007199254740991LL;
++      constexpr sqlite3_int64 kMinSafeInteger = -9007199254740991LL;
++      napi_value result = nullptr;
++      if (value >= kMinSafeInteger && value <= kMaxSafeInteger) {
++        napi_create_int64(env, value, &result);
++      } else {
++        napi_create_bigint_int64(env, value, &result);
++      }
++      return result;
++    }
++    case SQLITE_FLOAT: {
++      napi_value result = nullptr;
++      napi_create_double(env, sqlite3_column_double(statement, column),
++                         &result);
++      return result;
++    }
++    case SQLITE_TEXT: {
++      const auto* text = sqlite3_column_text(statement, column);
++      const int bytes = sqlite3_column_bytes(statement, column);
++      napi_value result = nullptr;
++      napi_create_string_utf8(env, reinterpret_cast<const char*>(text),
++                              static_cast<size_t>(bytes), &result);
++      return result;
++    }
++    case SQLITE_BLOB: {
++      const void* bytes = sqlite3_column_blob(statement, column);
++      const int length = sqlite3_column_bytes(statement, column);
++      napi_value result = nullptr;
++      void* copied = nullptr;
++      napi_create_buffer_copy(env, static_cast<size_t>(length), bytes,
++                              &copied, &result);
++      return result;
++    }
++    case SQLITE_NULL:
++    default:
++      return Null(env);
++  }
++}
++
++napi_value CurrentRow(napi_env env, sqlite3_stmt* statement) {
++  napi_value row = nullptr;
++  if (napi_create_object(env, &row) != napi_ok || row == nullptr) {
++    return nullptr;
++  }
++  const int columns = sqlite3_column_count(statement);
++  for (int column = 0; column < columns; ++column) {
++    const char* name = sqlite3_column_name(statement, column);
++    napi_value key = nullptr;
++    napi_value value = ColumnValue(env, statement, column);
++    if (name == nullptr || value == nullptr ||
++        napi_create_string_utf8(env, name, NAPI_AUTO_LENGTH, &key) != napi_ok ||
++        key == nullptr ||
++        napi_set_property(env, row, key, value) != napi_ok) {
++      return nullptr;
++    }
++  }
++  return row;
++}
++
++bool ReadStatementCall(napi_env env, napi_callback_info info,
++                       StatementHandle** handle, size_t* argc,
++                       napi_value* argv, size_t capacity) {
++  napi_value self = nullptr;
++  *argc = capacity;
++  if (napi_get_cb_info(env, info, argc, argv, &self, nullptr) != napi_ok) {
++    return false;
++  }
++  *handle = UnwrapStatement(env, self);
++  return *handle != nullptr && BindArguments(
++      env, (*handle)->statement, *argc, argv);
++}
++
++napi_value StatementGet(napi_env env, napi_callback_info info) {
++  constexpr size_t kMaxArguments = 64;
++  size_t argc = kMaxArguments;
++  napi_value argv[kMaxArguments] = {};
++  StatementHandle* handle = nullptr;
++  if (!ReadStatementCall(
++          env, info, &handle, &argc, argv, kMaxArguments)) {
++    return nullptr;
++  }
++  const int result = sqlite3_step(handle->statement);
++  napi_value row = nullptr;
++  if (result == SQLITE_ROW) {
++    row = CurrentRow(env, handle->statement);
++  } else if (result == SQLITE_DONE) {
++    row = Undefined(env);
++  } else {
++    ThrowSqliteError(env, handle->owner->database, result,
++                     "SQLite statement failed");
++  }
++  sqlite3_reset(handle->statement);
++  return row;
++}
++
++napi_value StatementAll(napi_env env, napi_callback_info info) {
++  constexpr size_t kMaxArguments = 64;
++  size_t argc = kMaxArguments;
++  napi_value argv[kMaxArguments] = {};
++  StatementHandle* handle = nullptr;
++  if (!ReadStatementCall(
++          env, info, &handle, &argc, argv, kMaxArguments)) {
++    return nullptr;
++  }
++  napi_value rows = nullptr;
++  if (napi_create_array(env, &rows) != napi_ok || rows == nullptr) {
++    return nullptr;
++  }
++  uint32_t index = 0;
++  int result = SQLITE_OK;
++  while ((result = sqlite3_step(handle->statement)) == SQLITE_ROW) {
++    napi_value row = CurrentRow(env, handle->statement);
++    if (row == nullptr ||
++        napi_set_element(env, rows, index++, row) != napi_ok) {
++      sqlite3_reset(handle->statement);
++      return nullptr;
++    }
++  }
++  sqlite3_reset(handle->statement);
++  if (result != SQLITE_DONE) {
++    ThrowSqliteError(env, handle->owner->database, result,
++                     "SQLite statement failed");
++    return nullptr;
++  }
++  return rows;
++}
++
++napi_value StatementRun(napi_env env, napi_callback_info info) {
++  constexpr size_t kMaxArguments = 64;
++  size_t argc = kMaxArguments;
++  napi_value argv[kMaxArguments] = {};
++  StatementHandle* handle = nullptr;
++  if (!ReadStatementCall(
++          env, info, &handle, &argc, argv, kMaxArguments)) {
++    return nullptr;
++  }
++  int result = SQLITE_OK;
++  while ((result = sqlite3_step(handle->statement)) == SQLITE_ROW) {
++  }
++  sqlite3_reset(handle->statement);
++  if (result != SQLITE_DONE) {
++    ThrowSqliteError(env, handle->owner->database, result,
++                     "SQLite statement failed");
++    return nullptr;
++  }
++  napi_value output = nullptr;
++  napi_value changes = nullptr;
++  napi_value last_insert_rowid = nullptr;
++  if (napi_create_object(env, &output) != napi_ok ||
++      napi_create_int64(
++          env, sqlite3_changes64(handle->owner->database), &changes) !=
++          napi_ok ||
++      napi_create_int64(
++          env, sqlite3_last_insert_rowid(handle->owner->database),
++          &last_insert_rowid) != napi_ok ||
++      napi_set_named_property(env, output, "changes", changes) != napi_ok ||
++      napi_set_named_property(
++          env, output, "lastInsertRowid", last_insert_rowid) != napi_ok) {
++    return nullptr;
++  }
++  return output;
++}
++
++napi_value StatementIterate(napi_env env, napi_callback_info info) {
++  napi_value rows = StatementAll(env, info);
++  if (rows == nullptr) return nullptr;
++  napi_value global = GetGlobal(env);
++  napi_value symbol = nullptr;
++  napi_value iterator_key = nullptr;
++  napi_value iterator_function = nullptr;
++  napi_value iterator = nullptr;
++  if (global == nullptr ||
++      napi_get_named_property(env, global, "Symbol", &symbol) != napi_ok ||
++      symbol == nullptr ||
++      napi_get_named_property(env, symbol, "iterator", &iterator_key) !=
++          napi_ok ||
++      iterator_key == nullptr ||
++      napi_get_property(env, rows, iterator_key, &iterator_function) !=
++          napi_ok ||
++      iterator_function == nullptr ||
++      napi_call_function(
++          env, rows, iterator_function, 0, nullptr, &iterator) != napi_ok) {
++    return nullptr;
++  }
++  return iterator;
++}
++
++bool SetNullableString(napi_env env, napi_value object, const char* key,
++                       const char* value) {
++  napi_value result = nullptr;
++  if (value == nullptr) {
++    result = Null(env);
++  } else if (napi_create_string_utf8(
++                 env, value, NAPI_AUTO_LENGTH, &result) != napi_ok) {
++    return false;
++  }
++  return result != nullptr &&
++         napi_set_named_property(env, object, key, result) == napi_ok;
++}
++
++napi_value StatementColumns(napi_env env, napi_callback_info info) {
++  size_t argc = 0;
++  napi_value self = nullptr;
++  if (napi_get_cb_info(env, info, &argc, nullptr, &self, nullptr) != napi_ok) {
++    return nullptr;
++  }
++  StatementHandle* handle = UnwrapStatement(env, self);
++  if (handle == nullptr) return nullptr;
++  const int count = sqlite3_column_count(handle->statement);
++  napi_value columns = nullptr;
++  if (napi_create_array_with_length(
++          env, static_cast<size_t>(count), &columns) != napi_ok ||
++      columns == nullptr) {
++    return nullptr;
++  }
++  for (int index = 0; index < count; ++index) {
++    napi_value metadata = nullptr;
++    if (napi_create_object(env, &metadata) != napi_ok ||
++        metadata == nullptr ||
++        !SetNullableString(env, metadata, "column",
++                           sqlite3_column_name(handle->statement, index)) ||
++        !SetNullableString(env, metadata, "database",
++                           sqlite3_column_database_name(
++                               handle->statement, index)) ||
++        !SetNullableString(env, metadata, "name",
++                           sqlite3_column_origin_name(
++                               handle->statement, index)) ||
++        !SetNullableString(env, metadata, "origin",
++                           sqlite3_column_origin_name(
++                               handle->statement, index)) ||
++        !SetNullableString(env, metadata, "table",
++                           sqlite3_column_table_name(
++                               handle->statement, index)) ||
++        !SetNullableString(env, metadata, "type",
++                           sqlite3_column_decltype(
++                               handle->statement, index)) ||
++        napi_set_element(
++            env, columns, static_cast<uint32_t>(index), metadata) != napi_ok) {
++      return nullptr;
++    }
++  }
++  return columns;
++}
++
++napi_value StatementCtor(napi_env env, napi_callback_info info) {
++  size_t argc = 1;
++  napi_value argv[1] = {nullptr};
++  napi_value self = nullptr;
++  if (napi_get_cb_info(env, info, &argc, argv, &self, nullptr) != napi_ok ||
++      self == nullptr || argc != 1 || argv[0] == nullptr) {
++    napi_throw_type_error(
++        env, "ERR_ILLEGAL_CONSTRUCTOR",
++        "StatementSync cannot be constructed directly");
++    return nullptr;
++  }
++  void* data = nullptr;
++  if (napi_get_value_external(env, argv[0], &data) != napi_ok ||
++      data == nullptr) {
++    napi_throw_type_error(
++        env, "ERR_ILLEGAL_CONSTRUCTOR",
++        "StatementSync cannot be constructed directly");
++    return nullptr;
++  }
++  auto* handle = static_cast<StatementHandle*>(data);
++  if (napi_wrap(env, self, handle, StatementFinalize, nullptr, nullptr) !=
++      napi_ok) {
++    StatementFinalize(env, handle, nullptr);
++    return nullptr;
++  }
++  return self;
++}
++
++napi_value DatabaseCtor(napi_env env, napi_callback_info info) {
++  size_t argc = 2;
++  napi_value argv[2] = {nullptr, nullptr};
++  napi_value self = nullptr;
++  void* callback_data = nullptr;
++  if (napi_get_cb_info(
++          env, info, &argc, argv, &self, &callback_data) != napi_ok ||
++      self == nullptr || argc < 1 || argv[0] == nullptr) {
++    napi_throw_type_error(
++        env, "ERR_INVALID_ARG_TYPE",
++        "DatabaseSync requires a database path");
++    return nullptr;
++  }
++  napi_valuetype path_type = napi_undefined;
++  if (napi_typeof(env, argv[0], &path_type) != napi_ok ||
++      path_type != napi_string) {
++    napi_throw_type_error(
++        env, "ERR_INVALID_ARG_TYPE",
++        "DatabaseSync path must be a string");
++    return nullptr;
++  }
++  napi_value options = argc >= 2 ? argv[1] : nullptr;
++  if (options != nullptr && !IsNull(env, options)) {
++    napi_valuetype options_type = napi_undefined;
++    if (napi_typeof(env, options, &options_type) != napi_ok ||
++        options_type != napi_object) {
++      napi_throw_type_error(
++          env, "ERR_INVALID_ARG_TYPE",
++          "DatabaseSync options must be an object");
++      return nullptr;
++    }
++  } else {
++    options = nullptr;
++  }
++
++  bool open = true;
++  bool read_only = false;
++  bool allow_extension = false;
++  bool enable_foreign_keys = true;
++  bool defensive = true;
++  int32_t timeout = 0;
++  if (!GetNamedBool(env, options, "open", true, &open) ||
++      !GetNamedBool(env, options, "readOnly", false, &read_only) ||
++      !GetNamedBool(
++          env, options, "allowExtension", false, &allow_extension) ||
++      !GetNamedBool(env, options, "enableForeignKeyConstraints", true,
++                    &enable_foreign_keys) ||
++      !GetNamedBool(env, options, "defensive", true, &defensive) ||
++      !GetNamedInt32(env, options, "timeout", 0, &timeout)) {
++    napi_throw_type_error(
++        env, "ERR_INVALID_ARG_TYPE",
++        "Invalid DatabaseSync option");
++    return nullptr;
++  }
++  if (!open) {
++    napi_throw_error(
++        env, "ERR_FEATURE_UNAVAILABLE",
++        "DatabaseSync open:false is not implemented");
++    return nullptr;
++  }
++  if (allow_extension) {
++    napi_throw_error(
++        env, "ERR_FEATURE_UNAVAILABLE",
++        "SQLite extension loading is disabled");
++    return nullptr;
++  }
++  if (timeout < 0) {
++    napi_throw_range_error(
++        env, "ERR_OUT_OF_RANGE",
++        "DatabaseSync timeout must be non-negative");
++    return nullptr;
++  }
++
++  const std::string filename = ValueToUtf8(env, argv[0]);
++  auto* handle = new DatabaseHandle();
++  handle->binding = static_cast<BindingState*>(callback_data);
++  handle->read_only = read_only;
++  bool reused_database = false;
++#if defined(EDGE_SQLITE_EXCLUSIVE_LOCKING)
++  const bool shareable_database =
++      filename != ":memory:" &&
++      filename.find("mode=memory") == std::string::npos;
++  const std::string shared_key = filename;
++  if (shareable_database) {
++    const auto existing = shared_databases.find(shared_key);
++    // A logical read-only DatabaseSync can safely share an already-open
++    // writable connection as long as this wrapper rejects mutating SQL.
++    // This is required under WASIX exclusive locking: opening a second
++    // physical connection to the same file would conflict with our own lock.
++    if (existing != shared_databases.end() &&
++        (read_only || !existing->second->read_only)) {
++      handle->database = existing->second->database;
++      handle->shared_database = existing->second;
++      ++handle->shared_database->references;
++      reused_database = true;
++    }
++  }
++#endif
++  const int flags =
++      (read_only ? SQLITE_OPEN_READONLY
++                 : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE) |
++      SQLITE_OPEN_URI;
++  if (!reused_database) {
++    const int result =
++        sqlite3_open_v2(filename.c_str(), &handle->database, flags, nullptr);
++    if (result != SQLITE_OK) {
++      ThrowSqliteError(env, handle->database, result, "Could not open database");
++      if (handle->database != nullptr) sqlite3_close_v2(handle->database);
++      delete handle;
++      return nullptr;
++    }
++  }
++  if (!reused_database) {
++    sqlite3_extended_result_codes(handle->database, 1);
++    if (timeout > 0) sqlite3_busy_timeout(handle->database, timeout);
++#if defined(EDGE_SQLITE_EXCLUSIVE_LOCKING)
++    {
++      char* error = nullptr;
++      const int locking_mode_result = sqlite3_exec(
++          handle->database, "PRAGMA locking_mode = EXCLUSIVE",
++          nullptr, nullptr, &error);
++      if (locking_mode_result != SQLITE_OK) {
++        std::string message =
++            "Could not enable SQLite exclusive locking mode";
++        if (error != nullptr) {
++          message.append(": ");
++          message.append(error);
++          sqlite3_free(error);
++        }
++        napi_throw_error(env, "ERR_SQLITE_ERROR", message.c_str());
++        DatabaseFinalize(env, handle, nullptr);
++        return nullptr;
++      }
++    }
++#endif
++    if (sqlite3_db_config(handle->database, SQLITE_DBCONFIG_DEFENSIVE,
++                          defensive ? 1 : 0, nullptr) != SQLITE_OK) {
++      ThrowSqliteError(env, handle->database, sqlite3_errcode(handle->database),
++                       "Could not configure SQLite defensive mode");
++      DatabaseFinalize(env, handle, nullptr);
++      return nullptr;
++    }
++    if (enable_foreign_keys) {
++      char* error = nullptr;
++      const int foreign_keys_result = sqlite3_exec(
++          handle->database, "PRAGMA foreign_keys = ON",
++          nullptr, nullptr, &error);
++      if (foreign_keys_result != SQLITE_OK) {
++        std::string message = "Could not enable SQLite foreign keys";
++        if (error != nullptr) {
++          message.append(": ");
++          message.append(error);
++          sqlite3_free(error);
++        }
++        napi_throw_error(env, "ERR_SQLITE_ERROR", message.c_str());
++        DatabaseFinalize(env, handle, nullptr);
++        return nullptr;
++      }
++    }
++  }
++#if defined(EDGE_SQLITE_EXCLUSIVE_LOCKING)
++  if (shareable_database && !reused_database) {
++    auto* shared = new SharedDatabase();
++    shared->database = handle->database;
++    shared->key = shared_key;
++    shared->read_only = read_only;
++    shared->references = 1;
++    handle->shared_database = shared;
++    shared_databases.emplace(shared_key, shared);
++  }
++#endif
++  if (napi_wrap(env, self, handle, DatabaseFinalize, nullptr, nullptr) !=
++      napi_ok) {
++    DatabaseFinalize(env, handle, nullptr);
++    return nullptr;
++  }
++  return self;
++}
++
++napi_value DatabaseIsOpen(napi_env env, napi_callback_info info) {
++  size_t argc = 0;
++  napi_value self = nullptr;
++  if (napi_get_cb_info(env, info, &argc, nullptr, &self, nullptr) != napi_ok) {
++    return nullptr;
++  }
++  DatabaseHandle* handle = UnwrapDatabase(env, self, false);
++  if (handle == nullptr) return nullptr;
++  napi_value result = nullptr;
++  napi_get_boolean(env, handle->database != nullptr, &result);
++  return result;
++}
++
++napi_value DatabaseClose(napi_env env, napi_callback_info info) {
++  size_t argc = 0;
++  napi_value self = nullptr;
++  if (napi_get_cb_info(env, info, &argc, nullptr, &self, nullptr) != napi_ok) {
++    return nullptr;
++  }
++  DatabaseHandle* handle = UnwrapDatabase(env, self, false);
++  if (handle == nullptr) return nullptr;
++  if (handle->database == nullptr) {
++    ThrowInvalidState(env, "The database is not open");
++    return nullptr;
++  }
++  FinalizeDatabaseStatements(env, handle);
++  sqlite3* database = handle->database;
++  const int result = CloseDatabaseHandle(handle);
++  if (result != SQLITE_OK) {
++    ThrowSqliteError(env, database, result,
++                     "Could not close database");
++    return nullptr;
++  }
++  return Undefined(env);
++}
++
++napi_value DatabaseExec(napi_env env, napi_callback_info info) {
++  size_t argc = 1;
++  napi_value argv[1] = {nullptr};
++  napi_value self = nullptr;
++  if (napi_get_cb_info(env, info, &argc, argv, &self, nullptr) != napi_ok ||
++      argc < 1 || argv[0] == nullptr) {
++    napi_throw_type_error(
++        env, "ERR_INVALID_ARG_TYPE",
++        "DatabaseSync.exec requires SQL text");
++    return nullptr;
++  }
++  DatabaseHandle* handle = UnwrapDatabase(env, self);
++  if (handle == nullptr) return nullptr;
++  napi_valuetype type = napi_undefined;
++  if (napi_typeof(env, argv[0], &type) != napi_ok || type != napi_string) {
++    napi_throw_type_error(
++        env, "ERR_INVALID_ARG_TYPE",
++        "DatabaseSync.exec SQL must be a string");
++    return nullptr;
++  }
++  const std::string sql = ValueToUtf8(env, argv[0]);
++  ReadOnlyAuthorizerState authorizer;
++  if (handle->read_only) {
++    sqlite3_set_authorizer(
++        handle->database, ReadOnlyAuthorizer, &authorizer);
++  }
++  char* error = nullptr;
++  const int result =
++      sqlite3_exec(handle->database, sql.c_str(), nullptr, nullptr, &error);
++  if (handle->read_only) {
++    sqlite3_set_authorizer(handle->database, nullptr, nullptr);
++  }
++  if (authorizer.denied) {
++    if (error != nullptr) sqlite3_free(error);
++    napi_throw_error(
++        env, "ERR_SQLITE_READONLY",
++        "Cannot execute mutating SQL on a read-only database");
++    return nullptr;
++  }
++  if (result != SQLITE_OK) {
++    std::string message = "SQLite exec failed";
++    if (error != nullptr) {
++      message.append(": ");
++      message.append(error);
++      sqlite3_free(error);
++    }
++    napi_throw_error(env, "ERR_SQLITE_ERROR", message.c_str());
++    return nullptr;
++  }
++  return Undefined(env);
++}
++
++napi_value DatabasePrepare(napi_env env, napi_callback_info info) {
++  size_t argc = 1;
++  napi_value argv[1] = {nullptr};
++  napi_value self = nullptr;
++  if (napi_get_cb_info(env, info, &argc, argv, &self, nullptr) != napi_ok ||
++      argc < 1 || argv[0] == nullptr) {
++    napi_throw_type_error(
++        env, "ERR_INVALID_ARG_TYPE",
++        "DatabaseSync.prepare requires SQL text");
++    return nullptr;
++  }
++  DatabaseHandle* handle = UnwrapDatabase(env, self);
++  if (handle == nullptr) return nullptr;
++  napi_valuetype type = napi_undefined;
++  if (napi_typeof(env, argv[0], &type) != napi_ok || type != napi_string) {
++    napi_throw_type_error(
++        env, "ERR_INVALID_ARG_TYPE",
++        "DatabaseSync.prepare SQL must be a string");
++    return nullptr;
++  }
++  const std::string sql = ValueToUtf8(env, argv[0]);
++  auto* statement = new StatementHandle();
++  statement->owner = handle;
++  ReadOnlyAuthorizerState authorizer;
++  if (handle->read_only) {
++    sqlite3_set_authorizer(
++        handle->database, ReadOnlyAuthorizer, &authorizer);
++  }
++  const int result = sqlite3_prepare_v2(
++      handle->database, sql.c_str(), static_cast<int>(sql.size()),
++      &statement->statement, nullptr);
++  if (handle->read_only) {
++    sqlite3_set_authorizer(handle->database, nullptr, nullptr);
++  }
++  if (result != SQLITE_OK || statement->statement == nullptr) {
++    if (statement->statement != nullptr) sqlite3_finalize(statement->statement);
++    delete statement;
++    if (authorizer.denied) {
++      napi_throw_error(
++          env, "ERR_SQLITE_READONLY",
++          "Cannot prepare mutating SQL on a read-only database");
++    } else {
++      ThrowSqliteError(env, handle->database, result,
++                       "Could not prepare statement");
++    }
++    return nullptr;
++  }
++  if (napi_create_reference(env, self, 1, &statement->owner_reference) !=
++      napi_ok) {
++    sqlite3_finalize(statement->statement);
++    delete statement;
++    return nullptr;
++  }
++
++  napi_value constructor = nullptr;
++  napi_value external = nullptr;
++  napi_value instance = nullptr;
++  if (handle->binding == nullptr ||
++      handle->binding->statement_constructor == nullptr ||
++      napi_get_reference_value(
++          env, handle->binding->statement_constructor, &constructor) !=
++          napi_ok ||
++      constructor == nullptr ||
++      napi_create_external(
++          env, statement, nullptr, nullptr, &external) != napi_ok ||
++      external == nullptr ||
++      napi_new_instance(
++          env, constructor, 1, &external, &instance) != napi_ok ||
++      instance == nullptr) {
++    StatementFinalize(env, statement, nullptr);
++    return nullptr;
++  }
++  handle->statements.insert(statement);
++  return instance;
++}
++
++napi_value ExtensionUnavailable(napi_env env, napi_callback_info) {
++  napi_throw_error(
++      env, "ERR_FEATURE_UNAVAILABLE",
++      "SQLite extension loading is disabled");
++  return nullptr;
++}
++
++napi_value DatabaseEnableLoadExtension(napi_env env, napi_callback_info info) {
++  size_t argc = 1;
++  napi_value argv[1] = {nullptr};
++  napi_value self = nullptr;
++  if (napi_get_cb_info(env, info, &argc, argv, &self, nullptr) != napi_ok ||
++      argc < 1 || argv[0] == nullptr) {
++    napi_throw_type_error(
++        env, "ERR_INVALID_ARG_TYPE",
++        "DatabaseSync.enableLoadExtension requires a boolean");
++    return nullptr;
++  }
++  if (UnwrapDatabase(env, self) == nullptr) return nullptr;
++  bool enabled = false;
++  if (napi_get_value_bool(env, argv[0], &enabled) != napi_ok) {
++    napi_throw_type_error(
++        env, "ERR_INVALID_ARG_TYPE",
++        "DatabaseSync.enableLoadExtension requires a boolean");
++    return nullptr;
++  }
++  if (enabled) return ExtensionUnavailable(env, info);
++  return Undefined(env);
++}
++
++}  // namespace
++
++napi_value InitSqlite(napi_env env) {
++  napi_value binding = nullptr;
++  if (napi_create_object(env, &binding) != napi_ok || binding == nullptr) {
++    return Undefined(env);
++  }
++  auto* state = new BindingState();
++
++  const napi_property_descriptor statement_properties[] = {
++      {"all", nullptr, StatementAll, nullptr, nullptr, nullptr,
++       napi_default_method, nullptr},
++      {"columns", nullptr, StatementColumns, nullptr, nullptr, nullptr,
++       napi_default_method, nullptr},
++      {"get", nullptr, StatementGet, nullptr, nullptr, nullptr,
++       napi_default_method, nullptr},
++      {"iterate", nullptr, StatementIterate, nullptr, nullptr, nullptr,
++       napi_default_method, nullptr},
++      {"run", nullptr, StatementRun, nullptr, nullptr, nullptr,
++       napi_default_method, nullptr},
++  };
++  napi_value statement_constructor = nullptr;
++  if (napi_define_class(
++          env, "StatementSync", NAPI_AUTO_LENGTH, StatementCtor, state,
++          sizeof(statement_properties) / sizeof(statement_properties[0]),
++          statement_properties, &statement_constructor) != napi_ok ||
++      statement_constructor == nullptr ||
++      napi_create_reference(
++          env, statement_constructor, 1,
++          &state->statement_constructor) != napi_ok) {
++    delete state;
++    return Undefined(env);
++  }
++
++  const napi_property_descriptor database_properties[] = {
++      {"close", nullptr, DatabaseClose, nullptr, nullptr, nullptr,
++       napi_default_method, nullptr},
++      {"enableLoadExtension", nullptr, DatabaseEnableLoadExtension, nullptr,
++       nullptr, nullptr, napi_default_method, nullptr},
++      {"exec", nullptr, DatabaseExec, nullptr, nullptr, nullptr,
++       napi_default_method, nullptr},
++      {"isOpen", nullptr, nullptr, DatabaseIsOpen, nullptr, nullptr,
++       napi_default, nullptr},
++      {"loadExtension", nullptr, ExtensionUnavailable, nullptr, nullptr,
++       nullptr, napi_default_method, nullptr},
++      {"prepare", nullptr, DatabasePrepare, nullptr, nullptr, nullptr,
++       napi_default_method, nullptr},
++  };
++  napi_value database_constructor = nullptr;
++  if (napi_define_class(
++          env, "DatabaseSync", NAPI_AUTO_LENGTH, DatabaseCtor, state,
++          sizeof(database_properties) / sizeof(database_properties[0]),
++          database_properties, &database_constructor) != napi_ok ||
++      database_constructor == nullptr ||
++      napi_create_reference(
++          env, database_constructor, 1,
++          &state->database_constructor) != napi_ok ||
++      napi_set_named_property(
++          env, binding, "DatabaseSync", database_constructor) != napi_ok ||
++      napi_set_named_property(
++          env, binding, "StatementSync", statement_constructor) != napi_ok ||
++      napi_wrap(
++          env, binding, state, BindingFinalize, nullptr, nullptr) != napi_ok) {
++    if (state->database_constructor != nullptr) {
++      napi_delete_reference(env, state->database_constructor);
++    }
++    if (state->statement_constructor != nullptr) {
++      napi_delete_reference(env, state->statement_constructor);
++    }
++    delete state;
++    return Undefined(env);
++  }
++  return binding;
++}
++
++}  // namespace internal_binding
++
++#endif  // defined(EDGE_HAS_SQLITE)
+diff --git i/tests/js/openclaw-sqlite-contract.js w/tests/js/openclaw-sqlite-contract.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..6de7307369cd0cdafad5369aa90e2eef8e27cd8b
+--- /dev/null
++++ w/tests/js/openclaw-sqlite-contract.js
+@@ -0,0 +1,219 @@
++'use strict';
++
++const fs = require('node:fs');
++const { DatabaseSync } = require('node:sqlite');
++
++function check(condition, message) {
++  if (!condition) throw new Error(message);
++}
++
++const databasePath = process.argv[2] || '/tmp/edge-openclaw-sqlite-contract.db';
++for (const suffix of ['', '-shm', '-wal']) {
++  try {
++    fs.unlinkSync(databasePath + suffix);
++  } catch (error) {
++    if (error?.code !== 'ENOENT') throw error;
++  }
++}
++
++const database = new DatabaseSync(databasePath, { timeout: 1000 });
++check(database.isOpen === true, 'database should open');
++check(
++  database.prepare('SELECT sqlite_version() AS version').get().version ===
++    '3.53.4',
++  'unexpected SQLite version'
++);
++check(
++  database.prepare('PRAGMA foreign_keys').get().foreign_keys === 1,
++  'foreign key enforcement should default on'
++);
++check(
++  database.prepare('PRAGMA locking_mode').get().locking_mode === 'normal',
++  'native database should retain normal locking mode'
++);
++check(
++  database.prepare('PRAGMA journal_mode = WAL').get().journal_mode === 'wal',
++  'file database should enter WAL mode'
++);
++database.exec(`
++  PRAGMA busy_timeout = 1000;
++  PRAGMA synchronous = NORMAL;
++  CREATE TABLE parents (
++    id INTEGER PRIMARY KEY,
++    label TEXT NOT NULL UNIQUE
++  );
++  CREATE TABLE children (
++    id INTEGER PRIMARY KEY,
++    parent_id INTEGER NOT NULL REFERENCES parents(id),
++    payload BLOB
++  );
++`);
++
++const insertParent =
++  database.prepare('INSERT INTO parents(label) VALUES ($label)');
++check(insertParent.run({ $label: 'alpha' }).changes === 1, 'named insert');
++check(insertParent.run({ label: 'beta' }).changes === 1, 'bare named insert');
++
++database.exec('BEGIN IMMEDIATE');
++database.prepare(
++  'INSERT INTO children(parent_id, payload) VALUES (?, ?)'
++).run(1, new Uint8Array([1, 2, 3]));
++database.exec('SAVEPOINT nested');
++database.prepare(
++  'INSERT INTO children(parent_id, payload) VALUES (?, ?)'
++).run(2, new Uint8Array([4, 5]));
++database.exec('ROLLBACK TO nested; RELEASE nested; COMMIT');
++
++const rows = database.prepare(`
++  SELECT parents.label, children.payload
++  FROM children
++  JOIN parents ON parents.id = children.parent_id
++  ORDER BY children.id
++`).all();
++check(rows.length === 1 && rows[0].label === 'alpha', 'transaction rows');
++check(
++  rows[0].payload instanceof Uint8Array &&
++    Array.from(rows[0].payload).join(',') === '1,2,3',
++  'blob round trip'
++);
++
++const overlapping = new DatabaseSync(databasePath, { timeout: 1000 });
++overlapping.exec('BEGIN IMMEDIATE');
++check(
++  overlapping.prepare('SELECT count(*) AS count FROM parents').get().count === 2,
++  'overlapping database should observe the long-lived connection state'
++);
++overlapping.exec('COMMIT');
++overlapping.close();
++const overlappingReadOnly = new DatabaseSync(databasePath, {
++  readOnly: true,
++  timeout: 1000
++});
++check(
++  overlappingReadOnly
++    .prepare('SELECT count(*) AS count FROM parents')
++    .get().count === 2,
++  'overlapping read-only database should share the exclusive connection'
++);
++let overlappingReadOnlyPrepareRejected = false;
++try {
++  overlappingReadOnly
++    .prepare('INSERT INTO parents(label) VALUES (?)')
++    .run('forbidden-prepare');
++} catch (error) {
++  overlappingReadOnlyPrepareRejected =
++    error?.code === 'ERR_SQLITE_READONLY';
++}
++check(
++  overlappingReadOnlyPrepareRejected,
++  'overlapping read-only prepare should reject writes'
++);
++let overlappingReadOnlyExecRejected = false;
++try {
++  overlappingReadOnly.exec(
++    "INSERT INTO parents(label) VALUES ('forbidden-exec')"
++  );
++} catch (error) {
++  overlappingReadOnlyExecRejected = error?.code === 'ERR_SQLITE_READONLY';
++}
++check(
++  overlappingReadOnlyExecRejected,
++  'overlapping read-only exec should reject writes'
++);
++overlappingReadOnly.close();
++check(
++  database.prepare('SELECT count(*) AS count FROM parents').get().count === 2,
++  'closing overlapping databases must preserve the long-lived connection'
++);
++
++const iterated = Array.from(
++  database.prepare('SELECT label FROM parents ORDER BY id').iterate()
++);
++check(
++  JSON.stringify(iterated) ===
++    JSON.stringify([{ label: 'alpha' }, { label: 'beta' }]),
++  'iterator results'
++);
++
++const columns = database.prepare(
++  'SELECT id, label FROM parents ORDER BY id'
++).columns();
++check(
++  columns.length === 2 &&
++    columns[0].column === 'id' &&
++    columns[1].column === 'label',
++  'column metadata'
++);
++
++let foreignKeyRejected = false;
++try {
++  database.prepare(
++    'INSERT INTO children(parent_id, payload) VALUES (?, ?)'
++  ).run(999, null);
++} catch (error) {
++  foreignKeyRejected = error?.code === 'ERR_SQLITE_ERROR';
++}
++check(foreignKeyRejected, 'foreign key violation should fail');
++
++database.enableLoadExtension(false);
++let extensionRejected = false;
++try {
++  database.enableLoadExtension(true);
++} catch (error) {
++  extensionRejected = error?.code === 'ERR_FEATURE_UNAVAILABLE';
++}
++check(extensionRejected, 'extension loading must fail explicitly');
++
++const checkpoint = database.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get();
++check(
++  typeof checkpoint.busy === 'number' &&
++    typeof checkpoint.log === 'number' &&
++    typeof checkpoint.checkpointed === 'number',
++  'WAL checkpoint result'
++);
++database.close();
++check(database.isOpen === false, 'database should close');
++let finalizedStatementRejected = false;
++try {
++  insertParent.run({ label: 'after-close' });
++} catch (error) {
++  finalizedStatementRejected = error?.code === 'ERR_INVALID_STATE';
++}
++check(
++  finalizedStatementRejected,
++  'database close should finalize every retained statement'
++);
++let duplicateCloseRejected = false;
++try {
++  database.close();
++} catch (error) {
++  duplicateCloseRejected = error?.code === 'ERR_INVALID_STATE';
++}
++check(duplicateCloseRejected, 'closing a closed database should fail');
++
++const readOnly = new DatabaseSync(databasePath, { readOnly: true });
++check(
++  readOnly.prepare('SELECT count(*) AS count FROM parents').get().count === 2,
++  'read-only persistence'
++);
++let writeRejected = false;
++try {
++  readOnly.prepare('INSERT INTO parents(label) VALUES (?)').run('gamma');
++} catch (error) {
++  writeRejected = error?.code === 'ERR_SQLITE_READONLY';
++}
++check(writeRejected, 'read-only write should fail');
++readOnly.close();
++
++console.log(JSON.stringify({
++  databasePath,
++  sqliteVersion: '3.53.4',
++  wal: true,
++  persistence: true,
++  overlappingConnections: true,
++  overlappingReadOnlyConnection: true,
++  statementFinalization: true,
++  readOnly: true,
++  extensionLoading: false,
++  status: 'pass'
++}));

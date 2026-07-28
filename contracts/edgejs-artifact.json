@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "name": "edgejs",
+  "source": {
+    "repository": "https://github.com/wasmerio/edgejs",
+    "commit": "554eb9b697ae7378290bd5f2dee1cea49a747cd7",
+    "license": "MIT"
+  },
+  "runtime": {
+    "edgeVersion": "0.0.0-554eb9b",
+    "nodeVersion": "24.13.2",
+    "v8Version": "13.6.233.17-node.0"
+  },
+  "distribution": {
+    "repository": "https://github.com/wasmerio/edgejs-nightlies",
+    "tag": "0.0.0-v8-nightly",
+    "assets": {
+      "darwin-arm64": {
+        "filename": "edge-darwin-arm64.zip",
+        "url": "https://github.com/wasmerio/edgejs-nightlies/releases/download/0.0.0-v8-nightly/edge-darwin-arm64.zip",
+        "size": 38335825,
+        "sha256": "8ec67ae7e64caaea160774de853293b0901e4f3728c0561b0852c73e965ee6d0",
+        "executable": "bin/edge"
+      },
+      "linux-x64": {
+        "filename": "edge-linux-amd64.zip",
+        "url": "https://github.com/wasmerio/edgejs-nightlies/releases/download/0.0.0-v8-nightly/edge-linux-amd64.zip",
+        "size": 43774656,
+        "sha256": "a4c2fd84b9e8a87a1789a507dbe87250b79a132d0bb24c8a2f58bcf791533f22",
+        "executable": "bin/edge"
+      },
+      "wasix": {
+        "filename": "edge-wasix.zip",
+        "url": "https://github.com/wasmerio/edgejs-nightlies/releases/download/0.0.0-v8-nightly/edge-wasix.zip",
+        "size": 21800537,
+        "sha256": "1d23aa3e22f7d6547a4cb565b22c8310e604fc9ac167b495aaebd27b2fb8255f",
+        "executable": "bin/edgejs"
+      }
+    }
+  },
+  "knownBrowserBlocker": {
+    "executor": "@wasmer/sdk@0.10.0",
+    "artifactFeature": "exception-references",
+    "error": "Unsupported ref type: exnref",
+    "disposition": "Build and self-distribute the pinned Edge.js WASIX artifact without the incompatible wasm-opt --emit-exnref post-processing."
+  }
+}

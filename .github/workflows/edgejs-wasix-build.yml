@@ -1,0 +1,1310 @@
+name: Build browser-compatible Edge.js WASIX
+
+on:
+  push:
+    branches:
+      - agent/edgejs-wasix-build
+      - agent/openclaw-entrypoint
+      - agent/openclaw-package-image
+      - agent/openclaw-agent-turn
+    paths:
+      - .github/workflows/edgejs-wasix-build.yml
+      - contracts/edgejs-artifact.json
+      - contracts/edgejs-browser-build.json
+      - contracts/openclaw-artifact.json
+      - contracts/openclaw-package.generated.json
+      - docs/model-capability-broker.md
+      - package-lock.json
+      - package.json
+      - patches/edgejs/**
+      - patches/wasmer-js/**
+      - patches/wasmer-wasix/**
+      - patches/virtual-net/**
+      - playwright.config.ts
+      - provider-broker/**
+      - relay/**
+      - scripts/apply-cargo-dependency-patches.mjs
+      - scripts/verify-edgejs-browser-build-contract.mjs
+      - scripts/build-openclaw-package-image.mjs
+      - scripts/generate-openclaw-package-contract.mjs
+      - src/clawsemblyfs.ts
+      - src/edgejs-wasix-probe.ts
+      - src/network-egress-probe.ts
+      - src/openclaw-agent-turn-response.ts
+      - src/openclaw-entrypoint-probe.ts
+      - src/openclaw-gateway-health-probe.ts
+      - src/openclaw-package-runtime-probe.ts
+      - src/package-image-probe.ts
+      - nested-wasm/**
+      - tests/clawsemblyfs.test.ts
+      - tests/edgejs-wasix-browser.spec.ts
+      - tests/network-egress-browser.spec.ts
+      - tests/openclaw-agent-turn-browser.spec.ts
+      - tests/openclaw-agent-turn-response.test.ts
+      - tests/openclaw-entrypoint-browser.spec.ts
+      - tests/openclaw-gateway-health-browser.spec.ts
+      - tests/openclaw-self-hosted-agent-turn-browser.spec.ts
+      - tests/openclaw-package-image-browser.spec.ts
+      - tests/openclaw-package-runtime-browser.spec.ts
+      - tsconfig.app.json
+      - vite.config.ts
+      - openclaw-probe.html
+      - openclaw-agent-turn-probe.html
+      - openclaw-gateway-health-probe.html
+      - network-egress-probe.html
+      - package-image-probe.html
+      - package-runtime-probe.html
+      - wasix-probe.html
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: edgejs-wasix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-prove:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out Clawsembly Kernel
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 24.18.0
+          cache: npm
+
+      - name: Verify build contract
+        id: contract
+        run: node scripts/verify-edgejs-browser-build-contract.mjs --github-output
+
+      - name: Check out pinned Edge.js source
+        shell: bash
+        env:
+          EDGE_SOURCE_COMMIT: ${{ steps.contract.outputs.edge_source_commit }}
+          EDGE_SOURCE_REPOSITORY: ${{ steps.contract.outputs.edge_source_repository }}
+        run: |
+          set -euo pipefail
+          git config --global url."https://github.com/".insteadOf git@github.com:
+          git init edgejs
+          git -C edgejs remote add origin "${EDGE_SOURCE_REPOSITORY}"
+          git -C edgejs fetch --depth=1 origin "${EDGE_SOURCE_COMMIT}"
+          git -C edgejs checkout --detach FETCH_HEAD
+          git -C edgejs submodule sync --recursive
+          git -C edgejs -c protocol.version=2 submodule update --init --recursive --depth=1
+          test "$(git -C edgejs rev-parse HEAD)" = "${EDGE_SOURCE_COMMIT}"
+
+      - name: Apply audited browser-build patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t edge_patches < <(
+            jq -r '.patches[].path' contracts/edgejs-browser-build.json
+          )
+          test "${#edge_patches[@]}" -gt 0
+          for edge_patch in "${edge_patches[@]}"; do
+            git -C edgejs apply --unidiff-zero --check "../${edge_patch}"
+            git -C edgejs apply --unidiff-zero "../${edge_patch}"
+          done
+          git -C edgejs diff --check
+          git -C edgejs/deps/libuv-wasix diff --check
+          git -C edgejs/napi diff --check
+
+      - name: Verify QuickJS execution termination
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake \
+            -S edgejs/napi \
+            -B edgejs/build-napi-termination-test \
+            -DNAPI_BUILD_QUICKJS=ON \
+            -DNAPI_BUILD_V8=OFF \
+            -DNAPI_QUICKJS_BUILD_TESTS=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake \
+            --build edgejs/build-napi-termination-test \
+            --target napi_quickjs_test_66_unofficial_termination \
+            -j4
+          edgejs/build-napi-termination-test/quickjs/tests/napi_quickjs_test_66_unofficial_termination \
+            --gtest_color=no
+
+      - name: Check out pinned Wasmer JS source
+        shell: bash
+        env:
+          WASMER_SOURCE_COMMIT: ${{ steps.contract.outputs.wasmer_source_commit }}
+          WASMER_SOURCE_REPOSITORY: ${{ steps.contract.outputs.wasmer_source_repository }}
+        run: |
+          set -euo pipefail
+          git init wasmer-js
+          git -C wasmer-js remote add origin "${WASMER_SOURCE_REPOSITORY}"
+          git -C wasmer-js fetch --depth=1 origin "${WASMER_SOURCE_COMMIT}"
+          git -C wasmer-js checkout --detach FETCH_HEAD
+          test "$(git -C wasmer-js rev-parse HEAD)" = "${WASMER_SOURCE_COMMIT}"
+
+      - name: Apply audited Wasmer JS browser-runtime patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t wasmer_patches < <(
+            jq -r '.browserExecutor.patches[].path' \
+              contracts/edgejs-browser-build.json
+          )
+          test "${#wasmer_patches[@]}" -gt 0
+          for wasmer_patch in "${wasmer_patches[@]}"; do
+            git -C wasmer-js apply --check "../${wasmer_patch}"
+            git -C wasmer-js apply "../${wasmer_patch}"
+          done
+          git -C wasmer-js diff --check
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: ${{ steps.contract.outputs.rust_version }}
+          components: rustfmt, clippy
+
+      - name: Install pinned wasixcc
+        uses: wasix-org/wasixcc@8a505d4605b15fd466a3881d286582b23e4ffecb
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          install-sysroot: false
+          version: ${{ steps.contract.outputs.wasixcc_version }}
+
+      - name: Install pinned legacy-EH WASIX sysroot
+        id: legacy_sysroot
+        shell: bash
+        env:
+          SYSROOT_ASSET: ${{ steps.contract.outputs.sysroot_asset }}
+          SYSROOT_ASSET_SHA256: ${{ steps.contract.outputs.sysroot_asset_sha256 }}
+          SYSROOT_TAG: ${{ steps.contract.outputs.sysroot_tag }}
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/${SYSROOT_ASSET}"
+          extract_root="${RUNNER_TEMP}/clawsembly-wasix-sysroot"
+          curl -fsSL \
+            -o "${archive}" \
+            "https://github.com/wasix-org/wasix-libc/releases/download/${SYSROOT_TAG}/${SYSROOT_ASSET}"
+          echo "${SYSROOT_ASSET_SHA256}  ${archive}" | sha256sum -c -
+          mkdir -p "${extract_root}"
+          tar -xzf "${archive}" -C "${extract_root}"
+          sysroot_path="${extract_root}/wasix-sysroot-eh/sysroot"
+          test -d "${sysroot_path}/include"
+          actual_sysroot="$(
+            WASIXCC_SYSROOT="${sysroot_path}" \
+              WASIXCC_WASM_EXCEPTIONS=legacy \
+              wasixccenv print-sysroot
+          )"
+          test "${actual_sysroot}" = "${sysroot_path}"
+          echo "path=${sysroot_path}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install build and inspection tools
+        shell: bash
+        env:
+          WASM_TOOLS_VERSION: ${{ steps.contract.outputs.wasm_tools_version }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y cmake libicu-dev ninja-build patch unzip
+          cargo install --locked wasm-tools --version "${WASM_TOOLS_VERSION}"
+
+      - name: Fetch pinned official SQLite amalgamation
+        id: sqlite
+        shell: bash
+        env:
+          SQLITE_ARCHIVE: ${{ steps.contract.outputs.sqlite_archive }}
+          SQLITE_BYTES: ${{ steps.contract.outputs.sqlite_bytes }}
+          SQLITE_SHA256: ${{ steps.contract.outputs.sqlite_sha256 }}
+          SQLITE_SHA3_256: ${{ steps.contract.outputs.sqlite_sha3_256 }}
+          SQLITE_URL: ${{ steps.contract.outputs.sqlite_url }}
+          SQLITE_VERSION: ${{ steps.contract.outputs.sqlite_version }}
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/${SQLITE_ARCHIVE}"
+          extract_root="${RUNNER_TEMP}/clawsembly-sqlite"
+          curl -fsSL -o "${archive}" "${SQLITE_URL}"
+          test "$(wc -c < "${archive}")" = "${SQLITE_BYTES}"
+          echo "${SQLITE_SHA256}  ${archive}" | sha256sum -c -
+          test "$(
+            openssl dgst -sha3-256 "${archive}" | awk '{print $2}'
+          )" = "${SQLITE_SHA3_256}"
+          mkdir -p "${extract_root}"
+          unzip -q "${archive}" -d "${extract_root}"
+          amalgamation="${extract_root}/sqlite-amalgamation-3530400"
+          test -s "${amalgamation}/sqlite3.c"
+          test -s "${amalgamation}/sqlite3.h"
+          test -s "${amalgamation}/sqlite3ext.h"
+          grep -q "#define SQLITE_VERSION *\"${SQLITE_VERSION}\"" \
+            "${amalgamation}/sqlite3.h"
+          echo "path=${amalgamation}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install pinned Wasmer JS build toolchain
+        shell: bash
+        env:
+          WASMER_RUST_TOOLCHAIN: ${{ steps.contract.outputs.wasmer_rust_toolchain }}
+          WASM_PACK_ASSET: ${{ steps.contract.outputs.wasm_pack_linux_asset }}
+          WASM_PACK_SHA256: ${{ steps.contract.outputs.wasm_pack_linux_sha256 }}
+          WASM_PACK_VERSION: ${{ steps.contract.outputs.wasm_pack_version }}
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${WASMER_RUST_TOOLCHAIN}" \
+            --profile minimal \
+            --component rust-src \
+            --target wasm32-unknown-unknown
+          mkdir -p tools/wasm-pack
+          curl -fsSL \
+            -o "tools/${WASM_PACK_ASSET}" \
+            "https://github.com/wasm-bindgen/wasm-pack/releases/download/v${WASM_PACK_VERSION}/${WASM_PACK_ASSET}"
+          echo "${WASM_PACK_SHA256}  tools/${WASM_PACK_ASSET}" | sha256sum -c -
+          tar -xzf "tools/${WASM_PACK_ASSET}" \
+            -C tools/wasm-pack \
+            --strip-components=1
+          test "$(tools/wasm-pack/wasm-pack --version)" = "wasm-pack ${WASM_PACK_VERSION}"
+
+      - name: Build patched Wasmer JS browser runtime
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/clawsembly-wasmer-js-target
+          WASMER_RUST_TOOLCHAIN: ${{ steps.contract.outputs.wasmer_rust_toolchain }}
+        run: |
+          set -euo pipefail
+          npm --prefix wasmer-js ci --ignore-scripts
+          (
+            cd wasmer-js
+            RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
+              cargo fetch --locked --target wasm32-unknown-unknown
+            RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
+              node ../scripts/apply-cargo-dependency-patches.mjs \
+                --manifest Cargo.toml \
+                --target wasm32-unknown-unknown
+            RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
+              ../tools/wasm-pack/wasm-pack build \
+                --release \
+                --target=web \
+                --weak-refs \
+                --no-pack
+            npm run build:rollup
+          )
+          test -s wasmer-js/dist/index.mjs
+          test -s wasmer-js/dist/wasmer_js_bg.wasm
+
+      - name: Build browser-local nested WebAssembly interpreter
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/clawsembly-nested-wasm-target
+          NESTED_WASM_RUST_TARGET: ${{ steps.contract.outputs.nested_wasm_rust_target }}
+          NESTED_WASM_TARGET_FEATURES: ${{ steps.contract.outputs.nested_wasm_target_features }}
+          RUSTFLAGS: -C target-feature=${{ steps.contract.outputs.nested_wasm_target_features }}
+          WASMER_RUST_TOOLCHAIN: ${{ steps.contract.outputs.wasmer_rust_toolchain }}
+        run: |
+          set -euo pipefail
+          RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
+            cargo build \
+              --locked \
+              --release \
+              --target "${NESTED_WASM_RUST_TARGET}" \
+              --manifest-path nested-wasm/Cargo.toml
+          archive="$(
+            find "${CARGO_TARGET_DIR}/${NESTED_WASM_RUST_TARGET}/release" \
+              -maxdepth 1 \
+              -name 'libclawsembly_nested_wasm.a' \
+              -type f \
+              -print \
+              -quit
+          )"
+          test -s "${archive}"
+          for symbol in \
+            wasm_engine_new \
+            wasm_func_new \
+            wasm_instance_new \
+            wasm_memory_data \
+            wasm_module_new
+          do
+            strings "${archive}" | grep -qx "${symbol}"
+          done
+          mkdir -p nested-wasm/dist/include nested-wasm/dist/lib
+          cp "${archive}" nested-wasm/dist/lib/libwasmer.a
+          cp edgejs/deps/v8/third_party/wasm-api/wasm.h \
+            nested-wasm/dist/include/wasm.h
+          test -s nested-wasm/dist/include/wasm.h
+          test -s nested-wasm/dist/lib/libwasmer.a
+          RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
+            rustc \
+              --target "${NESTED_WASM_RUST_TARGET}" \
+              --crate-type lib \
+              --emit=obj \
+              -C opt-level=z \
+              -C "target-feature=${NESTED_WASM_TARGET_FEATURES}" \
+              nested-wasm/link-smoke.rs \
+              -o nested-wasm/dist/link-smoke.o
+          rust_sysroot="$(
+            RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" rustc --print sysroot
+          )"
+          rust_lld="$(
+            find "${rust_sysroot}/lib/rustlib" \
+              -path '*/bin/rust-lld' \
+              -type f \
+              -print \
+              -quit
+          )"
+          test -x "${rust_lld}"
+          "${rust_lld}" \
+            -flavor wasm \
+            --no-entry \
+            --export=clawsembly_nested_link_probe \
+            --allow-undefined \
+            --shared-memory \
+            --max-memory=4294967296 \
+            --import-memory \
+            --gc-sections \
+            nested-wasm/dist/link-smoke.o \
+            nested-wasm/dist/lib/libwasmer.a \
+            -o nested-wasm/dist/link-smoke.wasm
+          wasm-tools validate nested-wasm/dist/link-smoke.wasm
+          node nested-wasm/run-link-smoke.mjs \
+            nested-wasm/dist/link-smoke.wasm \
+            > nested-wasm/dist/link-smoke-evidence.json
+          jq -e \
+            '.status == "pass"
+              and .answer == 1
+              and (.resolvedCapiCalls | sort)
+                == (["wasm_engine_delete", "wasm_engine_new"] | sort)' \
+            nested-wasm/dist/link-smoke-evidence.json
+
+      - name: Check and build the self-hostable network relay
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/apply-cargo-dependency-patches.mjs \
+            --manifest relay/Cargo.toml \
+            --package virtual-net
+          npm run relay:check
+          cargo build --locked --release --manifest-path relay/Cargo.toml
+          test -x relay/target/release/clawsembly-network-relay
+
+      - name: Check and build the self-hostable model capability broker
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run broker:check
+          cargo clippy --locked --manifest-path provider-broker/Cargo.toml \
+            -- -D warnings
+          cargo build --locked --release \
+            --manifest-path provider-broker/Cargo.toml
+          test -x \
+            provider-broker/target/release/clawsembly-provider-broker
+
+      - name: Build self-contained QuickJS Edge.js WASIX
+        shell: bash
+        env:
+          EDGE_WASIX_EMIT_EXNREF: ${{ steps.contract.outputs.emit_exnref }}
+          EDGE_QUICKJS_WEBASSEMBLY: ${{ steps.contract.outputs.quickjs_webassembly }}
+          EDGE_QUICKJS_WASMER_DIST_ROOT: ${{ github.workspace }}/nested-wasm/dist
+          EDGE_SQLITE_AMALGAMATION_DIR: ${{ steps.sqlite.outputs.path }}
+          WASIXCC_SYSROOT: ${{ steps.legacy_sysroot.outputs.path }}
+          WASIXCC_RUN_WASM_OPT: ${{ steps.contract.outputs.wasixcc_run_wasm_opt }}
+          WASIXCC_WASM_EXCEPTIONS: ${{ steps.contract.outputs.wasixcc_wasm_exceptions }}
+        run: |
+          set -euo pipefail
+          make -C edgejs build-quickjs-wasix
+          test -s edgejs/build-quickjs-wasix/edgejs.wasm
+          if wasm-tools validate edgejs/build-quickjs-wasix/edgejs.wasm \
+            2>legacy-validation-error.txt
+          then
+            echo "error: Edge.js WASIX did not require legacy exception handling" >&2
+            exit 1
+          fi
+          grep -q "legacy_exceptions feature required" legacy-validation-error.txt
+          wasm-tools validate \
+            --features legacy-exceptions \
+            edgejs/build-quickjs-wasix/edgejs.wasm
+
+      - name: Package Edge.js WASIX
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C edgejs dist-only \
+            BUILD_DIR=build-quickjs-wasix \
+            JOBS=4 \
+            ZIP_NAME=edge-quickjs-wasix-browser-compatible.zip
+          test -s edgejs/edge-quickjs-wasix-browser-compatible.zip
+
+      - name: Upload inspectable build candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: edgejs-wasix-browser-candidate
+          path: |
+            edgejs/build-quickjs-wasix/edgejs.wasm
+            edgejs/edge-quickjs-wasix-browser-compatible.zip
+            legacy-validation-error.txt
+            nested-wasm/dist/
+            provider-broker/target/release/clawsembly-provider-broker
+            relay/target/release/clawsembly-network-relay
+            wasmer-js/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Install browser proof dependencies
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Fetch pinned official OpenClaw artifact
+        id: openclaw
+        shell: bash
+        run: |
+          set -euo pipefail
+          openclaw_version="$(
+            node -p "JSON.parse(require('fs').readFileSync('contracts/openclaw-artifact.json')).version"
+          )"
+          archive_name="$(
+            npm pack \
+              "openclaw@${openclaw_version}" \
+              --ignore-scripts \
+              --pack-destination "${RUNNER_TEMP}" \
+              --silent
+          )"
+          archive_path="${RUNNER_TEMP}/${archive_name}"
+          test -s "${archive_path}"
+          echo "path=${archive_path}" >> "${GITHUB_OUTPUT}"
+
+      - name: Prove Edge.js and the official OpenClaw launcher in Chromium
+        env:
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
+          CLAWSEMBLY_OPENCLAW_ARCHIVE: ${{ steps.openclaw.outputs.path }}
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
+        run: |
+          npx playwright test \
+            tests/edgejs-wasix-browser.spec.ts \
+            tests/openclaw-entrypoint-browser.spec.ts
+
+      - name: Preserve base browser evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          edge_evidence="$(
+            find test-results -name edgejs-wasix-browser-evidence.json \
+              -type f | head -n 1
+          )"
+          launcher_evidence="$(
+            find test-results -name openclaw-entrypoint-browser-evidence.json \
+              -type f | head -n 1
+          )"
+          test -n "${edge_evidence}"
+          test -n "${launcher_evidence}"
+          cp "${edge_evidence}" artifacts/edgejs-wasix-browser-evidence.json
+          cp "${launcher_evidence}" \
+            artifacts/openclaw-entrypoint-browser-evidence.json
+
+      - name: Prove capability-scoped TCP egress in Chromium
+        env:
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
+          CLAWSEMBLY_NETWORK_RELAY: ${{ github.workspace }}/relay/target/release/clawsembly-network-relay
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
+        run: npx playwright test tests/network-egress-browser.spec.ts
+
+      - name: Preserve network capability evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          network_evidence="$(
+            find test-results -name network-egress-browser-evidence.json \
+              -type f | head -n 1
+          )"
+          test -n "${network_evidence}"
+          cp "${network_evidence}" \
+            artifacts/network-egress-browser-evidence.json
+
+      - name: Build complete integrity-pinned OpenClaw package image
+        id: package_image
+        shell: bash
+        env:
+          CLAWSEMBLY_OPENCLAW_ARCHIVE: ${{ steps.openclaw.outputs.path }}
+        run: |
+          set -euo pipefail
+          image="${RUNNER_TEMP}/openclaw.clawfs"
+          evidence="${RUNNER_TEMP}/openclaw-package-image-build-evidence.json"
+          npm run package-contract:check
+          node scripts/build-openclaw-package-image.mjs \
+            --archive "${CLAWSEMBLY_OPENCLAW_ARCHIVE}" \
+            --output "${image}" \
+            --evidence "${evidence}"
+          test -s "${image}"
+          test -s "${evidence}"
+          cp "${evidence}" artifacts/openclaw-package-image-build-evidence.json
+          echo "path=${image}" >> "${GITHUB_OUTPUT}"
+          echo "evidence=${evidence}" >> "${GITHUB_OUTPUT}"
+
+      - name: Prove required OpenClaw install effects in Chromium
+        env:
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
+          CLAWSEMBLY_OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
+          CLAWSEMBLY_OPENCLAW_IMAGE_EVIDENCE: ${{ steps.package_image.outputs.evidence }}
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
+        run: |
+          npx playwright test \
+            tests/openclaw-install-lifecycle-browser.spec.ts
+
+      - name: Preserve OpenClaw install lifecycle evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          lifecycle_evidence="$(
+            find test-results \
+              -name openclaw-install-lifecycle-browser-evidence.json \
+              -type f \
+              | head -n 1
+          )"
+          test -n "${lifecycle_evidence}"
+          cp "${lifecycle_evidence}" \
+            artifacts/openclaw-install-lifecycle-browser-evidence.json
+
+      - name: Prove durable OpenClaw state recovery after browser restart
+        env:
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
+          CLAWSEMBLY_OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
+          CLAWSEMBLY_OPENCLAW_IMAGE_EVIDENCE: ${{ steps.package_image.outputs.evidence }}
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
+        run: |
+          npx playwright test \
+            tests/openclaw-opfs-persistence-browser.spec.ts
+
+      - name: Preserve durable OpenClaw state evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          opfs_evidence="$(
+            find test-results \
+              -name openclaw-opfs-persistence-browser-evidence.json \
+              -type f \
+              | head -n 1
+          )"
+          test -n "${opfs_evidence}"
+          cp "${opfs_evidence}" \
+            artifacts/openclaw-opfs-persistence-browser-evidence.json
+
+      - name: Prove complete package mount and advance the real Gateway path
+        env:
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
+          CLAWSEMBLY_OPENCLAW_GATEWAY_DIAGNOSTIC: "1"
+          CLAWSEMBLY_OPENCLAW_GATEWAY_DIAGNOSTIC_TIMEOUT_MS: "180000"
+          CLAWSEMBLY_OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
+          CLAWSEMBLY_OPENCLAW_IMAGE_EVIDENCE: ${{ steps.package_image.outputs.evidence }}
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
+        run: |
+          npx playwright test \
+            tests/openclaw-package-image-browser.spec.ts \
+            tests/openclaw-package-runtime-browser.spec.ts \
+            --grep "complete integrity-pinned|advances beyond the SQLite boundary"
+
+      - name: Preserve package mount and Gateway diagnostic evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_mount_evidence="$(
+            find test-results -name openclaw-package-image-browser-evidence.json \
+              -type f | head -n 1
+          )"
+          gateway_evidence="$(
+            find test-results -name openclaw-gateway-runtime-browser-evidence.json \
+              -type f | head -n 1
+          )"
+          test -n "${package_mount_evidence}"
+          test -n "${gateway_evidence}"
+          cp "${package_mount_evidence}" \
+            artifacts/openclaw-package-image-browser-evidence.json
+          cp "${gateway_evidence}" \
+            artifacts/openclaw-gateway-runtime-browser-evidence.json
+
+      - name: Prove official Gateway health RPC over browser-local loopback
+        env:
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
+          CLAWSEMBLY_OPENCLAW_GATEWAY_HEALTH_PROOF: "1"
+          CLAWSEMBLY_OPENCLAW_GATEWAY_HEALTH_RETRIES: "3"
+          CLAWSEMBLY_OPENCLAW_GATEWAY_HEALTH_TIMEOUT_MS: "240000"
+          CLAWSEMBLY_OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
+          CLAWSEMBLY_OPENCLAW_IMAGE_EVIDENCE: ${{ steps.package_image.outputs.evidence }}
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
+        run: |
+          npx playwright test tests/openclaw-gateway-health-browser.spec.ts
+
+      - name: Preserve Gateway health attempt evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="artifacts/gateway-health-attempts"
+          mkdir -p "${destination}"
+          attempt=0
+          while IFS= read -r candidate; do
+            attempt=$((attempt + 1))
+            cp "${candidate}" \
+              "${destination}/gateway-health-attempt-${attempt}.json"
+          done < <(
+            find test-results \
+              -name openclaw-gateway-health-browser-evidence.json \
+              -type f \
+              -print \
+              | sort
+          )
+          while IFS= read -r context; do
+            attempt=$((attempt + 1))
+            cp "${context}" \
+              "${destination}/error-context-${attempt}.md"
+          done < <(
+            find test-results \
+              -name error-context.md \
+              -type f \
+              -print \
+              | sort
+          )
+          jq -n \
+            --argjson evidenceFiles "$(
+              find "${destination}" \
+                -name 'gateway-health-attempt-*.json' \
+                -type f \
+                | sort \
+                | jq -Rsc 'split("\n") | map(select(length > 0))'
+            )" \
+            --argjson errorContexts "$(
+              find "${destination}" \
+                -name 'error-context-*.md' \
+                -type f \
+                | sort \
+                | jq -Rsc 'split("\n") | map(select(length > 0))'
+            )" \
+            '{
+              schemaVersion: 1,
+              evidenceFiles: $evidenceFiles,
+              errorContexts: $errorContexts
+            }' > "${destination}/manifest.json"
+
+      - name: Upload Gateway health diagnostic evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: edgejs-wasix-gateway-health-diagnostics
+          path: artifacts/gateway-health-attempts/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Prove an official OpenClaw agent turn through capability egress
+        env:
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
+          CLAWSEMBLY_NETWORK_RELAY: ${{ github.workspace }}/relay/target/release/clawsembly-network-relay
+          CLAWSEMBLY_OPENCLAW_AGENT_TURN_PROOF: "1"
+          CLAWSEMBLY_OPENCLAW_AGENT_TURN_TIMEOUT_MS: "300000"
+          CLAWSEMBLY_OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
+        run: |
+          npx playwright test \
+            --retries=1 \
+            tests/openclaw-agent-turn-browser.spec.ts
+
+      - name: Preserve OpenClaw agent-turn attempt evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="artifacts/agent-turn-attempt"
+          mkdir -p "${destination}"
+          mkdir -p test-results
+          evidence="$(
+            find test-results \
+              -name openclaw-agent-turn-browser-evidence.json \
+              -type f \
+              -print \
+              | head -n 1
+          )"
+          if test -n "${evidence}"; then
+            cp "${evidence}" \
+              artifacts/openclaw-agent-turn-browser-evidence.json
+            cp "${evidence}" "${destination}/"
+          fi
+          while IFS= read -r context; do
+            cp "${context}" \
+              "${destination}/error-context-$(
+                basename "$(dirname "${context}")"
+              ).md"
+          done < <(
+            find test-results -name error-context.md -type f -print | sort
+          )
+          jq -n \
+            --arg evidence "${evidence}" \
+            --argjson errorContexts "$(
+              find "${destination}" \
+                -name 'error-context-*.md' \
+                -type f \
+                | sort \
+                | jq -Rsc 'split("\n") | map(select(length > 0))'
+            )" \
+            '{
+              schemaVersion: 1,
+              evidence: (if $evidence == "" then null else $evidence end),
+              errorContexts: $errorContexts
+            }' > "${destination}/manifest.json"
+
+      - name: Upload OpenClaw agent-turn diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: edgejs-wasix-agent-turn-diagnostics
+          path: artifacts/agent-turn-attempt/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Assemble build evidence
+        shell: bash
+        env:
+          EDGE_SOURCE_COMMIT: ${{ steps.contract.outputs.edge_source_commit }}
+          EMIT_EXNREF: ${{ steps.contract.outputs.emit_exnref }}
+          NESTED_WASM_CRATE_CHECKSUM: ${{ steps.contract.outputs.nested_wasm_crate_checksum }}
+          NESTED_WASM_RUST_TARGET: ${{ steps.contract.outputs.nested_wasm_rust_target }}
+          NESTED_WASM_TARGET_FEATURES: ${{ steps.contract.outputs.nested_wasm_target_features }}
+          NESTED_WASM_VERSION: ${{ steps.contract.outputs.nested_wasm_version }}
+          QUICKJS_WEBASSEMBLY: ${{ steps.contract.outputs.quickjs_webassembly }}
+          RUNTIME_PROVIDER: ${{ steps.contract.outputs.runtime_provider }}
+          SYSROOT_ASSET_SHA256: ${{ steps.contract.outputs.sysroot_asset_sha256 }}
+          SYSROOT_TAG: ${{ steps.contract.outputs.sysroot_tag }}
+          SQLITE_SHA256: ${{ steps.contract.outputs.sqlite_sha256 }}
+          SQLITE_VERSION: ${{ steps.contract.outputs.sqlite_version }}
+          WASMER_SOURCE_COMMIT: ${{ steps.contract.outputs.wasmer_source_commit }}
+          WASIXCC_VERSION: ${{ steps.contract.outputs.wasixcc_version }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          cp edgejs/edge-quickjs-wasix-browser-compatible.zip artifacts/
+          cp \
+            provider-broker/target/release/clawsembly-provider-broker \
+            artifacts/
+          cp relay/target/release/clawsembly-network-relay artifacts/
+          browser_evidence="artifacts/edgejs-wasix-browser-evidence.json"
+          network_evidence="artifacts/network-egress-browser-evidence.json"
+          openclaw_evidence="artifacts/openclaw-entrypoint-browser-evidence.json"
+          lifecycle_evidence="artifacts/openclaw-install-lifecycle-browser-evidence.json"
+          opfs_evidence="artifacts/openclaw-opfs-persistence-browser-evidence.json"
+          package_build_evidence="artifacts/openclaw-package-image-build-evidence.json"
+          package_mount_evidence="artifacts/openclaw-package-image-browser-evidence.json"
+          gateway_evidence="artifacts/openclaw-gateway-runtime-browser-evidence.json"
+          agent_turn_evidence="artifacts/openclaw-agent-turn-browser-evidence.json"
+          nested_wasm_smoke_evidence="nested-wasm/dist/link-smoke-evidence.json"
+          gateway_health_evidence=""
+          # Playwright resets test-results before the following agent test;
+          # consume the durable copy made by the preservation step.
+          while IFS= read -r candidate; do
+            if jq -e '.status == "gateway-health-pass"' "${candidate}" >/dev/null; then
+              gateway_health_evidence="${candidate}"
+              break
+            fi
+          done < <(
+            find artifacts/gateway-health-attempts \
+              -name 'gateway-health-attempt-*.json' \
+              -type f \
+              | sort
+          )
+          test -s "${browser_evidence}"
+          test -s "${network_evidence}"
+          test -s "${openclaw_evidence}"
+          test -s "${lifecycle_evidence}"
+          test -s "${opfs_evidence}"
+          test -s "${package_build_evidence}"
+          test -s "${package_mount_evidence}"
+          test -s "${gateway_evidence}"
+          test -s "${agent_turn_evidence}"
+          test -n "${gateway_health_evidence}"
+          test -s "${nested_wasm_smoke_evidence}"
+          cp "${gateway_health_evidence}" \
+            artifacts/openclaw-gateway-health-browser-evidence.json
+          wasm_sha256="$(sha256sum edgejs/build-quickjs-wasix/edgejs.wasm | awk '{print $1}')"
+          archive_sha256="$(sha256sum edgejs/edge-quickjs-wasix-browser-compatible.zip | awk '{print $1}')"
+          wasmer_js_sha256="$(sha256sum wasmer-js/dist/index.mjs | awk '{print $1}')"
+          wasmer_wasm_sha256="$(sha256sum wasmer-js/dist/wasmer_js_bg.wasm | awk '{print $1}')"
+          nested_wasm_sha256="$(
+            sha256sum nested-wasm/dist/lib/libwasmer.a | awk '{print $1}'
+          )"
+          relay_sha256="$(
+            sha256sum relay/target/release/clawsembly-network-relay \
+              | awk '{print $1}'
+          )"
+          jq -n \
+            --arg archiveSha256 "${archive_sha256}" \
+            --arg edgeSourceCommit "${EDGE_SOURCE_COMMIT}" \
+            --arg emitExnref "${EMIT_EXNREF}" \
+            --arg nestedWasmCrateChecksum "${NESTED_WASM_CRATE_CHECKSUM}" \
+            --arg nestedWasmRustTarget "${NESTED_WASM_RUST_TARGET}" \
+            --arg nestedWasmSha256 "${nested_wasm_sha256}" \
+            --arg nestedWasmTargetFeatures "${NESTED_WASM_TARGET_FEATURES}" \
+            --arg nestedWasmVersion "${NESTED_WASM_VERSION}" \
+            --arg quickjsWebAssembly "${QUICKJS_WEBASSEMBLY}" \
+            --arg runtimeProvider "${RUNTIME_PROVIDER}" \
+            --arg relaySha256 "${relay_sha256}" \
+            --arg sysrootAssetSha256 "${SYSROOT_ASSET_SHA256}" \
+            --arg sysrootTag "${SYSROOT_TAG}" \
+            --arg sqliteSha256 "${SQLITE_SHA256}" \
+            --arg sqliteVersion "${SQLITE_VERSION}" \
+            --arg wasmerJsSha256 "${wasmer_js_sha256}" \
+            --arg wasmerSourceCommit "${WASMER_SOURCE_COMMIT}" \
+            --arg wasmerWasmSha256 "${wasmer_wasm_sha256}" \
+            --arg wasmSha256 "${wasm_sha256}" \
+            --arg wasixccRunWasmOpt "${{ steps.contract.outputs.wasixcc_run_wasm_opt }}" \
+            --arg wasixccWasmExceptions "${{ steps.contract.outputs.wasixcc_wasm_exceptions }}" \
+            --arg wasixccVersion "${WASIXCC_VERSION}" \
+            --slurpfile browser "${browser_evidence}" \
+            --slurpfile network "${network_evidence}" \
+            --slurpfile openclaw "${openclaw_evidence}" \
+            --slurpfile lifecycle "${lifecycle_evidence}" \
+            --slurpfile opfs "${opfs_evidence}" \
+            --slurpfile packageBuild "${package_build_evidence}" \
+            --slurpfile packageMount "${package_mount_evidence}" \
+            --slurpfile gateway "${gateway_evidence}" \
+            --slurpfile gatewayHealth "${gateway_health_evidence}" \
+            --slurpfile agentTurn "${agent_turn_evidence}" \
+            --slurpfile nestedWasmSmoke "${nested_wasm_smoke_evidence}" \
+            --argjson nodeCompatibilityContract "$(
+              jq '.nodeCompatibility' contracts/edgejs-browser-build.json
+            )" \
+            --argjson edgePatches "$(
+              jq '[.patches[] | {
+                path,
+                sha256
+              }]' contracts/edgejs-browser-build.json
+            )" \
+            --argjson wasmerPatches "$(
+              jq '[.browserExecutor.patches[] | {
+                path,
+                sha256
+              }]' contracts/edgejs-browser-build.json
+            )" \
+            --argjson wasmerDependencyPatches "$(
+              jq '.browserExecutor.dependencyPatches' \
+                contracts/edgejs-browser-build.json
+            )" \
+            --argjson networkContract "$(
+              jq '.browserExecutor.networkCapability' \
+                contracts/edgejs-browser-build.json
+            )" \
+            '{
+              schemaVersion: 4,
+              edgeSourceCommit: $edgeSourceCommit,
+              runtimeProvider: $runtimeProvider,
+              patches: $edgePatches,
+              sqlite: {
+                version: $sqliteVersion,
+                archiveSha256: $sqliteSha256
+              },
+              browserExecutor: {
+                wasmerSourceCommit: $wasmerSourceCommit,
+                patches: $wasmerPatches,
+                dependencyPatches: $wasmerDependencyPatches,
+                indexMjsSha256: $wasmerJsSha256,
+                runtimeWasmSha256: $wasmerWasmSha256
+              },
+              toolchain: {
+                wasixccVersion: $wasixccVersion,
+                sysrootTag: $sysrootTag,
+                sysrootAssetSha256: $sysrootAssetSha256,
+                wasixccWasmExceptions: $wasixccWasmExceptions,
+                wasixccRunWasmOpt: $wasixccRunWasmOpt,
+                emitExnref: $emitExnref,
+                quickjsWebAssembly: $quickjsWebAssembly
+              },
+              nestedWebAssembly: {
+                implementation: "wasmi_c_api_impl",
+                version: $nestedWasmVersion,
+                crateChecksum: $nestedWasmCrateChecksum,
+                rustTarget: $nestedWasmRustTarget,
+                rustTargetFeatures: (
+                  $nestedWasmTargetFeatures
+                  | split(",")
+                  | map(ltrimstr("+"))
+                ),
+                archiveSha256: $nestedWasmSha256,
+                ambientCapabilities: "none-without-explicit-javascript-imports",
+                linkSmoke: $nestedWasmSmoke[0]
+              },
+              artifact: {
+                wasmSha256: $wasmSha256,
+                archiveSha256: $archiveSha256
+              },
+              browser: $browser[0],
+              nodeCompatibility: {
+                contract: $nodeCompatibilityContract,
+                browser: $browser[0].nodeCompatibility
+              },
+              networkCapability: {
+                contract: $networkContract,
+                relaySha256: $relaySha256,
+                browser: $network[0]
+              },
+              openclaw: $openclaw[0],
+              packageImage: {
+                build: $packageBuild[0],
+                browserMount: $packageMount[0],
+                lifecycleEffects: $lifecycle[0]
+              },
+              persistentState: $opfs[0],
+              openclawRuntimeProof: {
+                browser: $gateway[0],
+                healthRpc: $gatewayHealth[0],
+                agentTurn: $agentTurn[0]
+              }
+            }' > artifacts/edgejs-wasix-build-evidence.json
+          cat artifacts/edgejs-wasix-build-evidence.json
+
+      - name: Upload browser-compatible runtime and base evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: edgejs-wasix-browser-compatible-base
+          path: artifacts/
+          if-no-files-found: error
+
+      - name: Prepare least-privilege self-hosted-proof inputs
+        shell: bash
+        env:
+          OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
+        run: |
+          set -euo pipefail
+          destination="${RUNNER_TEMP}/clawsembly-self-hosted-proof-inputs"
+          mkdir -p "${destination}/wasmer-sdk"
+          git archive --format=tar HEAD > "${destination}/runner.tar"
+          cp edgejs/build-quickjs-wasix/edgejs.wasm \
+            "${destination}/edgejs.wasm"
+          cp "${OPENCLAW_IMAGE}" "${destination}/openclaw.clawfs"
+          cp relay/target/release/clawsembly-network-relay \
+            "${destination}/clawsembly-network-relay"
+          cp \
+            provider-broker/target/release/clawsembly-provider-broker \
+            "${destination}/clawsembly-provider-broker"
+          cp -R wasmer-js/dist/. "${destination}/wasmer-sdk/"
+
+      - name: Upload least-privilege self-hosted-proof inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: edgejs-wasix-self-hosted-proof-inputs
+          path: ${{ runner.temp }}/clawsembly-self-hosted-proof-inputs/
+          if-no-files-found: error
+          retention-days: 1
+
+  prove-self-hosted-model:
+    needs: build-and-prove
+    permissions: {}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Download self-hosted-proof inputs
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
+        with:
+          name: edgejs-wasix-self-hosted-proof-inputs
+          path: proof-inputs
+
+      - name: Materialize the proof runner without repository authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p proof-runner
+          tar -xf proof-inputs/runner.tar -C proof-runner
+          chmod +x proof-inputs/clawsembly-network-relay
+          chmod +x proof-inputs/clawsembly-provider-broker
+
+      - name: Acquire pinned OSS inference runtime and model
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p self-hosted-model
+          llama_archive="self-hosted-model/llama-b9637-ubuntu-x64.tar.gz"
+          llama_url="$(
+            printf '%s' \
+              'https://github.com/ggml-org/llama.cpp/releases/download/' \
+              'b9637/llama-b9637-bin-ubuntu-x64.tar.gz'
+          )"
+          curl --fail --location --retry 3 \
+            --output "${llama_archive}" "${llama_url}"
+          printf '%s  %s\n' \
+            a50ee14f021a9d8e92e30f622f7e3be1318ee1125bb9a9ba8d2025388df48743 \
+            "${llama_archive}" \
+            | sha256sum --check
+          tar -xzf "${llama_archive}" -C self-hosted-model
+          llama_server="self-hosted-model/llama-b9637/llama-server"
+          printf '%s  %s\n' \
+            77eb1229a117e3034b873a46382bffcecc0f9815bd14e825a0706f8fc0b07564 \
+            "${llama_server}" \
+            | sha256sum --check
+          model="self-hosted-model/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+          model_url="$(
+            printf '%s' \
+              'https://huggingface.co/Qwen/' \
+              'Qwen2.5-0.5B-Instruct-GGUF/resolve/' \
+              'd78c9c2baefc6237025b685bb0d6db90288ef3d6/' \
+              'qwen2.5-0.5b-instruct-q4_k_m.gguf?download=true'
+          )"
+          curl --fail --location --retry 3 \
+            --output "${model}" "${model_url}"
+          printf '%s  %s\n' \
+            74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db \
+            "${model}" \
+            | sha256sum --check
+          test "$(stat --format='%s' "${model}")" = 491400032
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 24.18.0
+          cache: npm
+          cache-dependency-path: proof-runner/package-lock.json
+
+      - name: Install browser proof dependencies
+        working-directory: proof-runner
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Prove OpenClaw against the pinned self-hosted OSS model
+        working-directory: proof-runner
+        env:
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/proof-inputs/edgejs.wasm
+          CLAWSEMBLY_LLAMA_SERVER: ${{ github.workspace }}/self-hosted-model/llama-b9637/llama-server
+          CLAWSEMBLY_LLAMA_SERVER_SHA256: 77eb1229a117e3034b873a46382bffcecc0f9815bd14e825a0706f8fc0b07564
+          CLAWSEMBLY_NETWORK_RELAY: ${{ github.workspace }}/proof-inputs/clawsembly-network-relay
+          CLAWSEMBLY_OPENCLAW_IMAGE: ${{ github.workspace }}/proof-inputs/openclaw.clawfs
+          CLAWSEMBLY_OPENCLAW_SELF_HOSTED_AGENT_TURN_PROOF: "1"
+          CLAWSEMBLY_OPENCLAW_SELF_HOSTED_AGENT_TURN_TIMEOUT_MS: "300000"
+          CLAWSEMBLY_PROVIDER_BROKER: ${{ github.workspace }}/proof-inputs/clawsembly-provider-broker
+          CLAWSEMBLY_SELF_HOSTED_MODEL: ${{ github.workspace }}/self-hosted-model/qwen2.5-0.5b-instruct-q4_k_m.gguf
+          CLAWSEMBLY_SELF_HOSTED_MODEL_BYTES: "491400032"
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/proof-inputs/wasmer-sdk
+        run: |
+          npx playwright test \
+            --retries=1 \
+            tests/openclaw-self-hosted-agent-turn-browser.spec.ts
+
+      - name: Preserve self-hosted OpenClaw attempt evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="self-hosted-agent-turn-diagnostics"
+          mkdir -p "${destination}"
+          mkdir -p proof-runner/test-results
+          evidence="$(
+            find proof-runner/test-results \
+              -name openclaw-self-hosted-agent-turn-browser-evidence.json \
+              -type f \
+              -print \
+              | head -n 1
+          )"
+          if test -n "${evidence}" && test -s "${evidence}"; then
+            cp "${evidence}" \
+              openclaw-self-hosted-agent-turn-browser-evidence.json
+            cp "${evidence}" "${destination}/"
+          fi
+          while IFS= read -r context; do
+            cp "${context}" \
+              "${destination}/error-context-$(
+                basename "$(dirname "${context}")"
+              ).md"
+          done < <(
+            find proof-runner/test-results \
+              -name error-context.md \
+              -type f \
+              -print \
+              | sort
+          )
+          diagnostic_index=0
+          while IFS= read -r diagnostic; do
+            diagnostic_index=$((diagnostic_index + 1))
+            cp "${diagnostic}" \
+              "${destination}/browser-diagnostics-${diagnostic_index}.json"
+          done < <(
+            find proof-runner/test-results \
+              -name 'openclaw-self-hosted-agent-turn-browser-diagnostics*.json' \
+              -type f \
+              -print \
+              | sort
+          )
+          jq -n \
+            --arg evidence "${evidence}" \
+            --argjson errorContexts "$(
+              find "${destination}" \
+                -name 'error-context-*.md' \
+                -type f \
+                | sort \
+                | jq -Rsc 'split("\n") | map(select(length > 0))'
+            )" \
+            --argjson browserDiagnostics "$(
+              find "${destination}" \
+                -name 'browser-diagnostics-*.json' \
+                -type f \
+                | sort \
+                | jq -Rsc 'split("\n") | map(select(length > 0))'
+            )" \
+            '{
+              schemaVersion: 2,
+              evidence: (
+                if $evidence == "" then null else $evidence end
+              ),
+              errorContexts: $errorContexts,
+              browserDiagnostics: $browserDiagnostics
+            }' > "${destination}/manifest.json"
+
+      - name: Upload self-hosted OpenClaw diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: edgejs-wasix-self-hosted-agent-turn-diagnostics
+          path: self-hosted-agent-turn-diagnostics/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Download browser runtime and base evidence
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
+        with:
+          name: edgejs-wasix-browser-compatible-base
+          path: final-artifacts
+
+      - name: Bind the self-hosted model proof to the source-built artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="final-artifacts/edgejs-wasix-build-evidence.json"
+          self_hosted="openclaw-self-hosted-agent-turn-browser-evidence.json"
+          broker_binary="final-artifacts/clawsembly-provider-broker"
+          test -s "${base}"
+          test -s "${self_hosted}"
+          test -s "${broker_binary}"
+          jq -e '.schemaVersion == 4' "${base}" >/dev/null
+          jq -e '
+            . as $proof
+            | .status == "self-hosted-agent-turn-pass"
+            and .agentResponseValidation.contract
+              == "strict-assistant-payload-v1"
+            and .agentResponseValidation.arbitraryMetadataSearched == false
+            and .agentResponseValidation.promptEchoesAccepted == false
+            and .client.health.status == "ok"
+            and .client.health.summary == "completed"
+            and .client.health.result.meta.aborted == false
+            and .client.health.result.meta.replayInvalid == false
+            and .client.health.result.meta.stopReason == "stop"
+            and .client.health.result.meta.executionTrace.fallbackUsed == false
+            and any(
+              .client.health.result.meta.executionTrace.attempts[]?;
+              .result == "success" and .stage == "assistant"
+            )
+            and any(
+              .client.health.result.payloads[]?;
+              .text == $proof.selfHostedModel.expectedMarker
+            )
+            and .client.health.result.meta.finalAssistantVisibleText
+              == $proof.selfHostedModel.expectedMarker
+            and .client.health.result.meta.finalAssistantRawText
+              == $proof.selfHostedModel.expectedMarker
+          ' "${self_hosted}" >/dev/null
+          jq -e --slurpfile base "${base}" '
+            . as $proof
+            | .artifact.sha256 == $base[0].artifact.wasmSha256
+            and .image.sha256 == $base[0].packageImage.build.image.sha256
+            and .selfHostedModel.browserReceivesModelServiceCredential
+              == false
+            and .selfHostedModel.runtime.authentication.recorded == false
+            and .selfHostedModel.runtime.authentication.visibleToGuest
+              == false
+            and .selfHostedModel.runtime.release == "b9637"
+            and .selfHostedModel.runtime.sourceCommit
+              == "aedb2a5e9ca3d4064148bbb919e0ddc0c1b70ab3"
+            and .selfHostedModel.runtime.distribution.sha256
+              == "a50ee14f021a9d8e92e30f622f7e3be1318ee1125bb9a9ba8d2025388df48743"
+            and .selfHostedModel.runtime.model.sha256
+              == "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db"
+            and .selfHostedModel.hostProcess.inferenceRuntime.binarySha256
+              == "77eb1229a117e3034b873a46382bffcecc0f9815bd14e825a0706f8fc0b07564"
+            and .selfHostedModel.hostProcess.inferenceRuntime
+              .distributionSha256
+              == .selfHostedModel.runtime.distribution.sha256
+            and .selfHostedModel.hostProcess.inferenceRuntime.sourceCommit
+              == .selfHostedModel.runtime.sourceCommit
+            and .selfHostedModel.hostProcess.inferenceRuntime.health.status
+              == "ok"
+            and any(
+              .selfHostedModel.hostProcess.inferenceRuntime
+                .modelList.data[]?;
+              .id == $proof.selfHostedModel.runtime.model.id
+              and .owned_by == "llamacpp"
+              and .meta.n_ctx == 32768
+            )
+            and .selfHostedModel.hostProcess.model.sha256
+              == .selfHostedModel.runtime.model.sha256
+            and .selfHostedModel.hostProcess.model.bytes == 491400032
+            and .selfHostedModel.capabilityBroker.hostProcess.ready
+              .upstreamScheme == "http"
+            and .selfHostedModel.capabilityBroker.hostProcess.ready
+              .loopbackHttpExplicitlyAllowed == true
+            and .selfHostedModel.capabilityBroker.hostProcess.ready
+              .providerCredentialRecorded == false
+            and .selfHostedModel.capabilityBroker.hostProcess.upstreamResponse
+              .httpStatus == 200
+            and .selfHostedModel.capabilityBroker.hostProcess.upstreamResponse
+              .providerCredentialRecorded == false
+            and .selfHostedModel.capabilityBroker.hostProcess.upstreamResponse
+              .requestBodyRecorded == false
+          ' "${self_hosted}" >/dev/null
+          cp "${self_hosted}" \
+            final-artifacts/openclaw-self-hosted-agent-turn-browser-evidence.json
+          broker_binary_sha256="$(
+            sha256sum "${broker_binary}" | awk '{print $1}'
+          )"
+          broker_source_sha256="$(
+            (
+              cd proof-runner
+              sha256sum \
+                provider-broker/Cargo.toml \
+                provider-broker/Cargo.lock \
+                provider-broker/src/main.rs
+            ) | sha256sum | awk '{print $1}'
+          )"
+          jq \
+            --arg brokerBinarySha256 "${broker_binary_sha256}" \
+            --arg brokerSourceSha256 "${broker_source_sha256}" \
+            --slurpfile selfHosted "${self_hosted}" '
+            .schemaVersion = 6
+            | .openclawRuntimeProof.selfHostedAgentTurn = $selfHosted[0]
+            | .selfHostedInference = {
+                runtime: $selfHosted[0].selfHostedModel.runtime,
+                model: $selfHosted[0].selfHostedModel.runtime.model,
+                hostProcess: $selfHosted[0].selfHostedModel.hostProcess,
+                browserReceivesModelServiceCredential: false,
+                proof: $selfHosted[0]
+              }
+            | .modelCapabilityBroker = {
+                implementation: "clawsembly-provider-broker",
+                license: "MIT",
+                sourceFilesSha256: $brokerSourceSha256,
+                binarySha256: $brokerBinarySha256,
+                browserReceivesModelServiceCredential: false,
+                modelServiceCredentialRecorded: false,
+                proof: $selfHosted[0].selfHostedModel.capabilityBroker
+              }
+          ' "${base}" > "${base}.next"
+          mv "${base}.next" "${base}"
+          jq -e '
+            .schemaVersion == 6
+            and .openclawRuntimeProof.selfHostedAgentTurn.status
+              == "self-hosted-agent-turn-pass"
+            and .openclawRuntimeProof.selfHostedAgentTurn
+              .agentResponseValidation.contract
+              == "strict-assistant-payload-v1"
+            and .selfHostedInference.runtime.implementation == "llama.cpp"
+            and .selfHostedInference.model.license == "Apache-2.0"
+            and .modelCapabilityBroker
+              .browserReceivesModelServiceCredential
+              == false
+            and .modelCapabilityBroker.modelServiceCredentialRecorded == false
+          ' "${base}" >/dev/null
+
+      - name: Upload self-hosted-model-proven browser runtime and evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: edgejs-wasix-browser-compatible
+          path: final-artifacts/
+          if-no-files-found: error

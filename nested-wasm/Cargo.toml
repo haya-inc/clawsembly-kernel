@@ -1,0 +1,17 @@
+[package]
+name = "clawsembly-nested-wasm"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+wasmi_c_api = { package = "wasmi_c_api_impl", version = "=0.40.0", default-features = false }
+
+[profile.release]
+codegen-units = 1
+lto = true
+panic = "abort"

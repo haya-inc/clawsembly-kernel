@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Clawsembly Kernel · OpenClaw Gateway health proof</title>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Clawsembly Kernel · Real Gateway connection</p>
+      <h1>Unmodified OpenClaw server and client, inside Chromium</h1>
+      <p>
+        This proof starts the exact official Gateway entrypoint and then uses
+        a second browser guest process to execute OpenClaw's own authenticated
+        Gateway health RPC over the capability-scoped loopback namespace.
+      </p>
+      <output id="status" data-state="running">Initializing Wasmer…</output>
+      <pre id="result" aria-live="polite"></pre>
+    </main>
+    <script
+      type="module"
+      src="/src/openclaw-gateway-health-probe.ts"
+    ></script>
+  </body>
+</html>

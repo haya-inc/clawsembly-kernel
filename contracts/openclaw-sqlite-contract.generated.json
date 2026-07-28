@@ -1,0 +1,329 @@
+{
+  "schemaVersion": 1,
+  "artifact": {
+    "schemaVersion": 1,
+    "name": "openclaw",
+    "version": "2026.7.1-2",
+    "integrity": "sha512-ycF3yPcbjN6bUPeaUx6Mh6vze1hQWoD3CT/wWcmD7a8xaHHHRUaAlaq+lFxMHf1ssEgODVAwjlzYqp2twkYZ7g==",
+    "tarball": "https://registry.npmjs.org/openclaw/-/openclaw-2026.7.1-2.tgz",
+    "nodeEngine": ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0"
+  },
+  "stateSchema": {
+    "sourceFile": "dist/openclaw-state-db-DzSsA9Ji.js",
+    "sourceFileSha256": "ba920b2e6f63293a27c34615fc31dcb16a20a68a1e1e34fbccdcac56a9608149",
+    "sha256": "290198b5e8fb37f5b4a43fcce041bb91d0c1e23a8cc9730144b138f436e34093",
+    "bytes": 39871,
+    "lines": 1362,
+    "tables": 73,
+    "indexes": 103
+  },
+  "requirements": [
+    {
+      "id": "node-sqlite-module",
+      "evidence": [
+        {
+          "file": "dist/apply-DHCJUyF9.js",
+          "sha256": "932c9491dee162e112c7abb80ebf805a2d798679ccdcf2f452879da84b6f8b26"
+        },
+        {
+          "file": "dist/daemon-install-75IfcYMc.js",
+          "sha256": "bc81da38550039d616873a9d180804ed794120df2f141fde1ad0ec7cc272932a"
+        },
+        {
+          "file": "dist/engine-storage-CHRDXbVa.js",
+          "sha256": "85cb2e897e3777213d0b45501f0bb6d8977d86bc5e21e7bcfdf2f2eb024a99f1"
+        },
+        {
+          "file": "dist/extensions/logbook/index.js",
+          "sha256": "43f50884741dcfb56aeca086e6d566d44f3fd72cd6e6bf49afb78bc73f4459bd"
+        },
+        {
+          "file": "dist/i18n-CSQb1QYq.js",
+          "sha256": "4e4f1e4aa999a6bbb9da621beb2e5fdda09a48bf26c6ebcae7c5bfeec852c5c2"
+        }
+      ]
+    },
+    {
+      "id": "database-sync",
+      "evidence": [
+        {
+          "file": "dist/apply-DHCJUyF9.js",
+          "sha256": "932c9491dee162e112c7abb80ebf805a2d798679ccdcf2f452879da84b6f8b26"
+        },
+        {
+          "file": "dist/backup-create-Bzm17kV9.js",
+          "sha256": "c2632a15cded31b7bca0c20e9378e34b892a72c1dcad4eb28df21caf748ee3bb"
+        },
+        {
+          "file": "dist/cron-BMCTFQHJ.js",
+          "sha256": "fe0898f8cf8dd3734e4972d03cf401ff967113712f3715b413714051c7af0e44"
+        },
+        {
+          "file": "dist/extensions/logbook/index.js",
+          "sha256": "43f50884741dcfb56aeca086e6d566d44f3fd72cd6e6bf49afb78bc73f4459bd"
+        },
+        {
+          "file": "dist/extensions/memory-core/doctor-contract-api.js",
+          "sha256": "2f236d33f7db7d436dc06416139dae8d493e7204de4369aed969cac3e25f3f09"
+        }
+      ]
+    },
+    {
+      "id": "statement-get",
+      "evidence": [
+        {
+          "file": "dist/backup-create-Bzm17kV9.js",
+          "sha256": "c2632a15cded31b7bca0c20e9378e34b892a72c1dcad4eb28df21caf748ee3bb"
+        },
+        {
+          "file": "dist/cron-BMCTFQHJ.js",
+          "sha256": "fe0898f8cf8dd3734e4972d03cf401ff967113712f3715b413714051c7af0e44"
+        },
+        {
+          "file": "dist/engine-storage-CHRDXbVa.js",
+          "sha256": "85cb2e897e3777213d0b45501f0bb6d8977d86bc5e21e7bcfdf2f2eb024a99f1"
+        },
+        {
+          "file": "dist/extensions/logbook/index.js",
+          "sha256": "43f50884741dcfb56aeca086e6d566d44f3fd72cd6e6bf49afb78bc73f4459bd"
+        },
+        {
+          "file": "dist/extensions/memory-core/doctor-contract-api.js",
+          "sha256": "2f236d33f7db7d436dc06416139dae8d493e7204de4369aed969cac3e25f3f09"
+        }
+      ]
+    },
+    {
+      "id": "statement-all",
+      "evidence": [
+        {
+          "file": "dist/backup-create-Bzm17kV9.js",
+          "sha256": "c2632a15cded31b7bca0c20e9378e34b892a72c1dcad4eb28df21caf748ee3bb"
+        },
+        {
+          "file": "dist/engine-storage-CHRDXbVa.js",
+          "sha256": "85cb2e897e3777213d0b45501f0bb6d8977d86bc5e21e7bcfdf2f2eb024a99f1"
+        },
+        {
+          "file": "dist/extensions/logbook/index.js",
+          "sha256": "43f50884741dcfb56aeca086e6d566d44f3fd72cd6e6bf49afb78bc73f4459bd"
+        },
+        {
+          "file": "dist/extensions/memory-core/doctor-contract-api.js",
+          "sha256": "2f236d33f7db7d436dc06416139dae8d493e7204de4369aed969cac3e25f3f09"
+        },
+        {
+          "file": "dist/manager-DB4_iNu4.js",
+          "sha256": "d06216c22190ae2fa4c01fdd7355fd9971f2f8b6e5febb02d39529e80d740a02"
+        }
+      ]
+    },
+    {
+      "id": "statement-run",
+      "evidence": [
+        {
+          "file": "dist/apply-DHCJUyF9.js",
+          "sha256": "932c9491dee162e112c7abb80ebf805a2d798679ccdcf2f452879da84b6f8b26"
+        },
+        {
+          "file": "dist/backup-create-Bzm17kV9.js",
+          "sha256": "c2632a15cded31b7bca0c20e9378e34b892a72c1dcad4eb28df21caf748ee3bb"
+        },
+        {
+          "file": "dist/extensions/logbook/index.js",
+          "sha256": "43f50884741dcfb56aeca086e6d566d44f3fd72cd6e6bf49afb78bc73f4459bd"
+        },
+        {
+          "file": "dist/extensions/memory-core/doctor-contract-api.js",
+          "sha256": "2f236d33f7db7d436dc06416139dae8d493e7204de4369aed969cac3e25f3f09"
+        },
+        {
+          "file": "dist/manager-DB4_iNu4.js",
+          "sha256": "d06216c22190ae2fa4c01fdd7355fd9971f2f8b6e5febb02d39529e80d740a02"
+        }
+      ]
+    },
+    {
+      "id": "statement-iterate",
+      "evidence": [
+        {
+          "file": "dist/manager-DB4_iNu4.js",
+          "sha256": "d06216c22190ae2fa4c01fdd7355fd9971f2f8b6e5febb02d39529e80d740a02"
+        },
+        {
+          "file": "dist/openclaw-state-db-DzSsA9Ji.js",
+          "sha256": "ba920b2e6f63293a27c34615fc31dcb16a20a68a1e1e34fbccdcac56a9608149"
+        }
+      ]
+    },
+    {
+      "id": "statement-columns",
+      "evidence": [
+        {
+          "file": "dist/openclaw-state-db-DzSsA9Ji.js",
+          "sha256": "ba920b2e6f63293a27c34615fc31dcb16a20a68a1e1e34fbccdcac56a9608149"
+        }
+      ]
+    },
+    {
+      "id": "read-only-open",
+      "evidence": [
+        {
+          "file": "dist/apply-DHCJUyF9.js",
+          "sha256": "932c9491dee162e112c7abb80ebf805a2d798679ccdcf2f452879da84b6f8b26"
+        },
+        {
+          "file": "dist/backup-create-Bzm17kV9.js",
+          "sha256": "c2632a15cded31b7bca0c20e9378e34b892a72c1dcad4eb28df21caf748ee3bb"
+        },
+        {
+          "file": "dist/cron-BMCTFQHJ.js",
+          "sha256": "fe0898f8cf8dd3734e4972d03cf401ff967113712f3715b413714051c7af0e44"
+        },
+        {
+          "file": "dist/monitor-i23HdnNo.js",
+          "sha256": "a522a01d9c5133ffefae59cf8451521e8be375d2e6743630b4f8b958f05a1864"
+        },
+        {
+          "file": "dist/openclaw-state-db-DzSsA9Ji.js",
+          "sha256": "ba920b2e6f63293a27c34615fc31dcb16a20a68a1e1e34fbccdcac56a9608149"
+        }
+      ]
+    },
+    {
+      "id": "extension-loading",
+      "evidence": [
+        {
+          "file": "dist/engine-storage-CHRDXbVa.js",
+          "sha256": "85cb2e897e3777213d0b45501f0bb6d8977d86bc5e21e7bcfdf2f2eb024a99f1"
+        }
+      ]
+    },
+    {
+      "id": "begin-immediate",
+      "evidence": [
+        {
+          "file": "dist/openclaw-state-db-DzSsA9Ji.js",
+          "sha256": "ba920b2e6f63293a27c34615fc31dcb16a20a68a1e1e34fbccdcac56a9608149"
+        },
+        {
+          "file": "dist/sqlite-store-guctwyfg.js",
+          "sha256": "ba93c35477a4ca684d546fe87583934932090b4eefb666d245880d3b162e94dd"
+        }
+      ]
+    },
+    {
+      "id": "nested-savepoint",
+      "evidence": [
+        {
+          "file": "dist/openclaw-state-db-DzSsA9Ji.js",
+          "sha256": "ba920b2e6f63293a27c34615fc31dcb16a20a68a1e1e34fbccdcac56a9608149"
+        }
+      ]
+    },
+    {
+      "id": "wal-journal",
+      "evidence": [
+        {
+          "file": "dist/extensions/logbook/index.js",
+          "sha256": "43f50884741dcfb56aeca086e6d566d44f3fd72cd6e6bf49afb78bc73f4459bd"
+        },
+        {
+          "file": "dist/sqlite-wal-Bhk2Ro-u.js",
+          "sha256": "ef69e7cad95ff5cd5fe3087331294daae557833bcbc3d0ae140394d16855c3da"
+        }
+      ]
+    },
+    {
+      "id": "wal-checkpoint",
+      "evidence": [
+        {
+          "file": "dist/sqlite-wal-Bhk2Ro-u.js",
+          "sha256": "ef69e7cad95ff5cd5fe3087331294daae557833bcbc3d0ae140394d16855c3da"
+        }
+      ]
+    },
+    {
+      "id": "busy-timeout",
+      "evidence": [
+        {
+          "file": "dist/apply-DHCJUyF9.js",
+          "sha256": "932c9491dee162e112c7abb80ebf805a2d798679ccdcf2f452879da84b6f8b26"
+        },
+        {
+          "file": "dist/backup-create-Bzm17kV9.js",
+          "sha256": "c2632a15cded31b7bca0c20e9378e34b892a72c1dcad4eb28df21caf748ee3bb"
+        },
+        {
+          "file": "dist/extensions/logbook/index.js",
+          "sha256": "43f50884741dcfb56aeca086e6d566d44f3fd72cd6e6bf49afb78bc73f4459bd"
+        },
+        {
+          "file": "dist/manager-DB4_iNu4.js",
+          "sha256": "d06216c22190ae2fa4c01fdd7355fd9971f2f8b6e5febb02d39529e80d740a02"
+        },
+        {
+          "file": "dist/openclaw-state-db-DzSsA9Ji.js",
+          "sha256": "ba920b2e6f63293a27c34615fc31dcb16a20a68a1e1e34fbccdcac56a9608149"
+        }
+      ]
+    },
+    {
+      "id": "normal-synchronous",
+      "evidence": [
+        {
+          "file": "dist/sqlite-wal-Bhk2Ro-u.js",
+          "sha256": "ef69e7cad95ff5cd5fe3087331294daae557833bcbc3d0ae140394d16855c3da"
+        }
+      ]
+    },
+    {
+      "id": "foreign-keys",
+      "evidence": [
+        {
+          "file": "dist/sqlite-store-guctwyfg.js",
+          "sha256": "ba93c35477a4ca684d546fe87583934932090b4eefb666d245880d3b162e94dd"
+        },
+        {
+          "file": "dist/sqlite-wal-Bhk2Ro-u.js",
+          "sha256": "ef69e7cad95ff5cd5fe3087331294daae557833bcbc3d0ae140394d16855c3da"
+        }
+      ]
+    },
+    {
+      "id": "attach-database",
+      "evidence": [
+        {
+          "file": "dist/extensions/memory-core/doctor-contract-api.js",
+          "sha256": "2f236d33f7db7d436dc06416139dae8d493e7204de4369aed969cac3e25f3f09"
+        },
+        {
+          "file": "dist/manager-DB4_iNu4.js",
+          "sha256": "d06216c22190ae2fa4c01fdd7355fd9971f2f8b6e5febb02d39529e80d740a02"
+        }
+      ]
+    },
+    {
+      "id": "vacuum-into",
+      "evidence": [
+        {
+          "file": "dist/apply-DHCJUyF9.js",
+          "sha256": "932c9491dee162e112c7abb80ebf805a2d798679ccdcf2f452879da84b6f8b26"
+        },
+        {
+          "file": "dist/backup-create-Bzm17kV9.js",
+          "sha256": "c2632a15cded31b7bca0c20e9378e34b892a72c1dcad4eb28df21caf748ee3bb"
+        }
+      ]
+    },
+    {
+      "id": "sqlite-version-safety",
+      "evidence": [
+        {
+          "file": "dist/openclaw-state-db-DzSsA9Ji.js",
+          "sha256": "ba920b2e6f63293a27c34615fc31dcb16a20a68a1e1e34fbccdcac56a9608149"
+        }
+      ]
+    }
+  ]
+}

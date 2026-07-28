@@ -1,0 +1,31 @@
+diff --git a/src/node_version.h b/src/node_version.h
+--- a/src/node_version.h
++++ b/src/node_version.h
+@@ -64,9 +64,24 @@
+ 
+ #define NODE_VERSION "v" NODE_VERSION_STRING
+ 
+-#define NODE_COMPAT_VERSION_STRING NODE_STRINGIFY(NODE_MAJOR_VERSION) "." \
+-                                   NODE_STRINGIFY(NODE_MINOR_VERSION) "." \
+-                                   NODE_STRINGIFY(NODE_PATCH_VERSION)
++/*
++ * Edge.js is an independently implemented Node-compatible runtime. Keep the
++ * NODE_* version above as the imported source baseline, and make the
++ * user-visible compatibility claim explicit and independently auditable.
++ *
++ * Clawsembly raises this profile only together with its pinned OpenClaw
++ * package proof, WAL-reset-safe SQLite runtime probe, browser Gateway health
++ * RPC, and real agent-turn proof. This is not a claim that the artifact is an
++ * official Node.js binary.
++ */
++#define EDGE_NODE_COMPAT_MAJOR_VERSION 24
++#define EDGE_NODE_COMPAT_MINOR_VERSION 15
++#define EDGE_NODE_COMPAT_PATCH_VERSION 0
++
++#define NODE_COMPAT_VERSION_STRING \
++  NODE_STRINGIFY(EDGE_NODE_COMPAT_MAJOR_VERSION) "." \
++  NODE_STRINGIFY(EDGE_NODE_COMPAT_MINOR_VERSION) "." \
++  NODE_STRINGIFY(EDGE_NODE_COMPAT_PATCH_VERSION)
+ #define NODE_COMPAT_VERSION "v" NODE_COMPAT_VERSION_STRING
+ 
+ 

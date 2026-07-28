@@ -1,0 +1,454 @@
+diff --git a/package-lock.json b/package-lock.json
+index ef54a7d..687c680 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1,13 +1,16 @@
+ {
+   "name": "@wasmer/sdk",
+-  "version": "0.7.0-beta.2",
++  "version": "0.10.0",
+   "lockfileVersion": 3,
+   "requires": true,
+   "packages": {
+     "": {
+       "name": "@wasmer/sdk",
+-      "version": "0.7.0-beta.2",
++      "version": "0.10.0",
+       "license": "MIT",
++      "dependencies": {
++        "web-worker": "^1.3.0"
++      },
+       "devDependencies": {
+         "@babel/preset-env": "^7.23.3",
+         "@esm-bundle/chai": "^4.3.4-fix.0",
+@@ -20,6 +23,7 @@
+         "@rollup/plugin-typescript": "^11.1.5",
+         "@rollup/plugin-wasm": "^6.2.2",
+         "@types/mocha": "^10.0.7",
++        "@types/node": "^22.14.0",
+         "@web/dev-server-esbuild": "^1.0.1",
+         "@web/test-runner": "^0.18.0",
+         "dotenv": "^16.4.5",
+@@ -2939,12 +2943,13 @@
+       "dev": true
+     },
+     "node_modules/@types/node": {
+-      "version": "20.10.5",
+-      "resolved": "https://registry.npmjs.org/@types/node/-/node-20.10.5.tgz",
+-      "integrity": "sha512-nNPsNE65wjMxEKI93yOP+NPGGBJz/PoN3kZsVLee0XMiJolxSekEVD8wRwBUBqkwc7UWop0edW50yrCQW4CyRw==",
++      "version": "22.20.1",
++      "resolved": "https://registry.npmjs.org/@types/node/-/node-22.20.1.tgz",
++      "integrity": "sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q==",
+       "dev": true,
++      "license": "MIT",
+       "dependencies": {
+-        "undici-types": "~5.26.4"
++        "undici-types": "~6.21.0"
+       }
+     },
+     "node_modules/@types/parse5": {
+@@ -7521,10 +7526,11 @@
+       }
+     },
+     "node_modules/undici-types": {
+-      "version": "5.26.5",
+-      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-5.26.5.tgz",
+-      "integrity": "sha512-JlCMO+ehdEIKqlFxk6IfVoAUVmgz7cU7zD/h9XZ0qzeosSHmUJVOzSQvvYSYWXkFXC+IfLKSIffhv0sVZup6pA==",
+-      "dev": true
++      "version": "6.21.0",
++      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-6.21.0.tgz",
++      "integrity": "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==",
++      "dev": true,
++      "license": "MIT"
+     },
+     "node_modules/unicode-canonical-property-names-ecmascript": {
+       "version": "2.0.0",
+@@ -7649,6 +7655,12 @@
+       "integrity": "sha512-AFbieoL7a5LMqcnOF04ji+rpXadgOXnZsxQr//r83kLPr7biP7am3g9zbaZIaBGwBRWeSvoMD4mgPdX3e4NWBg==",
+       "dev": true
+     },
++    "node_modules/web-worker": {
++      "version": "1.5.0",
++      "resolved": "https://registry.npmjs.org/web-worker/-/web-worker-1.5.0.tgz",
++      "integrity": "sha512-RiMReJrTAiA+mBjGONMnjVDP2u3p9R1vkcGz6gDIrOMT3oGuYwX2WRMYI9ipkphSuE5XKEhydbhNEJh4NY9mlw==",
++      "license": "Apache-2.0"
++    },
+     "node_modules/webidl-conversions": {
+       "version": "7.0.0",
+       "resolved": "https://registry.npmjs.org/webidl-conversions/-/webidl-conversions-7.0.0.tgz",
+diff --git a/src/options.rs b/src/options.rs
+index 9fb3958..6664cf9 100644
+--- a/src/options.rs
++++ b/src/options.rs
+@@ -1,10 +1,8 @@
+ use std::{collections::BTreeMap, sync::Arc};
+ 
+-use anyhow::Context;
+ use js_sys::Array;
+-use virtual_fs::TmpFileSystem;
+ use wasm_bindgen::{prelude::wasm_bindgen, JsCast, JsValue, UnwrapThrowExt};
+-use wasmer_wasix::WasiEnvBuilder;
++use wasmer_wasix::runners::wasi::WasiRunner;
+ 
+ use crate::{runtime::Runtime, utils::Error, Directory, DirectoryInit, JsRuntime, StringOrBytes};
+ 
+@@ -177,11 +175,11 @@ extern "C" {
+ }
+ 
+ impl RunOptions {
+-    /// Propagate any provided options to the [`WasiEnvBuilder`], returning
++    /// Propagate any provided options to the [`WasiRunner`], returning
+     /// streams that can be used for stdin/stdout/stderr.
+-    pub(crate) fn configure_builder(
++    pub(crate) fn configure_runner(
+         &self,
+-        builder: &mut WasiEnvBuilder,
++        runner: &mut WasiRunner,
+     ) -> Result<
+         (
+             Option<web_sys::WritableStream>,
+@@ -190,54 +188,39 @@ impl RunOptions {
+         ),
+         Error,
+     > {
+-        for arg in self.parse_args()? {
+-            builder.add_arg(arg);
+-        }
++        runner.with_args(self.parse_args()?);
+ 
+-        for (key, value) in self.parse_env()? {
+-            builder.add_env(key, value);
++        runner.with_envs(self.parse_env()?);
++
++        if let Some(cwd) = self.parse_cwd()? {
++            runner.with_current_dir(cwd);
+         }
+ 
+         let stdin = match self.read_stdin() {
+             Some(stdin) => {
+                 let f = virtual_fs::StaticFile::new(stdin);
+-                builder.set_stdin(Box::new(f));
++                runner.with_stdin(Box::new(f));
+                 None
+             }
+             None => {
+                 let (f, stdin) = crate::streams::input_pipe();
+-                builder.set_stdin(Box::new(f));
++                runner.with_stdin(Box::new(f));
+                 Some(stdin)
+             }
+         };
+ 
+         let (stdout_file, stdout) = crate::streams::output_pipe();
+-        builder.set_stdout(Box::new(stdout_file));
++        runner.with_stdout(Box::new(stdout_file));
+ 
+         let (stderr_file, stderr) = crate::streams::output_pipe();
+-        builder.set_stderr(Box::new(stderr_file));
+-
+-        let fs = self.filesystem()?;
+-        builder.set_fs(Box::new(fs));
+-        builder.add_preopen_dir("/")?;
+-
+-        Ok((stdin, stdout, stderr))
+-    }
+-
+-    pub(crate) fn filesystem(&self) -> Result<TmpFileSystem, Error> {
+-        let root = TmpFileSystem::new();
++        runner.with_stderr(Box::new(stderr_file));
+ 
+         for (dest, fs) in self.mounted_directories()? {
+             tracing::trace!(%dest, ?fs, "Mounting directory");
+-
+-            let fs = Arc::new(fs) as Arc<_>;
+-            root.mount(dest.as_str().into(), &fs, "/".into())
+-                .with_context(|| format!("Unable to mount to \"{dest}\""))?;
++            runner.with_mount(dest, Arc::new(fs));
+         }
+ 
+-        tracing::trace!(?root, "Initialized the filesystem");
+-
+-        Ok(root)
++        Ok((stdin, stdout, stderr))
+     }
+ }
+ 
+diff --git a/src/run.rs b/src/run.rs
+index 6e25018..20def54 100644
+--- a/src/run.rs
++++ b/src/run.rs
+@@ -1,11 +1,9 @@
+ use futures::channel::oneshot;
+-use wasmer_types::ModuleHash;
+ use std::sync::Arc;
+ use wasm_bindgen::{prelude::wasm_bindgen, JsCast};
++use wasmer_types::ModuleHash;
++use wasmer_wasix::runners::wasi::{RuntimeOrEngine, WasiRunner};
+ use wasmer_wasix::Runtime as _;
+-use wasmer_wasix::WasiEnvBuilder;
+-use wasmer_wasix::runtime::module_cache::HashedModuleData;
+-use wasmer_wasix::runners::wasi::{WasiRunner, RuntimeOrEngine};
+ 
+ use crate::{instance::ExitCondition, utils::Error, Instance, RunOptions};
+ 
+@@ -39,23 +37,25 @@ async fn run_wasix_inner(wasm_module: WasmModule, config: RunOptions) -> Result<
+         .as_string()
+         .unwrap_or_else(|| DEFAULT_PROGRAM_NAME.to_string());
+ 
+-    let mut builder = WasiEnvBuilder::new(program_name.clone()).runtime(runtime.clone());
+-    let (stdin, stdout, stderr) = config.configure_builder(&mut builder)?;
+-
+-    let (exit_code_tx, exit_code_rx) = oneshot::channel();
+     let mut runner = WasiRunner::new();
++    let (stdin, stdout, stderr) = config.configure_runner(&mut runner)?;
++    let (exit_code_tx, exit_code_rx) = oneshot::channel();
+ 
+     let module: wasmer::Module = wasm_module.to_module(&*runtime).await?;
+ 
+-    // Note: The WasiEnvBuilder::run() method blocks, so we need to run it on
+-    // the thread pool.
++    // WasiRunner::run_wasm() blocks, so run it on the thread pool.
+     let tasks = runtime.task_manager().clone();
+     tasks.spawn_with_module(
+         module,
+         Box::new(move |module| {
+             let _span = tracing::debug_span!("run").entered();
+             let hash = ModuleHash::random();
+-            let result = runner.run_wasm(RuntimeOrEngine::Runtime(runtime), &program_name, module, hash );
++            let result = runner.run_wasm(
++                RuntimeOrEngine::Runtime(runtime),
++                &program_name,
++                module,
++                hash,
++            );
+             let _ = exit_code_tx.send(ExitCondition::from_result(result));
+         }),
+     )?;
+@@ -70,24 +70,43 @@ async fn run_wasix_inner(wasm_module: WasmModule, config: RunOptions) -> Result<
+ 
+ #[wasm_bindgen]
+ extern "C" {
+-    #[wasm_bindgen(typescript_type = "WebAssembly.Module | Uint8Array")]
++    #[wasm_bindgen(
++        typescript_type = "WebAssembly.Module | Uint8Array | { module: WebAssembly.Module; bytes: Uint8Array }"
++    )]
+     pub type WasmModule;
+ }
+ 
+ impl WasmModule {
+     async fn to_module(
+         &self,
+-        runtime: &dyn wasmer_wasix::Runtime,
++        _runtime: &dyn wasmer_wasix::Runtime,
+     ) -> Result<wasmer::Module, Error> {
+         if let Some(module) = self.dyn_ref::<js_sys::WebAssembly::Module>() {
+             Ok(module.clone().into())
+         } else if let Some(buffer) = self.dyn_ref::<js_sys::Uint8Array>() {
+             let buffer = buffer.to_vec();
+-            let hashed_module = HashedModuleData::new(&buffer);
+-            let module: wasmer::Module = runtime.load_hashed_module(hashed_module, None).await?;
+-            Ok(module)
++            let bytes = js_sys::Uint8Array::from(buffer.as_slice());
++            let module = js_sys::WebAssembly::Module::new(&bytes).map_err(Error::js)?;
++            Ok(wasmer::Module::from((module, buffer)))
+         } else {
+-            unreachable!();
++            let module = js_sys::Reflect::get(self, &"module".into())
++                .map_err(Error::js)?
++                .dyn_into::<js_sys::WebAssembly::Module>()
++                .map_err(|_| {
++                    Error::js(js_sys::TypeError::new(
++                        "WasmModule.module must be a WebAssembly.Module",
++                    ))
++                })?;
++            let buffer = js_sys::Reflect::get(self, &"bytes".into())
++                .map_err(Error::js)?
++                .dyn_into::<js_sys::Uint8Array>()
++                .map_err(|_| {
++                    Error::js(js_sys::TypeError::new(
++                        "WasmModule.bytes must be a Uint8Array",
++                    ))
++                })?
++                .to_vec();
++            Ok(wasmer::Module::from((module, buffer)))
+         }
+     }
+ }
+diff --git a/src/tasks/post_message_payload.rs b/src/tasks/post_message_payload.rs
+index 88480cd..9d81b88 100644
+--- a/src/tasks/post_message_payload.rs
++++ b/src/tasks/post_message_payload.rs
+@@ -1,5 +1,6 @@
++use bytes::Bytes;
+ use derivative::Derivative;
+-use js_sys::WebAssembly;
++use js_sys::{Uint8Array, WebAssembly};
+ use wasm_bindgen::JsValue;
+ use wasmer_types::ModuleHash;
+ 
+@@ -28,6 +29,7 @@ pub(crate) enum BlockingJob {
+     Thunk(#[derivative(Debug(format_with = "crate::utils::hidden"))] BlockingTask),
+     SpawnWithModule {
+         module: WebAssembly::Module,
++        module_bytes: Bytes,
+         #[derivative(Debug(format_with = "crate::utils::hidden"))]
+         task: BlockingModuleTask,
+     },
+@@ -63,6 +65,7 @@ mod consts {
+     pub(crate) const TYPE_SPAWN_WITH_MODULE_AND_MEMORY: &str = "spawn-with-module-and-memory";
+     pub(crate) const PTR: &str = "ptr";
+     pub(crate) const MODULE: &str = "module";
++    pub(crate) const MODULE_BYTES: &str = "module-bytes";
+     pub(crate) const MEMORY: &str = "memory";
+     pub(crate) const MODULE_HASH: &str = "module-hash";
+ }
+@@ -80,12 +83,18 @@ impl PostMessagePayload {
+                     .boxed(consts::PTR, task)
+                     .finish()
+             }
+-            PostMessagePayload::Blocking(BlockingJob::SpawnWithModule { module, task }) => {
+-                Serializer::new(consts::TYPE_SPAWN_WITH_MODULE)
+-                    .boxed(consts::PTR, task)
+-                    .set(consts::MODULE, module)
+-                    .finish()
+-            }
++            PostMessagePayload::Blocking(BlockingJob::SpawnWithModule {
++                module,
++                module_bytes,
++                task,
++            }) => Serializer::new(consts::TYPE_SPAWN_WITH_MODULE)
++                .boxed(consts::PTR, task)
++                .set(consts::MODULE, module)
++                .set(
++                    consts::MODULE_BYTES,
++                    Uint8Array::from(module_bytes.as_ref()),
++                )
++                .finish(),
+             PostMessagePayload::Blocking(BlockingJob::SpawnWithModuleAndMemory {
+                 module,
+                 memory,
+@@ -139,9 +148,11 @@ impl PostMessagePayload {
+             consts::TYPE_SPAWN_WITH_MODULE => {
+                 let task = de.boxed(consts::PTR)?;
+                 let module = de.js(consts::MODULE)?;
++                let module_bytes: Uint8Array = de.js(consts::MODULE_BYTES)?;
+ 
+                 Ok(PostMessagePayload::Blocking(BlockingJob::SpawnWithModule {
+                     module,
++                    module_bytes: module_bytes.to_vec().into(),
+                     task,
+                 }))
+             }
+@@ -234,6 +245,7 @@ mod tests {
+         let (sender, receiver) = oneshot::channel();
+         let msg = PostMessagePayload::Blocking(BlockingJob::SpawnWithModule {
+             module: JsValue::from(module).dyn_into().unwrap(),
++            module_bytes: Bytes::from_static(wasm),
+             task: Box::new(|m| {
+                 sender
+                     .send(
+@@ -248,13 +260,15 @@ mod tests {
+         let js = msg.into_js().unwrap();
+         let round_tripped = unsafe { PostMessagePayload::try_from_js(js).unwrap() };
+ 
+-        let (module, task) = match round_tripped {
+-            PostMessagePayload::Blocking(BlockingJob::SpawnWithModule { module, task }) => {
+-                (module, task)
+-            }
++        let (module, module_bytes, task) = match round_tripped {
++            PostMessagePayload::Blocking(BlockingJob::SpawnWithModule {
++                module,
++                module_bytes,
++                task,
++            }) => (module, module_bytes, task),
+             _ => unreachable!(),
+         };
+-        task(module.into());
++        task((module, module_bytes).into());
+         let name = receiver.await.unwrap();
+         assert_eq!(
+             name,
+diff --git a/src/tasks/scheduler.rs b/src/tasks/scheduler.rs
+index 95ed5d1..abfcd98 100644
+--- a/src/tasks/scheduler.rs
++++ b/src/tasks/scheduler.rs
+@@ -177,8 +177,12 @@ impl SchedulerState {
+                 Ok(())
+             }
+             SchedulerMessage::SpawnWithModule { module, task } => {
++                let module_bytes = module
++                    .serialize()
++                    .context("Unable to preserve module bytes for the worker")?;
+                 self.post_message(PostMessagePayload::Blocking(BlockingJob::SpawnWithModule {
+                     module: JsValue::from(module).unchecked_into(),
++                    module_bytes,
+                     task,
+                 }))
+             }
+diff --git a/src/tasks/scheduler_message.rs b/src/tasks/scheduler_message.rs
+index f142a0d..8a05489 100644
+--- a/src/tasks/scheduler_message.rs
++++ b/src/tasks/scheduler_message.rs
+@@ -1,7 +1,7 @@
+ use std::marker::PhantomData;
+ 
+ use derivative::Derivative;
+-use js_sys::WebAssembly;
++use js_sys::{Uint8Array, WebAssembly};
+ use wasm_bindgen::JsValue;
+ use wasmer::js::AsJs;
+ use wasmer_types::ModuleHash;
+@@ -97,9 +97,10 @@ impl SchedulerMessage {
+             }
+             consts::TYPE_SPAWN_WITH_MODULE => {
+                 let module: WebAssembly::Module = de.js(consts::MODULE)?;
++                let module_bytes: Uint8Array = de.js(consts::MODULE_BYTES)?;
+                 let task = de.boxed(consts::PTR)?;
+                 Ok(SchedulerMessage::SpawnWithModule {
+-                    module: module.into(),
++                    module: (module, module_bytes.to_vec()).into(),
+                     task,
+                 })
+             }
+@@ -153,8 +154,13 @@ impl SchedulerMessage {
+                     .finish()
+             }
+             SchedulerMessage::SpawnWithModule { module, task } => {
++                let module_bytes = module.serialize()?;
+                 Serializer::new(consts::TYPE_SPAWN_WITH_MODULE)
+                     .set(consts::MODULE, module)
++                    .set(
++                        consts::MODULE_BYTES,
++                        Uint8Array::from(module_bytes.as_ref()),
++                    )
+                     .boxed(consts::PTR, task)
+                     .finish()
+             }
+@@ -191,6 +197,7 @@ mod consts {
+     pub const MEMORY: &str = "memory";
+     pub const MODULE_HASH: &str = "module-hash";
+     pub const MODULE: &str = "module";
++    pub const MODULE_BYTES: &str = "module-bytes";
+     pub const PTR: &str = "ptr";
+     pub const WORKER_ID: &str = "worker-id";
+ }
+diff --git a/src/tasks/thread_pool_worker.rs b/src/tasks/thread_pool_worker.rs
+index b73468d..883ef29 100644
+--- a/src/tasks/thread_pool_worker.rs
++++ b/src/tasks/thread_pool_worker.rs
+@@ -57,9 +57,13 @@ impl ThreadPoolWorker {
+                 let _guard = self.busy();
+                 thunk();
+             }
+-            BlockingJob::SpawnWithModule { module, task } => {
++            BlockingJob::SpawnWithModule {
++                module,
++                module_bytes,
++                task,
++            } => {
+                 let _guard = self.busy();
+-                task(module.into());
++                task(wasmer::Module::from((module, module_bytes)));
+             }
+             BlockingJob::SpawnWithModuleAndMemory {
+                 module,

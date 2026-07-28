@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Clawsembly Kernel · OpenClaw install lifecycle proof</title>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Clawsembly Kernel · Browser-local package install</p>
+      <h1>Official OpenClaw lifecycle effects, inside Chromium</h1>
+      <p>
+        This proof executes the required lifecycle effects from the exact
+        integrity-pinned package graph in a shared capability filesystem,
+        including the official plugin-registry migration.
+      </p>
+      <output id="status" data-state="running">Initializing Wasmer…</output>
+      <pre id="result" aria-live="polite"></pre>
+    </main>
+    <script
+      type="module"
+      src="/src/openclaw-install-lifecycle-probe.ts"
+    ></script>
+  </body>
+</html>

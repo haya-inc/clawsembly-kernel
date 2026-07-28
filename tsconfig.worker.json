@@ -5,7 +5,9 @@
     "types": []
   },
   "include": [
+    "src/generated/openclaw-state-schema.ts",
     "src/node-sqlite.ts",
+    "src/openclaw-sqlite-contract.ts",
     "src/protocol.ts",
     "src/runtime-worker.ts"
   ]

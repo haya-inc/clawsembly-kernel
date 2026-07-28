@@ -1,0 +1,293 @@
+diff --git a/quickjs-wasm/build.sh b/quickjs-wasm/build.sh
+--- a/quickjs-wasm/build.sh
++++ b/quickjs-wasm/build.sh
+@@ -33,9 +33,14 @@ optimize_wasm() {
+   local input="$1"
+   local output="$2"
+-  if command -v wasm-opt >/dev/null 2>&1; then
++  local emit_exnref="${EDGE_WASIX_EMIT_EXNREF:-yes}"
++  if [[ "${emit_exnref}" != "yes" && "${emit_exnref}" != "no" ]]; then
++    echo "error: EDGE_WASIX_EMIT_EXNREF must be yes or no" >&2
++    exit 1
++  fi
++  if [[ "${emit_exnref}" == "yes" ]] && command -v wasm-opt >/dev/null 2>&1; then
+     wasm-opt --emit-exnref -o "${output}" "${input}"
+     return
+   fi
+-  echo "warning: wasm-opt not found in PATH; copying ${input} to ${output}" >&2
++  echo "preserving legacy WebAssembly EH in ${output} (emit-exnref=${emit_exnref})" >&2
+   cp "${input}" "${output}"
+ }
+@@ -110 +115,0 @@ allowed_modules = {
+-    "wasm_c_api_v0",
+@@ -203,0 +209 @@ cmake \
++  -DEDGE_QUICKJS_WEBASSEMBLY="${EDGE_QUICKJS_WEBASSEMBLY:-OFF}" \
+diff --git a/wasix/build-wasix.sh b/wasix/build-wasix.sh
+--- a/wasix/build-wasix.sh
++++ b/wasix/build-wasix.sh
+@@ -33,9 +33,14 @@ optimize_wasm() {
+   local input="$1"
+   local output="$2"
+-  if command -v wasm-opt >/dev/null 2>&1; then
++  local emit_exnref="${EDGE_WASIX_EMIT_EXNREF:-yes}"
++  if [[ "${emit_exnref}" != "yes" && "${emit_exnref}" != "no" ]]; then
++    echo "error: EDGE_WASIX_EMIT_EXNREF must be yes or no" >&2
++    exit 1
++  fi
++  if [[ "${emit_exnref}" == "yes" ]] && command -v wasm-opt >/dev/null 2>&1; then
+     wasm-opt --emit-exnref -o "${output}" "${input}"
+     return
+   fi
+-  echo "warning: wasm-opt not found in PATH; copying ${input} to ${output}" >&2
++  echo "preserving legacy WebAssembly EH in ${output} (emit-exnref=${emit_exnref})" >&2
+   cp "${input}" "${output}"
+ }
+diff --git a/wasix/cmake/wasixcc-env.sh b/wasix/cmake/wasixcc-env.sh
+--- a/wasix/cmake/wasixcc-env.sh
++++ b/wasix/cmake/wasixcc-env.sh
+@@ -3 +3 @@
+-export WASIXCC_WASM_EXCEPTIONS=exnref
++export WASIXCC_WASM_EXCEPTIONS="${WASIXCC_WASM_EXCEPTIONS:-exnref}"
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -220 +220 @@ Most recent Wasmer deploy troubleshooting note:
+-plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/004_wasix_safe_mode_https_exit.md
++plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/005_quickjs_process_exit_termination.md
+diff --git a/plans/quickjs-wasm/development/troubleshooting/README.md b/plans/quickjs-wasm/development/troubleshooting/README.md
+--- a/plans/quickjs-wasm/development/troubleshooting/README.md
++++ b/plans/quickjs-wasm/development/troubleshooting/README.md
+@@ -109,0 +110 @@ duplicating issue details.
++| ▶️ | High | [005_quickjs_process_exit_termination.md](wasmer-deploy/005_quickjs_process_exit_termination.md) | QuickJS `process.exit()` continues JavaScript execution |
+diff --git a/plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/005_quickjs_process_exit_termination.md b/plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/005_quickjs_process_exit_termination.md
+new file mode 100644
+--- /dev/null
++++ b/plans/quickjs-wasm/development/troubleshooting/wasmer-deploy/005_quickjs_process_exit_termination.md
+@@ -0,0 +1,53 @@
++# Wasmer Deploy: QuickJS `process.exit()` continues JavaScript execution
++
++| | | Remarks |
++| --- | --- | --- |
++| **Status** | ▶️ | Browser/WASIX reproduction is confirmed and the runtime fix is in progress. |
++| **Severity** | High | Package launchers can ignore a fatal version gate and continue into invalid startup paths. |
++
++## Issue
++
++The self-contained QuickJS Edge.js WASIX artifact runs an official, unmodified
++Node package launcher in Chromium, but JavaScript after `process.exit()` still
++executes. A launcher that calls `process.exit(1)` for an unsupported Node
++version subsequently reaches its version fast path, prints its version, and
++continues into the normal entrypoint lookup.
++
++The QuickJS implementation of
++`unofficial_napi_terminate_execution(...)` currently validates the environment
++and returns `napi_ok` without terminating execution. The V8 implementation calls
++`v8::Isolate::TerminateExecution()`, so native V8 coverage does not exercise
++this QuickJS gap.
++
++## Action Plan
++
++1. Add a focused QuickJS N-API regression proving that termination unwinds the
++   active JavaScript callback and cannot be caught by user JavaScript.
++2. Implement immediate QuickJS termination as an uncatchable engine error
++   delivered through the existing N-API callback exception path.
++3. Preserve `unofficial_napi_cancel_terminate_execution(...)` semantics for a
++   termination request that has not yet been delivered.
++4. Rebuild the self-contained QuickJS WASIX artifact.
++5. Run a Chromium proof that code after `process.exit(7)` is not observed and
++   that the WASIX process returns exit code 7.
++6. Rerun the official package launcher probe and record the next compatibility
++   boundary independently from the exit-semantics fix.
++
++## Reproduction
++
++The minimal behavior is:
++
++```js
++console.log("before");
++process.exit(7);
++console.log("after");
++```
++
++The failing QuickJS/WASIX artifact prints both markers and can report a later
++exit code. Correct behavior prints only `before` and exits with code 7.
++
++## Ownership
++
++The bug is exposed by the Wasmer browser deployment path, while the fix belongs
++to `napi/quickjs/src/`. The Edge runtime already routes `process.reallyExit()`
++through `unofficial_napi_terminate_execution(...)`.
+diff --git a/napi/quickjs/src/internal/napi_env.cc b/napi/quickjs/src/internal/napi_env.cc
+index db21073..217b4db 100644
+--- a/napi/quickjs/src/internal/napi_env.cc
++++ b/napi/quickjs/src/internal/napi_env.cc
+@@ -324,0 +325,2 @@ void napi_env__::clear_last_exception()
++  {
++    execution_termination_pending_ = false;
+@@ -325,0 +328 @@ void napi_env__::clear_last_exception()
++  }
+@@ -330,0 +334 @@ void napi_env__::clear_last_exception()
++  execution_termination_pending_ = false;
+@@ -340,0 +345,19 @@ void napi_env__::set_last_exception(JSValue exception)
++void napi_env__::set_execution_termination_exception(JSValue exception)
++{
++  set_last_exception(exception);
++  execution_termination_pending_ = true;
++}
++
++void napi_env__::cancel_execution_termination()
++{
++  if (!execution_termination_pending_)
++    return;
++
++  if (has_last_exception_)
++  {
++    JSContext *ctx = last_exception_context_ == nullptr ? main_context_ : last_exception_context_;
++    JS_ClearUncatchableError(ctx, last_exception_);
++  }
++  clear_last_exception();
++}
++
+@@ -349,0 +373 @@ JSValue napi_env__::take_last_exception()
++  execution_termination_pending_ = false;
+diff --git a/napi/quickjs/src/internal/napi_env.h b/napi/quickjs/src/internal/napi_env.h
+index ef98681..3a8f1ae 100644
+--- a/napi/quickjs/src/internal/napi_env.h
++++ b/napi/quickjs/src/internal/napi_env.h
+@@ -88,0 +89,2 @@ struct napi_env__
++  void set_execution_termination_exception(JSValue exception);
++  void cancel_execution_termination();
+@@ -128,0 +131 @@ private:
++  bool execution_termination_pending_ = false;
+diff --git a/napi/quickjs/src/unofficial_napi.cc b/napi/quickjs/src/unofficial_napi.cc
+index 042064c..c264bcd 100644
+--- a/napi/quickjs/src/unofficial_napi.cc
++++ b/napi/quickjs/src/unofficial_napi.cc
+@@ -324 +324,16 @@ extern "C"
+-        return napi_util__::check_env(env) ? napi_ok : napi_invalid_arg;
++        if (!napi_util__::check_env(env))
++            return napi_invalid_arg;
++
++        JSContext *ctx = env->context();
++        JSValue exception = JS_NewInternalError(ctx, "execution terminated");
++        if (JS_IsException(exception))
++            return napi_util__::return_pending_if_caught(
++                env, ctx, "Failed to create execution termination exception");
++
++        // QuickJS interruption errors are uncatchable. Deliver the equivalent
++        // immediately through the N-API callback trampoline instead of waiting
++        // for the bytecode interrupt counter, so process.exit() cannot execute
++        // subsequent user code.
++        JS_SetUncatchableError(ctx, exception);
++        env->set_execution_termination_exception(exception);
++        return napi_ok;
+@@ -329 +344,4 @@ extern "C"
+-        return napi_util__::check_env(env) ? napi_ok : napi_invalid_arg;
++        if (!napi_util__::check_env(env))
++            return napi_invalid_arg;
++        env->cancel_execution_termination();
++        return napi_ok;
+diff --git a/napi/tests/CMakeLists.txt b/napi/tests/CMakeLists.txt
+index 702cd73..da80c91 100644
+--- a/napi/tests/CMakeLists.txt
++++ b/napi/tests/CMakeLists.txt
+@@ -319,0 +320,5 @@ add_fixture_test(${_napi_test_prefix}_test_65_unofficial_contextify
++if(_napi_test_engine STREQUAL "quickjs")
++  add_fixture_test(${_napi_test_prefix}_test_66_unofficial_termination
++    runners/test_66_unofficial_termination.cc
++  )
++endif()
+diff --git a/napi/tests/runners/test_66_unofficial_termination.cc b/napi/tests/runners/test_66_unofficial_termination.cc
+new file mode 100644
+--- /dev/null
++++ b/napi/tests/runners/test_66_unofficial_termination.cc
+@@ -0,0 +1,89 @@
++#include "test_env.h"
++
++#include "unofficial_napi.h"
++
++class Test66UnofficialTermination : public FixtureTestBase {};
++
++namespace {
++
++napi_value Terminate(napi_env env, napi_callback_info /*info*/) {
++  EXPECT_EQ(unofficial_napi_terminate_execution(env), napi_ok);
++  return nullptr;
++}
++
++napi_value TerminateAndCancel(napi_env env, napi_callback_info /*info*/) {
++  EXPECT_EQ(unofficial_napi_terminate_execution(env), napi_ok);
++  EXPECT_EQ(unofficial_napi_cancel_terminate_execution(env), napi_ok);
++  return nullptr;
++}
++
++void InstallGlobalFunction(napi_env env, const char* name, napi_callback callback) {
++  napi_value global = nullptr;
++  ASSERT_EQ(napi_get_global(env, &global), napi_ok);
++  ASSERT_NE(global, nullptr);
++
++  napi_value function = nullptr;
++  ASSERT_EQ(napi_create_function(
++                env, name, NAPI_AUTO_LENGTH, callback, nullptr, &function),
++            napi_ok);
++  ASSERT_NE(function, nullptr);
++  ASSERT_EQ(napi_set_named_property(env, global, name, function), napi_ok);
++}
++
++bool GlobalBool(napi_env env, const char* name) {
++  napi_value global = nullptr;
++  EXPECT_EQ(napi_get_global(env, &global), napi_ok);
++  napi_value value = nullptr;
++  EXPECT_EQ(napi_get_named_property(env, global, name, &value), napi_ok);
++  bool result = false;
++  EXPECT_EQ(napi_get_value_bool(env, value, &result), napi_ok);
++  return result;
++}
++
++napi_status RunScript(napi_env env, const char* source) {
++  napi_value script = nullptr;
++  if (napi_create_string_utf8(env, source, NAPI_AUTO_LENGTH, &script) != napi_ok)
++    return napi_generic_failure;
++  napi_value result = nullptr;
++  return napi_run_script(env, script, &result);
++}
++
++}  // namespace
++
++TEST_F(Test66UnofficialTermination, ImmediatelyUnwindsAndCannotBeCaught) {
++  EnvScope s(runtime_.get());
++  InstallGlobalFunction(s.env, "terminateForTest", Terminate);
++
++  EXPECT_EQ(
++      RunScript(s.env,
++          "globalThis.afterTerminate = false;"
++          "globalThis.caughtTerminate = false;"
++          "try {"
++          "  terminateForTest();"
++          "  globalThis.afterTerminate = true;"
++          "} catch {"
++          "  globalThis.caughtTerminate = true;"
++          "}"),
++      napi_pending_exception);
++
++  napi_value exception = nullptr;
++  ASSERT_EQ(napi_get_and_clear_last_exception(s.env, &exception), napi_ok);
++  ASSERT_NE(exception, nullptr);
++  EXPECT_EQ(unofficial_napi_cancel_terminate_execution(s.env), napi_ok);
++
++  EXPECT_FALSE(GlobalBool(s.env, "afterTerminate"));
++  EXPECT_FALSE(GlobalBool(s.env, "caughtTerminate"));
++}
++
++TEST_F(Test66UnofficialTermination, CancelBeforeDeliveryAllowsExecutionToContinue) {
++  EnvScope s(runtime_.get());
++  InstallGlobalFunction(s.env, "terminateAndCancelForTest", TerminateAndCancel);
++
++  EXPECT_EQ(
++      RunScript(s.env,
++          "globalThis.afterCancelledTerminate = false;"
++          "terminateAndCancelForTest();"
++          "globalThis.afterCancelledTerminate = true;"),
++      napi_ok);
++  EXPECT_TRUE(GlobalBool(s.env, "afterCancelledTerminate"));
++}

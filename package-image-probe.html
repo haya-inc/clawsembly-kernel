@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Clawsembly Kernel · Complete package image proof</title>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Clawsembly Kernel · Complete package graph</p>
+      <h1>Official OpenClaw package, mounted in Chromium</h1>
+      <p>
+        This probe parses the integrity-verified ClawsemblyFS image and mounts
+        all official OpenClaw runtime files into the browser kernel.
+      </p>
+      <output id="status" data-state="running">Fetching package image…</output>
+      <pre id="result" aria-live="polite"></pre>
+    </main>
+    <script type="module" src="/src/package-image-probe.ts"></script>
+  </body>
+</html>

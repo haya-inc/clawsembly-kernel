@@ -1,0 +1,22 @@
+diff --git i/deps/libuv-wasix/src/unix/tcp.c w/deps/libuv-wasix/src/unix/tcp.c
+index 852c189..2b56011 100644
+--- i/deps/libuv-wasix/src/unix/tcp.c
++++ w/deps/libuv-wasix/src/unix/tcp.c
+@@ -347,6 +347,17 @@ out:
+ 
+   uv__io_start(handle->loop, &handle->io_watcher, POLLOUT);
+ 
++#if defined(__wasi__)
++  /*
++   * WASIX can complete connect(2) synchronously on a virtual TCP socket.
++   * Unlike a host kernel, the in-process network may not emit another
++   * writable edge after that successful return. Queue libuv's normal
++   * completion path so it can confirm SO_ERROR and invoke the callback.
++   */
++  if (handle->delayed_error == 0 && r == 0)
++    uv__io_feed(handle->loop, &handle->io_watcher);
++#endif
++
+   if (handle->delayed_error)
+     uv__io_feed(handle->loop, &handle->io_watcher);
+ 

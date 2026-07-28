@@ -1,0 +1,31 @@
+diff --git i/src/edge_runtime.cc w/src/edge_runtime.cc
+index 9dfd370f..991db0f2 100644
+--- i/src/edge_runtime.cc
++++ w/src/edge_runtime.cc
+@@ -1845,15 +1845,11 @@ int RunEventLoopUntilQuiescent(napi_env env, std::string* error_out) {
+         return 1;
+       }
+     }
+-    const bool use_polling_loop = loop_timeout_ms > 0;
+-    if (use_polling_loop) {
+-      uv_run(loop, UV_RUN_NOWAIT);
+-      if (uv_loop_alive(loop) != 0) {
+-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+-      }
+-    } else {
+-      uv_run(loop, UV_RUN_DEFAULT);
+-    }
++    // Embedder/platform tasks are not necessarily represented by a live
++    // libuv handle. UV_RUN_DEFAULT can therefore sleep indefinitely while a
++    // dynamic import or microtask is ready. Keep taking bounded nonblocking
++    // turns for the lifetime of the Node-style keep-alive loop.
++    uv_run(loop, UV_RUN_NOWAIT);
+     if (IsEnvironmentExitRequested(env)) {
+       break;
+     }
+@@ -1881,4 +1877,5 @@ int RunEventLoopUntilQuiescent(napi_env env, std::string* error_out) {
+         *error_out = "Failed to process microtasks";
+       }
+       return 1;
+     }
++    std::this_thread::sleep_for(std::chrono::milliseconds(1));
