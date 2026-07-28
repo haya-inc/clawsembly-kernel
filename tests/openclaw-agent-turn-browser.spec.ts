@@ -20,6 +20,11 @@ type FixtureRequest = {
   model: unknown;
   path: string;
   stream: unknown;
+  toolMessageCount: number;
+  toolMessagesContainPersistedContent: boolean;
+  toolMessagesContainWorkspaceDenial: boolean;
+  toolNames: string[];
+  workspaceTurn: boolean;
 };
 
 type AgentTurnEvidence = {
@@ -84,6 +89,16 @@ const relayToken = "clawsembly-openclaw-agent-turn-proof";
 const fixturePort = 18_794;
 const relayPort = 18_792;
 const responseMarker = "CLAWSEMBLY_AGENT_TURN_OK";
+const workspaceResponseMarker = "CLAWSEMBLY_WORKSPACE_TOOL_OK";
+const workspacePersistedContent = "CLAWSEMBLY_WORKSPACE_PERSISTED";
+const workspacePrompt =
+  "Use the write tool to create clawsembly-proof.txt with exactly "
+  + `${workspacePersistedContent}. Then use the read tool to verify it. `
+  + "Next, deliberately try the write tool once on the absolute path "
+  + "/openclaw/.clawsembly-outside.txt with the text MUST_NOT_EXIST and "
+  + "observe that workspace-only policy rejects it. Only after all three "
+  + "tool calls, reply with exactly "
+  + `<answer>${workspaceResponseMarker}</answer> and nothing else.`;
 const agentTurnPrompt =
   "A human is waiting for a visible answer. Reply with exactly the text "
   + "between the tags and nothing else: <answer>"
@@ -107,7 +122,7 @@ test("unmodified OpenClaw completes an agent turn through capability egress", as
       || !existsSync(relayPath),
     "Set the agent-turn flag, runtime artifacts, package image, and relay"
   );
-  test.setTimeout(proofTimeoutMs + 120_000);
+  test.setTimeout((proofTimeoutMs * 2) + 180_000);
 
   const requests: FixtureRequest[] = [];
   const fixture = await startFixture(requests);
@@ -274,6 +289,166 @@ test("unmodified OpenClaw completes an agent turn through capability egress", as
     expect(completionRequest?.messageCount).toBeGreaterThanOrEqual(2);
     expect(completionRequest?.messageRoles).toContain("system");
     expect(completionRequest?.messageRoles).toContain("user");
+
+    const workspaceRequestStart = requests.length;
+    const workspacePageError = page.waitForEvent("pageerror");
+    await page.goto(
+      "/openclaw-agent-turn-probe.html"
+      + "?artifact=/edgejs.wasm"
+      + "&image=/openclaw.clawfs"
+      + "&proof=workspace-tool-turn"
+      + "&relay=ws%3A%2F%2F127.0.0.1%3A18792%2Fv1%2Fnetwork"
+      + `&token=${encodeURIComponent(relayToken)}`
+      + (runtimeDebug ? "&debug=trace" : "")
+      + `&timeoutMs=${proofTimeoutMs}`
+    );
+    const workspaceStatus = page.locator("#status");
+    const workspaceOutcome = await Promise.race([
+      expect.poll(
+        () => workspaceStatus.getAttribute("data-state"),
+        { timeout: proofTimeoutMs + 60_000 }
+      ).toMatch(/^(?:pass|fail)$/u).then(
+        () => ({ kind: "status" as const })
+      ),
+      workspacePageError.then(
+        (error) => ({ error, kind: "pageerror" as const })
+      )
+    ]);
+    if (workspaceOutcome.kind === "pageerror") {
+      throw workspaceOutcome.error;
+    }
+    const workspaceResultText = await page.locator("#result").innerText();
+    if (await workspaceStatus.getAttribute("data-state") === "fail") {
+      throw new Error(workspaceResultText);
+    }
+    const workspaceResult = JSON.parse(workspaceResultText) as {
+      claim: string;
+      client: {
+        args: string[];
+        result: {
+          stdout: string;
+        };
+      };
+      providerFixture: {
+        expectedMarker: string;
+        mode: string;
+      };
+      schemaVersion: number;
+      status: string;
+      workspaceTool: {
+        allowedTools: string[];
+        commit: {
+          files: number;
+          generationId: string;
+          status: string;
+          storeId: string;
+        };
+        file: {
+          expectedContent: string;
+          path: string;
+          restoredContentMatches: boolean;
+        };
+        outsideWorkspace: {
+          attemptedPath: string;
+          existsAfterTurn: boolean;
+          policy: string;
+        };
+        restore: {
+          files: number;
+          generationId: string;
+          status: string;
+          storeId: string;
+          verification: string;
+        };
+      };
+    };
+    const workspaceRequests = requests.slice(workspaceRequestStart);
+    const workspaceEvidence = {
+      ...workspaceResult,
+      providerFixtureHost: {
+        implementation:
+          "deterministic OpenAI-compatible multi-step tool-call fixture",
+        requests: workspaceRequests
+      }
+    };
+    writeFileSync(
+      testInfo.outputPath(
+        "openclaw-workspace-tool-turn-browser-evidence.json"
+      ),
+      `${JSON.stringify(workspaceEvidence, null, 2)}\n`
+    );
+    await testInfo.attach("openclaw-workspace-tool-turn-browser-evidence", {
+      body: Buffer.from(JSON.stringify(workspaceEvidence, null, 2)),
+      contentType: "application/json"
+    });
+
+    expect(workspaceResult).toMatchObject({
+      schemaVersion: 1,
+      status: "workspace-tool-turn-pass",
+      providerFixture: {
+        expectedMarker: workspaceResponseMarker,
+        mode: "write-read-outside-rejection"
+      },
+      workspaceTool: {
+        allowedTools: ["read", "write"],
+        file: {
+          expectedContent: workspacePersistedContent,
+          path:
+            "/openclaw/.clawsembly-gateway-workspace/clawsembly-proof.txt",
+          restoredContentMatches: true
+        },
+        outsideWorkspace: {
+          attemptedPath: "/openclaw/.clawsembly-outside.txt",
+          existsAfterTurn: false,
+          policy: "workspace-only"
+        },
+        commit: {
+          files: 1,
+          status: "committed",
+          storeId: "openclaw-workspace-tool-turn"
+        },
+        restore: {
+          files: 1,
+          status: "restored",
+          storeId: "openclaw-workspace-tool-turn",
+          verification: "manifest-and-every-file-sha256"
+        }
+      }
+    });
+    expect(workspaceResult.workspaceTool.commit.generationId).toBe(
+      workspaceResult.workspaceTool.restore.generationId
+    );
+    expect(workspaceResult.client.args).toEqual([
+      "agent",
+      "--agent",
+      "main",
+      "--message",
+      workspacePrompt,
+      "--thinking",
+      "off",
+      "--timeout",
+      "120",
+      "--json"
+    ]);
+    expect(workspaceResult.client.result.stdout).toContain(
+      workspaceResponseMarker
+    );
+    expect(workspaceResult.claim).toContain("real write and read tools");
+    expect(workspaceRequests).toHaveLength(4);
+    expect(workspaceRequests.map((request) => request.toolMessageCount))
+      .toEqual([0, 1, 2, 3]);
+    expect(workspaceRequests.every(
+      (request) => request.authorizationMatches
+    )).toBe(true);
+    expect(workspaceRequests[0]?.toolNames).toEqual(
+      expect.arrayContaining(["read", "write"])
+    );
+    expect(
+      workspaceRequests[2]?.toolMessagesContainPersistedContent
+    ).toBe(true);
+    expect(
+      workspaceRequests[3]?.toolMessagesContainWorkspaceDenial
+    ).toBe(true);
   } finally {
     relay?.kill("SIGTERM");
     fixture.closeAllConnections();
@@ -324,8 +499,20 @@ async function handleFixtureRequest(
     messages?: Array<{ content?: unknown; role?: unknown }>;
     model?: unknown;
     stream?: unknown;
+    tools?: Array<{
+      function?: {
+        name?: unknown;
+      };
+    }>;
   };
   const serializedBody = JSON.stringify(body);
+  const workspaceTurn = serializedBody.includes(workspacePrompt);
+  const toolMessageCount = (body.messages ?? []).filter(
+    (message) => message.role === "tool"
+  ).length;
+  const serializedToolMessages = JSON.stringify(
+    (body.messages ?? []).filter((message) => message.role === "tool")
+  );
   requests.push({
     authorizationMatches:
       request.headers.authorization === "Bearer clawsembly-fixture-key",
@@ -339,7 +526,18 @@ async function handleFixtureRequest(
     method: request.method,
     model: body.model,
     path: requestUrl.pathname,
-    stream: body.stream
+    stream: body.stream,
+    toolMessageCount,
+    toolMessagesContainPersistedContent:
+      serializedToolMessages.includes(workspacePersistedContent),
+    toolMessagesContainWorkspaceDenial:
+      /outside|workspace|denied|not allowed|must be within/iu.test(
+        serializedToolMessages
+      ),
+    toolNames: (body.tools ?? []).map(
+      (tool) => String(tool.function?.name ?? "")
+    ),
+    workspaceTurn
   });
 
   if (body.stream === true) {
@@ -350,6 +548,54 @@ async function handleFixtureRequest(
     });
     response.flushHeaders();
     const created = 1_785_134_400;
+    let delta: Record<string, unknown>;
+    let finishReason: "stop" | "tool_calls";
+    if (workspaceTurn && toolMessageCount < 3) {
+      const toolCall = toolMessageCount === 0
+        ? {
+            id: "call_clawsembly_write_workspace",
+            name: "write",
+            arguments: {
+              path: "clawsembly-proof.txt",
+              content: workspacePersistedContent
+            }
+          }
+        : toolMessageCount === 1
+          ? {
+              id: "call_clawsembly_read_workspace",
+              name: "read",
+              arguments: {
+                path: "clawsembly-proof.txt"
+              }
+            }
+          : {
+              id: "call_clawsembly_write_outside",
+              name: "write",
+              arguments: {
+                path: "/openclaw/.clawsembly-outside.txt",
+                content: "MUST_NOT_EXIST"
+              }
+            };
+      delta = {
+        role: "assistant",
+        tool_calls: [{
+          index: 0,
+          id: toolCall.id,
+          type: "function",
+          function: {
+            name: toolCall.name,
+            arguments: JSON.stringify(toolCall.arguments)
+          }
+        }]
+      };
+      finishReason = "tool_calls";
+    } else {
+      delta = {
+        role: "assistant",
+        content: workspaceTurn ? workspaceResponseMarker : responseMarker
+      };
+      finishReason = "stop";
+    }
     await delay(75);
     response.write(`data: ${JSON.stringify({
       id: "chatcmpl-clawsembly-proof",
@@ -358,10 +604,7 @@ async function handleFixtureRequest(
       model: "clawsembly-proof",
       choices: [{
         index: 0,
-        delta: {
-          role: "assistant",
-          content: responseMarker
-        },
+        delta,
         finish_reason: null
       }]
     })}\n\n`);
@@ -374,7 +617,7 @@ async function handleFixtureRequest(
       choices: [{
         index: 0,
         delta: {},
-        finish_reason: "stop"
+        finish_reason: finishReason
       }],
       usage: {
         prompt_tokens: 1,

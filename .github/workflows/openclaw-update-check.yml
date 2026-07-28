@@ -1,0 +1,82 @@
+name: Check pinned OpenClaw release
+
+on:
+  schedule:
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: openclaw-update-check
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out Clawsembly Kernel
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 24.18.0
+
+      - name: Compare the pinned and latest official releases
+        run: node scripts/check-openclaw-update.mjs > openclaw-update.json
+
+      - name: Publish the update report
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '## OpenClaw release check'
+            echo
+            echo '```json'
+            cat openclaw-update.json
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Create or refresh the upgrade issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! jq -e '.updateAvailable == true' \
+            openclaw-update.json >/dev/null
+          then
+            exit 0
+          fi
+          current="$(jq -r '.current.version' openclaw-update.json)"
+          latest="$(jq -r '.latest.version' openclaw-update.json)"
+          title="Evaluate OpenClaw ${latest} for the browser kernel"
+          body_file="${RUNNER_TEMP}/openclaw-update-issue.md"
+          {
+            echo "The official npm latest tag moved from \`${current}\` to \`${latest}\`."
+            echo
+            echo "This is a compatibility evaluation, not an automatic version bump."
+            echo "The artifact, package graph, lifecycle effects, reached Node APIs,"
+            echo "workspace tools, Gateway health, OPFS recovery, and self-hosted"
+            echo "agent turn must all be regenerated and proven before merge."
+            echo
+            echo '```json'
+            cat openclaw-update.json
+            echo '```'
+          } > "${body_file}"
+          issue="$(
+            gh issue list \
+              --state open \
+              --search "${title} in:title" \
+              --json number,title \
+              --jq ".[] | select(.title == \"${title}\") | .number" \
+              | head -n 1
+          )"
+          if test -n "${issue}"; then
+            gh issue edit "${issue}" --body-file "${body_file}"
+          else
+            gh issue create --title "${title}" --body-file "${body_file}"
+          fi

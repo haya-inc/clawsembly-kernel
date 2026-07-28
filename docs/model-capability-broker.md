@@ -21,6 +21,9 @@ The broker:
   requests, and temperature zero;
 - caps request and response bodies at 2 MiB;
 - permits one concurrent request and a bounded lifetime request budget;
+- expires the guest capability after a bounded TTL (300 seconds by default);
+- exposes a separate loopback-only revocation operation authenticated by a
+  distinct host-admin token that is never given to the guest;
 - discards guest headers other than the validated body semantics;
 - replaces the guest capability with the model-service bearer credential only
   in the fixed upstream request;
@@ -61,13 +64,28 @@ cargo build --locked --release \
   --manifest-path provider-broker/Cargo.toml
 
 CLAWSEMBLY_PROVIDER_BROKER_TOKEN=replace-with-operation-capability \
+CLAWSEMBLY_PROVIDER_ADMIN_TOKEN=replace-with-host-only-admin-token \
 CLAWSEMBLY_PROVIDER_API_KEY=replace-with-model-service-key \
   provider-broker/target/release/clawsembly-provider-broker \
   --upstream http://127.0.0.1:18795/v1/chat/completions \
   --allow-loopback-http-upstream \
   --model qwen2.5-0.5b-instruct \
+  --capability-ttl-seconds 300 \
   --max-requests 1
 ```
+
+The host can revoke the browser-held capability immediately:
+
+```bash
+curl --fail-with-body \
+  -X POST \
+  -H "Authorization: Bearer ${CLAWSEMBLY_PROVIDER_ADMIN_TOKEN}" \
+  http://127.0.0.1:18794/v1/capability/revoke
+```
+
+The operation capability and admin token must differ. After revocation, an
+otherwise valid guest request receives HTTP 403 with
+`capability_revoked` and never reaches the provider.
 
 `--upstream` is required. A non-loopback listener, an ambient HTTP upstream,
 an IP-literal HTTPS upstream, a redirectable URL shape, a malformed capability,
@@ -86,7 +104,8 @@ operation capability, and observes:
 4. no model-service credential in the browser URL, guest evidence, process
    logs, or uploaded artifacts; and
 5. exact model, endpoint, zero-temperature sampling, concurrency, request-size,
-   response-size, and request-count bounds independent of OpenClaw.
+   response-size, request-count, and TTL bounds independent of OpenClaw; and
+6. host-only revocation followed by rejection of the former guest token.
 
 The assistant marker is not searched recursively. OpenClaw retains the input
 under metadata such as `finalPromptText`, so recursive matching can falsely

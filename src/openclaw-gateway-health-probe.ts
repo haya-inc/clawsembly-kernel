@@ -6,7 +6,10 @@ import {
 } from "./openclaw-install-lifecycle";
 import { isCompletedAgentTurnResponse } from
   "./openclaw-agent-turn-response";
-import { restoreDirectoryTreeFromOpfs } from "./opfs-directory-store";
+import {
+  commitDirectoryTreeToOpfs,
+  restoreDirectoryTreeFromOpfs
+} from "./opfs-directory-store";
 
 type OpenClawPackage = {
   engines?: {
@@ -286,10 +289,12 @@ const imageUrl = searchParams.get("image") ?? "/openclaw.clawfs";
 const requestedProofKind = searchParams.get("proof");
 const proofKind = requestedProofKind === "agent-turn"
   || requestedProofKind === "self-hosted-agent-turn"
+  || requestedProofKind === "workspace-tool-turn"
   ? requestedProofKind
   : "health";
 const agentTurnProof = proofKind !== "health";
 const selfHostedModelProof = proofKind === "self-hosted-agent-turn";
+const workspaceToolProof = proofKind === "workspace-tool-turn";
 const selfHostedModelCapability = selfHostedModelProof
   ? consumeSelfHostedModelCapability()
   : undefined;
@@ -327,6 +332,14 @@ const providerDisplayName = selfHostedModelProof
   : "Clawsembly deterministic proof fixture";
 const selfHostedModelTemperature = 0;
 const selfHostedModelToolDeny = ["*"];
+const workspaceAllowedTools = ["read", "write"];
+const workspaceStoreId = "openclaw-workspace-tool-turn";
+const workspaceRelativeFile = "clawsembly-proof.txt";
+const workspaceMountedRoot = "/.clawsembly-gateway-workspace";
+const workspaceMountedFile =
+  `${workspaceMountedRoot}/${workspaceRelativeFile}`;
+const workspacePersistedContent = "CLAWSEMBLY_WORKSPACE_PERSISTED";
+const workspaceOutsideFile = "/.clawsembly-outside.txt";
 const sensitiveValues = selfHostedModelProof
   ? [
       relayToken,
@@ -335,12 +348,21 @@ const sensitiveValues = selfHostedModelProof
       (value): value is string => typeof value === "string" && value.length > 0
     )
   : [];
-const agentTurnMarker = "CLAWSEMBLY_AGENT_TURN_OK";
-const agentTurnPrompt =
-  "A human is waiting for a visible answer. Reply with exactly the text "
-  + "between the tags and nothing else: <answer>"
-  + agentTurnMarker
-  + "</answer>";
+const agentTurnMarker = workspaceToolProof
+  ? "CLAWSEMBLY_WORKSPACE_TOOL_OK"
+  : "CLAWSEMBLY_AGENT_TURN_OK";
+const agentTurnPrompt = workspaceToolProof
+  ? "Use the write tool to create clawsembly-proof.txt with exactly "
+    + `${workspacePersistedContent}. Then use the read tool to verify it. `
+    + "Next, deliberately try the write tool once on the absolute path "
+    + "/openclaw/.clawsembly-outside.txt with the text MUST_NOT_EXIST and "
+    + "observe that workspace-only policy rejects it. Only after all three "
+    + "tool calls, reply with exactly "
+    + `<answer>${agentTurnMarker}</answer> and nothing else.`
+  : "A human is waiting for a visible answer. Reply with exactly the text "
+    + "between the tags and nothing else: <answer>"
+    + agentTurnMarker
+    + "</answer>";
 const agentTurnTimeoutSeconds = 120;
 const readinessMarker = "http server listening";
 const clientLaunchMarker = "agent runtime plugins pre-warmed";
@@ -516,6 +538,11 @@ async function runProbe(): Promise<void> {
         + "inference process remain outside the browser and both WASIX "
         + "guests. Durable fresh-browser OPFS recovery is proven separately "
         + "in the same public build."
+      : workspaceToolProof
+        ? "This proves unmodified OpenClaw tool execution against a "
+          + "workspace-only browser filesystem and a manifest-and-file-hash "
+          + "verified OPFS recovery into a fresh guest Directory. The "
+          + "self-hosted OSS model proof remains a separate bounded proof."
       : proofKind === "agent-turn"
         ? "This proves the real unmodified OpenClaw agent path against a "
           + "deterministic OpenAI-compatible fixture under the source-declared "
@@ -551,7 +578,7 @@ async function runProbe(): Promise<void> {
     if (!restoreStore) {
       await gatewayOpenclaw.createDir(mountedGatewayStateRoot);
     }
-    await gatewayOpenclaw.createDir("/.clawsembly-gateway-workspace");
+    await gatewayOpenclaw.createDir(workspaceMountedRoot);
     const module = await WebAssembly.compile(edgeBytes);
     const moduleWithBytes = {
       module,
@@ -643,7 +670,16 @@ async function runProbe(): Promise<void> {
                 deny: selfHostedModelToolDeny
               }
             }
-          : {}),
+          : workspaceToolProof
+            ? {
+                tools: {
+                  allow: workspaceAllowedTools,
+                  fs: {
+                    workspaceOnly: true
+                  }
+                }
+              }
+            : {}),
         ...(agentTurnProof
           ? {
               models: {
@@ -833,6 +869,8 @@ async function runProbe(): Promise<void> {
     status.textContent = agentTurnProof
       ? selfHostedModelProof
         ? "Gateway ready; starting a self-hosted OSS model turn…"
+        : workspaceToolProof
+          ? "Gateway ready; starting an OpenClaw workspace tool turn…"
         : "Gateway ready; starting an official OpenClaw agent turn…"
       : "Gateway ready; starting the official OpenClaw health client…";
     const clientArgs = agentTurnProof
@@ -1061,12 +1099,97 @@ async function runProbe(): Promise<void> {
     const gatewayOutput = clientAttempts.find(
       (attempt) => attempt.gatewayOutput !== undefined
     )?.gatewayOutput;
+    let workspaceTool:
+      | {
+          allowedTools: string[];
+          commit: Awaited<ReturnType<
+            typeof commitDirectoryTreeToOpfs
+          >>;
+          file: {
+            bytes: number;
+            expectedContent: string;
+            path: string;
+            restoredContentMatches: true;
+            sha256: string;
+          };
+          outsideWorkspace: {
+            attemptedPath: string;
+            existsAfterTurn: false;
+            policy: "workspace-only";
+          };
+          restore: Awaited<ReturnType<
+            typeof restoreDirectoryTreeFromOpfs
+          >>;
+        }
+      | undefined;
+    if (proofPassed && workspaceToolProof) {
+      const workspaceBytes = new Uint8Array(
+        await gatewayOpenclaw.readFile(workspaceMountedFile)
+      );
+      const workspaceText = new TextDecoder().decode(workspaceBytes);
+      if (workspaceText.trim() !== workspacePersistedContent) {
+        throw new Error(
+          "OpenClaw workspace tool wrote unexpected proof content"
+        );
+      }
+      let outsideWorkspaceExists = false;
+      try {
+        await gatewayOpenclaw.readFile(workspaceOutsideFile);
+        outsideWorkspaceExists = true;
+      } catch {
+        // A workspace-only tool call must not create this file.
+      }
+      if (outsideWorkspaceExists) {
+        throw new Error(
+          "OpenClaw workspace-only policy allowed an out-of-workspace write"
+        );
+      }
+      status.textContent =
+        "Tool turn complete; committing workspace to OPFS…";
+      const commit = await commitDirectoryTreeToOpfs({
+        directory: gatewayOpenclaw,
+        rootPath: workspaceMountedRoot,
+        storeId: workspaceStoreId
+      });
+      const restoredDirectory = new Directory(packageFiles);
+      const restore = await restoreDirectoryTreeFromOpfs({
+        directory: restoredDirectory,
+        rootPath: workspaceMountedRoot,
+        storeId: workspaceStoreId
+      });
+      const restoredBytes = new Uint8Array(
+        await restoredDirectory.readFile(workspaceMountedFile)
+      );
+      const restoredText = new TextDecoder().decode(restoredBytes);
+      if (restoredText !== workspaceText) {
+        throw new Error("Restored OpenClaw workspace content mismatch");
+      }
+      workspaceTool = {
+        allowedTools: workspaceAllowedTools,
+        file: {
+          bytes: workspaceBytes.byteLength,
+          expectedContent: workspacePersistedContent,
+          path: `${gatewayWorkspace}/${workspaceRelativeFile}`,
+          restoredContentMatches: true,
+          sha256: await sha256(workspaceBytes)
+        },
+        outsideWorkspace: {
+          attemptedPath: `/openclaw${workspaceOutsideFile}`,
+          existsAfterTurn: false,
+          policy: "workspace-only"
+        },
+        commit,
+        restore
+      };
+    }
     const evidence = {
       schemaVersion: 1,
       status: proofPassed
         ? agentTurnProof
           ? selfHostedModelProof
             ? "self-hosted-agent-turn-pass"
+            : workspaceToolProof
+              ? "workspace-tool-turn-pass"
             : "agent-turn-pass"
           : "gateway-health-pass"
         : "blocked",
@@ -1085,6 +1208,11 @@ async function runProbe(): Promise<void> {
               + "Gateway, and received an actual Qwen response from a pinned "
               + "self-hosted llama.cpp process while only an opaque operation "
               + "capability entered the browser."
+            : workspaceToolProof
+              ? "The unmodified OpenClaw Gateway executed real write and read "
+                + "tools inside a workspace-only browser filesystem, rejected "
+                + "an out-of-workspace write, and recovered the committed "
+                + "workspace from OPFS into a fresh guest Directory."
             : "A second browser guest executed the exact official OpenClaw "
               + "CLI, submitted a real agent turn through the unmodified "
               + "Gateway, and received the deterministic model reply through "
@@ -1105,6 +1233,7 @@ async function runProbe(): Promise<void> {
       openclaw: openclawEvidence,
       installLifecycle,
       ...(persistentStateRestore ? { persistentStateRestore } : {}),
+      ...(workspaceTool ? { workspaceTool } : {}),
       network: networkEvidence,
       isolation: isolationEvidence,
       launchHarness: launchHarnessEvidence,
@@ -1154,13 +1283,16 @@ async function runProbe(): Promise<void> {
         stdout: gatewayStdout.snapshot(),
         stderr: gatewayStderr.snapshot()
       },
-      ...(proofKind === "agent-turn"
+      ...(proofKind === "agent-turn" || workspaceToolProof
         ? {
             providerFixture: {
               api: "openai-completions",
               baseUrl: providerBaseUrl,
               expectedMarker: agentTurnMarker,
-              model: `${providerName}/${providerModel}`
+              model: `${providerName}/${providerModel}`,
+              mode: workspaceToolProof
+                ? "write-read-outside-rejection"
+                : "assistant-response"
             }
           }
         : {}),
@@ -1175,7 +1307,9 @@ async function runProbe(): Promise<void> {
                   `POST ${providerBaseUrl}/chat/completions`,
                 model: providerModel,
                 recorded: false,
-                streamingRequired: true
+                revocable: true,
+                streamingRequired: true,
+                ttlSeconds: 300
               },
               expectedMarker: agentTurnMarker,
               generation: {
@@ -1230,12 +1364,15 @@ async function runProbe(): Promise<void> {
               capabilityBroker: {
                 implementation: "clawsembly-provider-broker",
                 security: {
+                  capabilityTtlSeconds: 300,
                   exactEndpointAndModel: true,
+                  hostOnlyRevocation: true,
                   loopbackOnly: true,
                   maxConcurrency: 1,
                   maxRequestBytes: 2_097_152,
                   maxRequests: 1,
                   maxResponseBytes: 2_097_152,
+                  revocationPath: "/v1/capability/revoke",
                   redirects: "disabled",
                   systemProxy: "disabled"
                 }
@@ -1272,6 +1409,8 @@ async function runProbe(): Promise<void> {
       ? agentTurnProof
         ? selfHostedModelProof
           ? "PASS · Unmodified OpenClaw completed a self-hosted model turn"
+          : workspaceToolProof
+            ? "PASS · OpenClaw workspace tools persisted and restored"
           : "PASS · Unmodified OpenClaw completed a real agent turn"
         : "PASS · Official OpenClaw client completed Gateway health RPC"
       : "MILESTONE · Gateway client blocker captured";
