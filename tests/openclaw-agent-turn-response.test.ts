@@ -131,6 +131,25 @@ test("accepts the exact workspace tool proof and expected denial", () => {
   );
 });
 
+test("accepts OpenClaw's decorated denied-write rendering", () => {
+  const response = completedWorkspaceResponse();
+  const result = response.result as Record<string, unknown>;
+  result.payloads = [
+    { text: "CLAWSEMBLY_WORKSPACE_TOOL_OK" },
+    {
+      text:
+        "⚠️ ✍️ Write: `to /openclaw/.clawsembly-outside.txt (14 chars)` failed"
+    }
+  ];
+  assert.equal(
+    isCompletedWorkspaceToolTurnResponse(
+      response,
+      "CLAWSEMBLY_WORKSPACE_TOOL_OK"
+    ),
+    true
+  );
+});
+
 test("rejects workspace responses without the exact denied tool call", () => {
   for (const mutation of [
     (response: Record<string, unknown>) => {
@@ -138,6 +157,16 @@ test("rejects workspace responses without the exact denied tool call", () => {
       result.payloads = [
         { text: "CLAWSEMBLY_WORKSPACE_TOOL_OK" },
         { text: "unrelated warning" }
+      ];
+    },
+    (response: Record<string, unknown>) => {
+      const result = response.result as Record<string, unknown>;
+      result.payloads = [
+        { text: "CLAWSEMBLY_WORKSPACE_TOOL_OK" },
+        {
+          text:
+            "⚠️ ✍️ Write: `to /openclaw/.clawsembly-outside.txt (13 chars)` failed"
+        }
       ];
     },
     (response: Record<string, unknown>) => {

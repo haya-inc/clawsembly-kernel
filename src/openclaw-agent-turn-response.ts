@@ -55,8 +55,10 @@ export type CompletedWorkspaceToolTurnResponse = {
   summary: "completed";
 };
 
-const workspaceDeniedWriteText =
-  "⚠️ Write: `to /openclaw/.clawsembly-outside.txt` failed";
+const workspaceDeniedWriteTexts = new Set([
+  "⚠️ Write: `to /openclaw/.clawsembly-outside.txt` failed",
+  "⚠️ ✍️ Write: `to /openclaw/.clawsembly-outside.txt (14 chars)` failed"
+]);
 
 function isJsonRecord(value: unknown): value is JsonRecord {
   return typeof value === "object"
@@ -66,6 +68,11 @@ function isJsonRecord(value: unknown): value is JsonRecord {
 
 function isExactText(value: unknown, expectedText: string): value is string {
   return typeof value === "string" && value.trim() === expectedText;
+}
+
+function isWorkspaceDeniedWriteText(value: unknown): value is string {
+  return typeof value === "string"
+    && workspaceDeniedWriteTexts.has(value.trim());
 }
 
 /**
@@ -126,7 +133,8 @@ export function isCompletedAgentTurnResponse(
  * OpenClaw appends one warning payload and marks the replay invalid when the
  * deliberately forbidden write fails. Treating that expected warning as a
  * normal assistant response would weaken the ordinary agent-turn contract, so
- * this validator accepts only the exact marker plus that one denial.
+ * this validator accepts only the exact marker plus one of the two exact
+ * official renderings observed from OpenClaw's plain and decorated reporters.
  */
 export function isCompletedWorkspaceToolTurnResponse(
   value: unknown,
@@ -154,7 +162,7 @@ export function isCompletedWorkspaceToolTurnResponse(
       (payload) => isExactText(payload.text, expectedText)
     ).length !== 1
     || payloads.filter(
-      (payload) => isExactText(payload.text, workspaceDeniedWriteText)
+      (payload) => isWorkspaceDeniedWriteText(payload.text)
     ).length !== 1
     || !isJsonRecord(meta)
     || meta.aborted !== false
