@@ -1,4 +1,8 @@
-import { expect, test } from "@playwright/test";
+import {
+  expect,
+  test,
+  type BrowserContext
+} from "@playwright/test";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, writeFileSync } from "node:fs";
@@ -105,11 +109,14 @@ const agentTurnPrompt =
   + responseMarker
   + "</answer>";
 const runtimeDebug = process.env.CLAWSEMBLY_WASMER_DEBUG === "1";
+const selectedScenario =
+  process.env.CLAWSEMBLY_OPENCLAW_AGENT_TURN_SCENARIO ?? "both";
 const proofTimeoutMs = Number(
   process.env.CLAWSEMBLY_OPENCLAW_AGENT_TURN_TIMEOUT_MS ?? "240000"
 );
 
 test("unmodified OpenClaw completes an agent turn through capability egress", async ({
+  browser,
   page
 }, testInfo) => {
   test.skip(
@@ -127,6 +134,7 @@ test("unmodified OpenClaw completes an agent turn through capability egress", as
   const requests: FixtureRequest[] = [];
   const fixture = await startFixture(requests);
   let relay: ChildProcessWithoutNullStreams | undefined;
+  let workspaceContext: BrowserContext | undefined;
   try {
     relay = await startRelay(path.resolve(relayPath!));
     await page.route((url) => url.pathname === "/edgejs.wasm", async (route) => {
@@ -147,6 +155,7 @@ test("unmodified OpenClaw completes an agent turn through capability egress", as
         console.log(`[browser:${message.type()}] ${message.text()}`);
       }
     });
+    if (selectedScenario !== "workspace-tool-turn") {
     const pageError = page.waitForEvent("pageerror");
     await page.goto(
       "/openclaw-agent-turn-probe.html"
@@ -291,10 +300,41 @@ test("unmodified OpenClaw completes an agent turn through capability egress", as
     expect(completionRequest?.messageCount).toBeGreaterThanOrEqual(2);
     expect(completionRequest?.messageRoles).toContain("system");
     expect(completionRequest?.messageRoles).toContain("user");
+    }
+
+    if (selectedScenario === "agent-turn") return;
 
     const workspaceRequestStart = requests.length;
-    const workspacePageError = page.waitForEvent("pageerror");
-    await page.goto(
+    let workspacePage = page;
+    if (selectedScenario !== "workspace-tool-turn") {
+      await page.context().close();
+      workspaceContext = await browser.newContext({
+        baseURL: "http://127.0.0.1:4173"
+      });
+      workspacePage = await workspaceContext.newPage();
+      await workspacePage.route(
+        (url) => url.pathname === "/edgejs.wasm",
+        async (route) => {
+          await route.fulfill({
+            contentType: "application/wasm",
+            path: path.resolve(edgeArtifactPath!)
+          });
+        }
+      );
+      workspacePage.on("console", (message) => {
+        if (
+          (runtimeDebug
+            && /wasmer_js::(?:run|tasks|net)|CLAWSEMBLY/iu.test(
+              message.text()
+            ))
+          || /getaddrinfo|permission|denied|connect_tcp/iu.test(message.text())
+        ) {
+          console.log(`[browser:${message.type()}] ${message.text()}`);
+        }
+      });
+    }
+    const workspacePageError = workspacePage.waitForEvent("pageerror");
+    await workspacePage.goto(
       "/openclaw-agent-turn-probe.html"
       + "?artifact=/edgejs.wasm"
       + "&image=/openclaw.clawfs"
@@ -304,7 +344,7 @@ test("unmodified OpenClaw completes an agent turn through capability egress", as
       + (runtimeDebug ? "&debug=trace" : "")
       + `&timeoutMs=${proofTimeoutMs}`
     );
-    const workspaceStatus = page.locator("#status");
+    const workspaceStatus = workspacePage.locator("#status");
     const workspaceOutcome = await Promise.race([
       expect.poll(
         () => workspaceStatus.getAttribute("data-state"),
@@ -319,7 +359,9 @@ test("unmodified OpenClaw completes an agent turn through capability egress", as
     if (workspaceOutcome.kind === "pageerror") {
       throw workspaceOutcome.error;
     }
-    const workspaceResultText = await page.locator("#result").innerText();
+    const workspaceResultText = await workspacePage
+      .locator("#result")
+      .innerText();
     if (await workspaceStatus.getAttribute("data-state") === "fail") {
       throw new Error(workspaceResultText);
     }
@@ -457,6 +499,7 @@ test("unmodified OpenClaw completes an agent turn through capability egress", as
       workspaceRequests[3]?.toolMessagesContainWorkspaceDenial
     ).toBe(true);
   } finally {
+    await workspaceContext?.close();
     relay?.kill("SIGTERM");
     fixture.closeAllConnections();
     await new Promise<void>((resolve) => fixture.close(() => resolve()));

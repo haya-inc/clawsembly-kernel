@@ -1,0 +1,377 @@
+diff --git a/src/tcp_pair.rs b/src/tcp_pair.rs
+index f271abe..7038aa6 100644
+--- a/src/tcp_pair.rs
++++ b/src/tcp_pair.rs
+@@ -28,16 +28,21 @@ struct SocketBufferState {
+     buffer: RingBuffer<'static, u8>,
+     push_handler: Option<ArcInterestHandler>,
+     pull_handler: Option<ArcInterestHandler>,
+-    wakers: Vec<Waker>,
++    read_wakers: Vec<Waker>,
++    write_wakers: Vec<Waker>,
+     state: State,
+-    // This flag prevents a poll write ready storm
+-    halt_immediate_poll_write: bool,
+ }
+ 
+ impl SocketBufferState {
+-    fn add_waker(&mut self, waker: &Waker) {
+-        if !self.wakers.iter().any(|w| w.will_wake(waker)) {
+-            self.wakers.push(waker.clone());
++    fn add_read_waker(&mut self, waker: &Waker) {
++        if !self.read_wakers.iter().any(|w| w.will_wake(waker)) {
++            self.read_wakers.push(waker.clone());
++        }
++    }
++
++    fn add_write_waker(&mut self, waker: &Waker) {
++        if !self.write_wakers.iter().any(|w| w.will_wake(waker)) {
++            self.write_wakers.push(waker.clone());
+         }
+     }
+ }
+@@ -67,34 +72,44 @@ impl SocketBuffer {
+                 buffer: RingBuffer::new(vec![0; max_size]),
+                 push_handler: None,
+                 pull_handler: None,
+-                wakers: Vec::new(),
++                read_wakers: Vec::new(),
++                write_wakers: Vec::new(),
+                 state: State::Alive,
+-                halt_immediate_poll_write: false,
+             })),
+             dead_on_drop: false,
+         }
+     }
+ 
+     pub fn set_push_handler(&self, mut handler: ArcInterestHandler) {
+-        let mut state = self.state.lock().unwrap();
+-        if state.state != State::Alive {
++        let (notify_closed, notify_readable) = {
++            let mut state = self.state.lock().unwrap();
++            let notify_closed = state.state != State::Alive;
++            let notify_readable = !state.buffer.is_empty();
++            state.push_handler.replace(handler.clone());
++            (notify_closed, notify_readable)
++        };
++        if notify_closed {
+             handler.push_interest(InterestType::Closed);
+         }
+-        if !state.buffer.is_empty() {
++        if notify_readable {
+             handler.push_interest(InterestType::Readable);
+         }
+-        state.push_handler.replace(handler);
+     }
+ 
+     pub fn set_pull_handler(&self, mut handler: ArcInterestHandler) {
+-        let mut state = self.state.lock().unwrap();
+-        if state.state != State::Alive {
++        let (notify_closed, notify_writable) = {
++            let mut state = self.state.lock().unwrap();
++            let notify_closed = state.state != State::Alive;
++            let notify_writable = !state.buffer.is_full();
++            state.pull_handler.replace(handler.clone());
++            (notify_closed, notify_writable)
++        };
++        if notify_closed {
+             handler.push_interest(InterestType::Closed);
+         }
+-        if !state.buffer.is_full() && state.pull_handler.is_none() {
++        if notify_writable {
+             handler.push_interest(InterestType::Writable);
+         }
+-        state.pull_handler.replace(handler);
+     }
+ 
+     pub fn clear_push_handler(&self) {
+@@ -114,9 +129,7 @@ impl SocketBuffer {
+         }
+         match state.state {
+             State::Alive => {
+-                if !state.wakers.iter().any(|w| w.will_wake(cx.waker())) {
+-                    state.wakers.push(cx.waker().clone());
+-                }
++                state.add_read_waker(cx.waker());
+                 Poll::Pending
+             }
+             State::Dead => {
+@@ -134,13 +147,10 @@ impl SocketBuffer {
+         let mut state = self.state.lock().unwrap();
+         match state.state {
+             State::Alive => {
+-                if !state.buffer.is_full() && !state.halt_immediate_poll_write {
+-                    state.halt_immediate_poll_write = true;
++                if !state.buffer.is_full() {
+                     return Poll::Ready(Ok(state.buffer.window()));
+                 }
+-                if !state.wakers.iter().any(|w| w.will_wake(cx.waker())) {
+-                    state.wakers.push(cx.waker().clone());
+-                }
++                state.add_write_waker(cx.waker());
+                 Poll::Pending
+             }
+             State::Dead => {
+@@ -155,15 +165,24 @@ impl SocketBuffer {
+     }
+ 
+     fn set_state(&self, new_state: State) {
+-        let mut state = self.state.lock().unwrap();
+-        state.state = new_state;
+-        if let Some(handler) = state.pull_handler.as_mut() {
++        let (mut pull_handler, mut push_handler, read_wakers, write_wakers) = {
++            let mut state = self.state.lock().unwrap();
++            state.state = new_state;
++            (
++                state.pull_handler.clone(),
++                state.push_handler.clone(),
++                state.read_wakers.drain(..).collect::<Vec<_>>(),
++                state.write_wakers.drain(..).collect::<Vec<_>>(),
++            )
++        };
++        read_wakers.into_iter().for_each(Waker::wake);
++        write_wakers.into_iter().for_each(Waker::wake);
++        if let Some(handler) = pull_handler.as_mut() {
+             handler.push_interest(InterestType::Closed);
+         }
+-        if let Some(handler) = state.push_handler.as_mut() {
++        if let Some(handler) = push_handler.as_mut() {
+             handler.push_interest(InterestType::Closed);
+         }
+-        state.wakers.drain(..).for_each(|w| w.wake());
+     }
+ 
+     fn state(&self) -> State {
+@@ -177,34 +196,38 @@ impl SocketBuffer {
+         all_or_nothing: bool,
+         waker: Option<&Waker>,
+     ) -> crate::Result<usize> {
+-        let mut state = self.state.lock().unwrap();
+-        if state.state != State::Alive {
+-            return Err(NetworkError::ConnectionReset);
+-        }
+-        state.halt_immediate_poll_write = false;
+-        let available = state.buffer.window();
+-        if available == 0 {
+-            if let Some(waker) = waker {
+-                state.add_waker(waker)
++        let (amt, mut handler, read_wakers) = {
++            let mut state = self.state.lock().unwrap();
++            if state.state != State::Alive {
++                return Err(NetworkError::ConnectionReset);
+             }
+-            return Err(NetworkError::WouldBlock);
+-        }
+-        if data.len() > available {
+-            if all_or_nothing {
++            let available = state.buffer.window();
++            if available == 0 {
+                 if let Some(waker) = waker {
+-                    state.add_waker(waker)
++                    state.add_write_waker(waker);
+                 }
+                 return Err(NetworkError::WouldBlock);
+             }
+-            let amt = state.buffer.enqueue_slice(&data[..available]);
+-            return Ok(amt);
+-        }
+-        let amt = state.buffer.enqueue_slice(data);
++            if data.len() > available && all_or_nothing {
++                if let Some(waker) = waker {
++                    state.add_write_waker(waker);
++                }
++                return Err(NetworkError::WouldBlock);
++            }
++            let amt = state
++                .buffer
++                .enqueue_slice(&data[..data.len().min(available)]);
++            (
++                amt,
++                state.push_handler.clone(),
++                state.read_wakers.drain(..).collect::<Vec<_>>(),
++            )
++        };
+ 
+-        if let Some(handler) = state.push_handler.as_mut() {
++        read_wakers.into_iter().for_each(Waker::wake);
++        if let Some(handler) = handler.as_mut() {
+             handler.push_interest(InterestType::Readable);
+         }
+-        state.wakers.drain(..).for_each(|w| w.wake());
+         Ok(amt)
+     }
+ 
+@@ -240,52 +263,60 @@ impl SocketBuffer {
+         peek: bool,
+         waker: Option<&Waker>,
+     ) -> crate::Result<usize> {
+-        let mut state = self.state.lock().unwrap();
+-        if state.buffer.is_empty() {
+-            return match state.state {
+-                State::Alive => {
+-                    if let Some(waker) = waker {
+-                        state.add_waker(waker)
++        let (amt, mut pull_handler, mut push_handler, write_wakers, still_readable) = {
++            let mut state = self.state.lock().unwrap();
++            if state.buffer.is_empty() {
++                return match state.state {
++                    State::Alive => {
++                        if let Some(waker) = waker {
++                            state.add_read_waker(waker);
++                        }
++                        Err(NetworkError::WouldBlock)
+                     }
+-                    Err(NetworkError::WouldBlock)
+-                }
+-                State::Dead => {
+-                    tracing::trace!("try_read: socket is dead");
+-                    // Note: Returning `ConnectionReset` here may seem logical as other functions return this
+-                    // however this code path is not always handled properly. In particular `tokio` inside
+-                    // WASIX will panic if it receives this code.
+-                    return Ok(0);
+-                }
+-                State::Closed | State::Shutdown => {
+-                    tracing::trace!("try_read: socket is closed or shutdown");
+-                    return Ok(0);
+-                }
+-            };
+-        }
++                    State::Dead => {
++                        tracing::trace!("try_read: socket is dead");
++                        // Note: Returning `ConnectionReset` here may seem logical as other functions return this
++                        // however this code path is not always handled properly. In particular `tokio` inside
++                        // WASIX will panic if it receives this code.
++                        return Ok(0);
++                    }
++                    State::Closed | State::Shutdown => {
++                        tracing::trace!("try_read: socket is closed or shutdown");
++                        return Ok(0);
++                    }
++                };
++            }
+ 
+-        let buf: &mut [u8] = unsafe { std::mem::transmute(buf) };
+-        let amt = buf.len().min(state.buffer.len());
+-        let amt = if peek {
+-            state.buffer.read_allocated(0, &mut buf[..amt])
+-        } else {
+-            state.buffer.dequeue_slice(&mut buf[..amt])
++            let buf: &mut [u8] = unsafe { std::mem::transmute(buf) };
++            let amt = buf.len().min(state.buffer.len());
++            let amt = if peek {
++                state.buffer.read_allocated(0, &mut buf[..amt])
++            } else {
++                state.buffer.dequeue_slice(&mut buf[..amt])
++            };
++            (
++                amt,
++                state.pull_handler.clone(),
++                state.push_handler.clone(),
++                state.write_wakers.drain(..).collect::<Vec<_>>(),
++                !state.buffer.is_empty(),
++            )
+         };
+ 
+-        if let Some(handler) = state.pull_handler.as_mut() {
++        write_wakers.into_iter().for_each(Waker::wake);
++        if let Some(handler) = pull_handler.as_mut() {
+             handler.push_interest(InterestType::Writable);
+         }
+-        if !state.buffer.is_empty() {
+-            if let Some(handler) = state.push_handler.as_mut() {
++        if still_readable {
++            if let Some(handler) = push_handler.as_mut() {
+                 handler.push_interest(InterestType::Readable);
+             }
+         }
+-        state.wakers.drain(..).for_each(|w| w.wake());
+         Ok(amt)
+     }
+ 
+     pub fn set_max_size(&self, new_size: usize) {
+         let mut state = self.state.lock().unwrap();
+-        state.halt_immediate_poll_write = false;
+ 
+         let mut existing: Vec<u8> = vec![0; state.buffer.len()];
+         if !state.buffer.is_empty() {
+@@ -395,6 +426,80 @@ impl TcpSocketHalf {
+     }
+ }
+ 
++#[cfg(test)]
++mod tests {
++    use super::SocketBuffer;
++    use crate::NetworkError;
++    use std::sync::{
++        atomic::{AtomicUsize, Ordering},
++        Arc,
++    };
++    use std::task::{Context, Poll, Wake, Waker};
++
++    #[derive(Debug, Default)]
++    struct WakeCounter(AtomicUsize);
++
++    impl Wake for WakeCounter {
++        fn wake(self: Arc<Self>) {
++            self.0.fetch_add(1, Ordering::SeqCst);
++        }
++
++        fn wake_by_ref(self: &Arc<Self>) {
++            self.0.fetch_add(1, Ordering::SeqCst);
++        }
++    }
++
++    fn counting_waker() -> (Arc<WakeCounter>, Waker) {
++        let counter = Arc::new(WakeCounter::default());
++        let waker = Waker::from(counter.clone());
++        (counter, waker)
++    }
++
++    #[test]
++    fn write_readiness_remains_level_triggered_until_the_buffer_is_full() {
++        let buffer = SocketBuffer::new(4);
++        let (_, waker) = counting_waker();
++        let mut context = Context::from_waker(&waker);
++
++        assert!(matches!(
++            buffer.poll_write_ready(&mut context),
++            Poll::Ready(Ok(4))
++        ));
++        assert!(matches!(
++            buffer.poll_write_ready(&mut context),
++            Poll::Ready(Ok(4))
++        ));
++
++        assert_eq!(buffer.try_send(b"full", false, None), Ok(4));
++        assert!(matches!(
++            buffer.poll_write_ready(&mut context),
++            Poll::Pending
++        ));
++    }
++
++    #[test]
++    fn partial_send_wakes_a_waiting_reader() {
++        let buffer = SocketBuffer::new(2);
++        let (counter, waker) = counting_waker();
++        let mut context = Context::from_waker(&waker);
++
++        assert!(matches!(
++            buffer.poll_read_ready(&mut context),
++            Poll::Pending
++        ));
++        assert_eq!(buffer.try_send(b"long", false, None), Ok(2));
++        assert_eq!(counter.0.load(Ordering::SeqCst), 1);
++        assert!(matches!(
++            buffer.poll_read_ready(&mut context),
++            Poll::Ready(Ok(2))
++        ));
++        assert_eq!(
++            buffer.try_send(b"x", false, None),
++            Err(NetworkError::WouldBlock)
++        );
++    }
++}
++
+ impl VirtualIoSource for TcpSocketHalf {
+     fn remove_handler(&mut self) {
+         self.tx.clear_pull_handler();

@@ -1,0 +1,72 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index 3955bc9..4de5736 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -62,7 +62,6 @@ mod task {
+ 
+     cfg_if! {
+         if #[cfg(target_feature = "atomics")] {
+-            mod wait_async_polyfill;
+             mod multithread;
+             pub(crate) use multithread::*;
+ 
+diff --git a/src/task/multithread.rs b/src/task/multithread.rs
+index 2610ab9..d25893c 100644
+--- a/src/task/multithread.rs
++++ b/src/task/multithread.rs
+@@ -178,29 +178,23 @@ impl Task {
+ }
+ 
+ fn wait_async(ptr: &AtomicI32, current_value: i32) -> Option<js_sys::Promise> {
+-    // If `Atomics.waitAsync` isn't defined then we use our fallback, otherwise
+-    // we use the native function.
+-    return if Atomics::get_wait_async().is_undefined() {
+-        Some(crate::task::wait_async_polyfill::wait_async(
+-            ptr,
+-            current_value,
+-            MAX_SLEEP_MILLIS,
+-        ))
++    // Clawsembly's browser runtime requires native Atomics.waitAsync and
++    // cross-origin isolation. The synchronous Atomics.wait Worker fallback can
++    // be scheduled in a context where blocking waits are forbidden, turning a
++    // recoverable wake into an unhandled page error.
++    let mem = wasm_bindgen::memory().unchecked_into::<js_sys::WebAssembly::Memory>();
++    let array = js_sys::Int32Array::new(&mem.buffer());
++    let result = Atomics::wait_async(
++        &array,
++        ptr.as_ptr() as u32 / 4,
++        current_value,
++        MAX_SLEEP_MILLIS,
++    );
++    return if result.async_() {
++        Some(result.value())
+     } else {
+-        let mem = wasm_bindgen::memory().unchecked_into::<js_sys::WebAssembly::Memory>();
+-        let array = js_sys::Int32Array::new(&mem.buffer());
+-        let result = Atomics::wait_async(
+-            &array,
+-            ptr.as_ptr() as u32 / 4,
+-            current_value,
+-            MAX_SLEEP_MILLIS,
+-        );
+-        if result.async_() {
+-            Some(result.value())
+-        } else {
+-            None
+-        }
+-    };
++        None
++    };
+ 
+     #[wasm_bindgen]
+     extern "C" {
+@@ -215,9 +209,6 @@ fn wait_async(ptr: &AtomicI32, current_value: i32) -> Option<js_sys::Promise> {
+             timeout: f64,
+         ) -> WaitAsyncResult;
+ 
+-        #[wasm_bindgen(static_method_of = Atomics, js_name = waitAsync, getter)]
+-        fn get_wait_async() -> JsValue;
+-
+         #[wasm_bindgen(method, getter, structural, js_name = async)]
+         fn async_(this: &WaitAsyncResult) -> bool;
+ 

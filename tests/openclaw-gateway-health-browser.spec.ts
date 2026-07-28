@@ -114,7 +114,6 @@ type GatewayHealthEvidence = {
   };
   launchHarness?: {
     client: string;
-    clientCompletionGraceMs: number;
     clientLaunchMarker: string;
     gateway: string;
     officialEntrypoint: string;
@@ -358,7 +357,6 @@ test("official OpenClaw client attempts authenticated Gateway health over browse
     launchHarness: {
       officialEntrypoint: "/openclaw/dist/entry.js",
       openclawPackageFilesMutated: false,
-      clientCompletionGraceMs: 10_000,
       clientLaunchMarker: "agent runtime plugins pre-warmed"
     },
     gateway: {

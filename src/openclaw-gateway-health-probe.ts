@@ -4,8 +4,10 @@ import {
   inspectOpenClawInstallState,
   runOpenClawInstallLifecycle
 } from "./openclaw-install-lifecycle";
-import { isCompletedAgentTurnResponse } from
-  "./openclaw-agent-turn-response";
+import {
+  isCompletedAgentTurnResponse,
+  isCompletedWorkspaceToolTurnResponse
+} from "./openclaw-agent-turn-response";
 import {
   commitDirectoryTreeToOpfs,
   restoreDirectoryTreeFromOpfs
@@ -366,7 +368,6 @@ const agentTurnPrompt = workspaceToolProof
 const agentTurnTimeoutSeconds = 120;
 const readinessMarker = "http server listening";
 const clientLaunchMarker = "agent runtime plugins pre-warmed";
-const clientCompletionGraceMs = 10_000;
 
 async function runProbe(): Promise<void> {
   try {
@@ -556,16 +557,15 @@ async function runProbe(): Promise<void> {
       officialEntrypoint: "/openclaw/dist/entry.js",
       openclawPackageFilesMutated: diagnosticMutation !== undefined,
       ...(diagnosticMutation ? { diagnosticMutation } : {}),
-      clientCompletionGraceMs,
       clientLaunchMarker,
       gateway:
         "Sets guest process.argv, records the runtime compatibility label, "
         + "and retains a bounded watchdog while dynamically importing the "
         + "official entrypoint.",
       client:
-        "Sets guest process.argv, retains a bounded watchdog, and exits "
-        + "with the official entrypoint's process.exitCode after a bounded "
-        + "output-drain grace once its dynamic import settles."
+        "Executes the official entrypoint directly as the guest script with "
+        + "the official CLI arguments; the browser host independently bounds "
+        + "the proof without a dynamic-import bootstrap."
     };
 
     const maxClientAttempts = agentTurnProof ? 1 : 3;
@@ -900,39 +900,15 @@ async function runProbe(): Promise<void> {
           "60000",
           "--json"
         ];
-    const clientArgv = ["/bin/edge", ...clientArgs];
     const clientProofTimeoutMs = agentTurnProof
       ? Math.min(150_000, proofTimeoutMs)
       : Math.min(105_000, proofTimeoutMs);
-    const clientTimeoutMarker =
-      `CLAWSEMBLY_CLIENT_PROOF_TIMEOUT=${clientProofTimeoutMs}`;
     const runClientAttempt = async (attempt: number) => {
       const clientStateRoot =
         `/openclaw/.clawsembly-client-state-${attempt}`;
-      const clientHarness = [
-        `process.argv=${JSON.stringify(clientArgv)};`,
-        "console.error('CLAWSEMBLY_CLIENT_STARTED='+process.versions.node);",
-        "console.error('CLAWSEMBLY_CLIENT_WATCHDOG_START');",
-        "const clientWatchdog=setTimeout(()=>{",
-        `console.error(${JSON.stringify(clientTimeoutMarker)});`,
-        "process.exit(124)",
-        `},${clientProofTimeoutMs});`,
-        "console.error('CLAWSEMBLY_CLIENT_WATCHDOG_ARMED');",
-        "console.error('CLAWSEMBLY_CLIENT_IMPORT_START');",
-        "const clientEntry=import('file:///openclaw/dist/entry.js');",
-        "console.error('CLAWSEMBLY_CLIENT_IMPORT_ENQUEUED');",
-        "clientEntry.then(()=>{",
-        "console.error('CLAWSEMBLY_CLIENT_ENTRY_SETTLED');",
-        "setTimeout(()=>{",
-        "clearTimeout(clientWatchdog);process.exit(process.exitCode??0)",
-        `},${clientCompletionGraceMs})`,
-        "}).catch((error)=>{",
-        "console.error(error?.stack??String(error));process.exit(1)",
-        "});"
-      ].join("");
       const clientInstance = await runWasix(moduleWithBytes, {
         program: "edgejs",
-        args: ["-e", clientHarness],
+        args: clientArgs,
         cwd: "/openclaw",
         env: {
           CLAWSEMBLY_DIAGNOSTIC_ONLY: "1",
@@ -968,7 +944,12 @@ async function runProbe(): Promise<void> {
           try {
             const parsedOutput = parseJsonOutput(captured);
             return agentTurnProof
-              ? isCompletedAgentTurnResponse(parsedOutput, agentTurnMarker)
+              ? workspaceToolProof
+                ? isCompletedWorkspaceToolTurnResponse(
+                    parsedOutput,
+                    agentTurnMarker
+                  )
+                : isCompletedAgentTurnResponse(parsedOutput, agentTurnMarker)
               : isHealthyResponse(parsedOutput);
           } catch {
             return false;
@@ -1034,7 +1015,12 @@ async function runProbe(): Promise<void> {
         }
       }
       const attemptPassed = agentTurnProof
-        ? isCompletedAgentTurnResponse(attemptResponse, agentTurnMarker)
+        ? workspaceToolProof
+          ? isCompletedWorkspaceToolTurnResponse(
+              attemptResponse,
+              agentTurnMarker
+            )
+          : isCompletedAgentTurnResponse(attemptResponse, agentTurnMarker)
         : isHealthyResponse(attemptResponse);
       return {
         attempt,
@@ -1151,7 +1137,7 @@ async function runProbe(): Promise<void> {
         rootPath: workspaceMountedRoot,
         storeId: workspaceStoreId
       });
-      const restoredDirectory = new Directory(packageFiles);
+      const restoredDirectory = new Directory();
       const restore = await restoreDirectoryTreeFromOpfs({
         directory: restoredDirectory,
         rootPath: workspaceMountedRoot,
@@ -1240,17 +1226,23 @@ async function runProbe(): Promise<void> {
       ...(agentTurnProof
         ? {
             agentResponseValidation: {
-              contract: "strict-assistant-payload-v1",
+              contract: workspaceToolProof
+                ? "workspace-tool-payload-v1"
+                : "strict-assistant-payload-v1",
               expectedText: agentTurnMarker,
               acceptedTextSources: [
                 "result.payloads[].text",
                 "result.meta.finalAssistantVisibleText",
                 "result.meta.finalAssistantRawText"
               ],
-              requiredOutcome:
-                "status=ok; summary=completed; aborted=false; "
-                + "stopReason=stop; fallbackUsed=false; "
-                + "assistant-stage success",
+              requiredOutcome: workspaceToolProof
+                ? "status=ok; summary=completed; aborted=false; "
+                  + "stopReason=stop; fallbackUsed=false; assistant-stage "
+                  + "success; exactly three tool calls; one denied outside "
+                  + "write; exact final marker"
+                : "status=ok; summary=completed; aborted=false; "
+                  + "stopReason=stop; fallbackUsed=false; "
+                  + "assistant-stage success",
               arbitraryMetadataSearched: false,
               promptEchoesAccepted: false
             }

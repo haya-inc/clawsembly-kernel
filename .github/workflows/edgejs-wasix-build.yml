@@ -388,9 +388,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node scripts/apply-cargo-dependency-patches.mjs \
-            --manifest relay/Cargo.toml \
-            --package virtual-net
           npm run relay:check
           cargo build --locked --release --manifest-path relay/Cargo.toml
           test -x relay/target/release/clawsembly-network-relay
@@ -708,6 +705,7 @@ jobs:
           CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
           CLAWSEMBLY_NETWORK_RELAY: ${{ github.workspace }}/relay/target/release/clawsembly-network-relay
           CLAWSEMBLY_OPENCLAW_AGENT_TURN_PROOF: "1"
+          CLAWSEMBLY_OPENCLAW_AGENT_TURN_SCENARIO: "agent-turn"
           CLAWSEMBLY_OPENCLAW_AGENT_TURN_TIMEOUT_MS: "300000"
           CLAWSEMBLY_OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
           CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
@@ -731,22 +729,10 @@ jobs:
               -print \
               | head -n 1
           )"
-          workspace_evidence="$(
-            find test-results \
-              -name openclaw-workspace-tool-turn-browser-evidence.json \
-              -type f \
-              -print \
-              | head -n 1
-          )"
           if test -n "${evidence}"; then
             cp "${evidence}" \
               artifacts/openclaw-agent-turn-browser-evidence.json
             cp "${evidence}" "${destination}/"
-          fi
-          if test -n "${workspace_evidence}"; then
-            cp "${workspace_evidence}" \
-              artifacts/openclaw-workspace-tool-turn-browser-evidence.json
-            cp "${workspace_evidence}" "${destination}/"
           fi
           while IFS= read -r context; do
             cp "${context}" \
@@ -758,7 +744,6 @@ jobs:
           )
           jq -n \
             --arg evidence "${evidence}" \
-            --arg workspaceEvidence "${workspace_evidence}" \
             --argjson errorContexts "$(
               find "${destination}" \
                 -name 'error-context-*.md' \
@@ -769,6 +754,75 @@ jobs:
             '{
               schemaVersion: 1,
               evidence: (if $evidence == "" then null else $evidence end),
+              workspaceEvidence: null,
+              errorContexts: $errorContexts
+            }' > "${destination}/manifest.json"
+
+      - name: Prove OpenClaw workspace tools and OPFS recovery
+        if: ${{ always() }}
+        env:
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
+          CLAWSEMBLY_NETWORK_RELAY: ${{ github.workspace }}/relay/target/release/clawsembly-network-relay
+          CLAWSEMBLY_OPENCLAW_AGENT_TURN_PROOF: "1"
+          CLAWSEMBLY_OPENCLAW_AGENT_TURN_SCENARIO: "workspace-tool-turn"
+          CLAWSEMBLY_OPENCLAW_AGENT_TURN_TIMEOUT_MS: "300000"
+          CLAWSEMBLY_OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
+        run: |
+          npx playwright test \
+            --retries=1 \
+            tests/openclaw-agent-turn-browser.spec.ts
+
+      - name: Preserve OpenClaw workspace-tool attempt evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="artifacts/agent-turn-attempt"
+          mkdir -p "${destination}"
+          mkdir -p test-results
+          workspace_evidence="$(
+            find test-results \
+              -name openclaw-workspace-tool-turn-browser-evidence.json \
+              -type f \
+              -print \
+              | head -n 1
+          )"
+          if test -n "${workspace_evidence}"; then
+            cp "${workspace_evidence}" \
+              artifacts/openclaw-workspace-tool-turn-browser-evidence.json
+            cp "${workspace_evidence}" "${destination}/"
+          fi
+          agent_evidence="artifacts/openclaw-agent-turn-browser-evidence.json"
+          if ! test -f "${agent_evidence}"; then
+            agent_evidence=""
+          fi
+          while IFS= read -r context; do
+            cp "${context}" \
+              "${destination}/workspace-error-context-$(
+                basename "$(dirname "${context}")"
+              ).md"
+          done < <(
+            find test-results -name error-context.md -type f -print | sort
+          )
+          jq -n \
+            --arg evidence "${agent_evidence}" \
+            --arg workspaceEvidence "${workspace_evidence}" \
+            --argjson errorContexts "$(
+              find "${destination}" \
+                -name '*error-context-*.md' \
+                -type f \
+                | sort \
+                | jq -Rsc 'split("\n") | map(select(length > 0))'
+            )" \
+            '{
+              schemaVersion: 1,
+              evidence: (
+                if ($evidence | length) == 0
+                then null
+                else $evidence
+                end
+              ),
               workspaceEvidence: (
                 if $workspaceEvidence == ""
                 then null

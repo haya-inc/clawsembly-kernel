@@ -127,10 +127,22 @@
         "sha256": "121f18dcdb67ab0ba9a991bc06331bc048a92a12d7aecabf7ef1e17bc6f90fef"
       },
       {
+        "package": "virtual-net",
+        "version": "0.601.0",
+        "path": "patches/virtual-net/0002-make-loopback-readiness-level-triggered.patch",
+        "sha256": "01bdabed2c44a43f4d3ac7dd0e965a75f3cf659d547634d5d63a9feed20cf123"
+      },
+      {
         "package": "wasm-bindgen-futures",
         "version": "0.4.56",
         "path": "patches/wasm-bindgen-futures/0001-bound-multithread-task-sleep.patch",
         "sha256": "e78a38213b658328eb836ef3eaceba7626a78495554690d132318f8644b09c30"
+      },
+      {
+        "package": "wasm-bindgen-futures",
+        "version": "0.4.56",
+        "path": "patches/wasm-bindgen-futures/0002-require-native-wait-async.patch",
+        "sha256": "cf228b001de0b4a868a0a17f03728aa304a99a730523275bc75c3be3ee27d9f4"
       }
     ],
     "networkCapability": {
@@ -139,7 +151,10 @@
         "scope": "runtime-object",
         "transport": "browser-local",
         "tcpReceiveLifecycle": {
-          "partialReads": "rearm-readable-while-buffered"
+          "partialReads": "rearm-readable-while-buffered",
+          "partialWrites": "notify-readable-after-enqueue",
+          "readWriteWakers": "direction-separated",
+          "writeReadiness": "level-triggered-until-buffer-full"
         }
       },
       "egress": {
@@ -172,7 +187,9 @@
       "waitAsyncPromiseCallback": "wake-before-run",
       "upstreamFix": "wasm-bindgen#4821",
       "maxSleepMs": 1000,
-      "lostWakeRecovery": "bounded-wait-async-repoll"
+      "lostWakeRecovery": "bounded-wait-async-repoll",
+      "waitImplementation": "native-atomics-wait-async-only",
+      "synchronousWaitFallback": "excluded"
     },
     "schedulerStress": {
       "asyncWorkerLifetime": "scheduler-lifetime",

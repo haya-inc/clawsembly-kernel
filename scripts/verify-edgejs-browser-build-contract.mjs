@@ -140,6 +140,8 @@ assert.deepEqual(
   [
     { package: "wasmer-wasix", version: "0.601.0" },
     { package: "virtual-net", version: "0.601.0" },
+    { package: "virtual-net", version: "0.601.0" },
+    { package: "wasm-bindgen-futures", version: "0.4.56" },
     { package: "wasm-bindgen-futures", version: "0.4.56" }
   ]
 );
@@ -165,7 +167,9 @@ assert.deepEqual(contract.browserExecutor.multithreadWaker, {
   waitAsyncPromiseCallback: "wake-before-run",
   upstreamFix: "wasm-bindgen#4821",
   maxSleepMs: 1000,
-  lostWakeRecovery: "bounded-wait-async-repoll"
+  lostWakeRecovery: "bounded-wait-async-repoll",
+  waitImplementation: "native-atomics-wait-async-only",
+  synchronousWaitFallback: "excluded"
 });
 assert.deepEqual(contract.browserExecutor.networkCapability, {
   default: "deny",
@@ -173,7 +177,10 @@ assert.deepEqual(contract.browserExecutor.networkCapability, {
     scope: "runtime-object",
     transport: "browser-local",
     tcpReceiveLifecycle: {
-      partialReads: "rearm-readable-while-buffered"
+      partialReads: "rearm-readable-while-buffered",
+      partialWrites: "notify-readable-after-enqueue",
+      readWriteWakers: "direction-separated",
+      writeReadiness: "level-triggered-until-buffer-full"
     }
   },
   egress: {
