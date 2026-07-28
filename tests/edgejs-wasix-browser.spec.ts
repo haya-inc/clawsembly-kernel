@@ -12,8 +12,10 @@ type BrowserBuildContract = {
     multithreadWaker: {
       lostWakeRecovery: "bounded-wait-async-repoll";
       maxSleepMs: 1000;
+      synchronousWaitFallback: "excluded";
       upstreamFix: "wasm-bindgen#4821";
       waitAsyncPromiseCallback: "wake-before-run";
+      waitImplementation: "native-atomics-wait-async-only";
       wasmBindgen: "0.2.106";
       wasmBindgenFutures: "0.4.56";
     };
@@ -193,7 +195,9 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
     waitAsyncPromiseCallback: "wake-before-run",
     upstreamFix: "wasm-bindgen#4821",
     maxSleepMs: 1000,
-    lostWakeRecovery: "bounded-wait-async-repoll"
+    lostWakeRecovery: "bounded-wait-async-repoll",
+    waitImplementation: "native-atomics-wait-async-only",
+    synchronousWaitFallback: "excluded"
   });
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Emulation.setCPUThrottlingRate", {
