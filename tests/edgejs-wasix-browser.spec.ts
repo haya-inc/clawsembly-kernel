@@ -11,13 +11,13 @@ type BrowserBuildContract = {
   browserExecutor: {
     package: string;
     schedulerStress: {
-      asyncOverflow: "fifo-pending-queue";
-      asyncWorkerAllocation: "lazy-bounded-pool";
-      asyncWorkerReservation: "until-future-completion";
-      maxAsyncWorkers: 32;
+      asyncConcurrency: "concurrent-cooperative-nonblocking-futures";
+      asyncDispatch: "non-awaited-javascript-handler-promises";
+      asyncWorkerAllocation: "one-dedicated-shared-worker-per-scheduler";
+      asyncWorkerReservation: "scheduler-lifetime";
+      blockingWorkerRelease: "after-javascript-handler-completion";
       timerConcurrency: "concurrent-timer-futures";
       timerWorkerAllocation: "one-dedicated-timer-worker-per-scheduler";
-      workerRelease: "after-javascript-handler-completion";
       sleepTimerReservation: "until-javascript-timer-resolution";
       browserCpuThrottlingRate: number;
     };

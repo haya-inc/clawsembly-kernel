@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 15,
+  "schemaVersion": 16,
   "runtimeProvider": "quickjs",
   "upstream": {
     "repository": "https://github.com/wasmerio/edgejs",
@@ -106,7 +106,7 @@
       },
       {
         "path": "patches/wasmer-js/0004-release-workers-after-handler-completion.patch",
-        "sha256": "1c9d06a4fda7343a4669b97b8c89deb9761513a7e61bb037fbee4e8e6587f2ec"
+        "sha256": "90645a78e19f5932ea8b9c57d157029fcf2bcb7433be9d177999ec0bedeed13c"
       }
     ],
     "dependencyPatches": [
@@ -157,13 +157,13 @@
       "nonzeroSpawnedThreadExit": "process-terminating"
     },
     "schedulerStress": {
-      "asyncWorkerReservation": "until-future-completion",
-      "asyncWorkerAllocation": "lazy-bounded-pool",
-      "maxAsyncWorkers": 32,
-      "asyncOverflow": "fifo-pending-queue",
+      "asyncWorkerReservation": "scheduler-lifetime",
+      "asyncWorkerAllocation": "one-dedicated-shared-worker-per-scheduler",
+      "asyncConcurrency": "concurrent-cooperative-nonblocking-futures",
+      "asyncDispatch": "non-awaited-javascript-handler-promises",
       "timerWorkerAllocation": "one-dedicated-timer-worker-per-scheduler",
       "timerConcurrency": "concurrent-timer-futures",
-      "workerRelease": "after-javascript-handler-completion",
+      "blockingWorkerRelease": "after-javascript-handler-completion",
       "sleepTimerReservation": "until-javascript-timer-resolution",
       "browserCpuThrottlingRate": 12
     },

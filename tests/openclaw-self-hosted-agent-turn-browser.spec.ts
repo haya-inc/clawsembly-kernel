@@ -544,9 +544,11 @@ test(
       );
       throw error;
     } finally {
-      relay?.child.kill("SIGTERM");
-      broker?.child.kill("SIGTERM");
-      modelServer?.child.kill("SIGTERM");
+      await Promise.all([
+        terminateProcess(relay),
+        terminateProcess(broker),
+        terminateProcess(modelServer)
+      ]);
     }
   }
 );
@@ -660,6 +662,48 @@ function captureProcess(
     stderr: () => stderr,
     stdout: () => stdout
   };
+}
+
+async function terminateProcess(
+  process: CapturedProcess | undefined
+): Promise<void> {
+  if (
+    process === undefined
+    || process.child.exitCode !== null
+    || process.child.signalCode !== null
+  ) {
+    return;
+  }
+  process.child.kill("SIGTERM");
+  if (await waitForChildExit(process.child, 5_000)) return;
+  process.child.kill("SIGKILL");
+  if (await waitForChildExit(process.child, 5_000)) return;
+  throw new Error(
+    `host process did not exit after SIGKILL: ${process.child.pid}`
+  );
+}
+
+function waitForChildExit(
+  child: ChildProcessWithoutNullStreams,
+  timeoutMs: number
+): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout>;
+    const finish = (exited: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.off("exit", onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    timeout = setTimeout(() => finish(false), timeoutMs);
+    child.once("exit", onExit);
+  });
 }
 
 async function waitForHttpReady(

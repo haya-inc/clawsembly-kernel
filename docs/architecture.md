@@ -89,7 +89,7 @@ The browser runtime is source-built from pinned upstream commits:
 ```text
 Chromium Worker
   -> patched Wasmer JS (browser-native async compilation)
-  -> WASIX scheduler (module bytes + pending-job Worker ownership)
+  -> WASIX scheduler (module bytes + cooperative shared/timer Workers)
   -> self-contained Edge.js WASIX
   -> embedded QuickJS N-API provider
   -> Node-compatible OpenClaw process
@@ -190,34 +190,28 @@ already-compiled `WebAssembly.Module` loses the original bytes required by
 WASIX child Workers. The kernel compiles asynchronously with Chromium, passes
 `{ module, bytes }`, and preserves both across scheduler messages.
 
-The scheduler also reserves a Worker until an asynchronous job's Future
-completes. Stock scheduling marks the Worker reusable as soon as an async
-payload launches. A WASIX sleep therefore leaves a pending JavaScript timer on
-that Worker, which can then receive a synchronous WASM process that blocks the
-timer's event loop. Under concurrent Gateway/client execution this starves the
-sleeping process even though its TCP data is already readable. The audited
-patch keeps the Worker busy through Future completion. Because a browser does
-not await an asynchronous `message` event listener, the Worker itself sends
-the release acknowledgement only after its JavaScript handler promise
-resolves; dropping a Rust-side guard is not treated as completion. WASIX
-sleep timers are likewise tracked as asynchronous jobs until their JavaScript
-timers resolve, rather than detached from an already-completed synchronous
-handler.
+The scheduler separates three execution classes. Blocking WASM work retains
+exclusive Workers, and a Worker is released only after its JavaScript handler
+promise resolves. Dropping a Rust-side busy guard is not treated as completion.
 
-Arbitrary `task_shared` Futures run one per Worker in a lazily allocated pool
-with a hard ceiling of 32 Workers. A Worker returns to the idle queue only
-after the JavaScript handler promise settles; overflow waits in a FIFO queue.
-This prevents an import-time burst from creating Workers without bound while
-avoiding concurrent arbitrary Rust Futures in one Wasm instance.
+Non-blocking `task_shared` Futures cooperatively overlap on one dedicated
+shared Worker for the scheduler lifetime. Its JavaScript message handler
+launches each Future without awaiting the preceding Future, matching the
+`VirtualTaskManager` contract that shared tasks must yield rather than block.
+This is required for long-lived networking actors: reserving one Worker per
+Future eventually fills any fixed pool and leaves later SSE body-delivery work
+queued behind actors that intentionally never terminate. The dedicated
+cooperative Worker bounds Worker creation without imposing a false
+Future-completion queue.
 
 `sleep_now` uses a separate timer-only Worker. Timer Futures may wait
 concurrently on that Worker's JavaScript event loop, and buffered timers are
 started concurrently after Worker initialization. The timer Worker never
 receives module-cache work or arbitrary shared tasks. This prevents each WASIX
 sleep from consuming a complete SDK Worker and keeps timer delivery independent
-of the bounded shared-task pool. Rust wakers remain off the browser main
-thread, where `Atomics.wait` is forbidden. The throttled browser loopback test
-and full self-hosted agent turn are the regression proofs.
+of shared networking tasks. Rust wakers remain off the browser main thread,
+where `Atomics.wait` is forbidden. The throttled browser loopback test and full
+self-hosted agent turn are the regression proofs.
 
 The pinned `wasmer-wasix@0.601.0` also promotes a successful `Exit(0)` returned
 by a spawned, non-main WASM thread into `WasiProcess::terminate(0)`. Edge.js's

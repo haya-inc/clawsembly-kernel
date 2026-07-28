@@ -1,27 +1,31 @@
-diff --git a/src-js/worker.js b/src-js/worker.js
-index 50b71bf..cf50d01 100644
---- a/src-js/worker.js
-+++ b/src-js/worker.js
-@@ -6,6 +6,9 @@ let worker = undefined;
+diff --git i/src-js/worker.js w/src-js/worker.js
+index 50b71bf..68ab86b 100644
+--- i/src-js/worker.js
++++ w/src-js/worker.js
+@@ -6,6 +6,13 @@ let worker = undefined;
  let handleMessage = async data => {
    if (worker) {
      await worker.handle(data);
-+    if (data.type !== "cache-module" && data.type !== "spawn-timer") {
++    if (
++      data.type !== "cache-module" &&
++      data.type !== "spawn-async" &&
++      data.type !== "spawn-timer"
++    ) {
 +      globalThis.postMessage({ type: "idle" });
 +    }
    } else {
      // We start off by buffering up all messages until we finish initializing.
      pendingMessages.push(data);
-@@ -20,9 +23,14 @@ globalThis.onmessage = async ev => {
+@@ -20,12 +27,21 @@ globalThis.onmessage = async ev => {
  
      worker = new ThreadPoolWorker(id);
  
 -    // Now that we're initialized, we need to handle any buffered messages
-+    // Only timer Futures may overlap, and the scheduler sends them to a
-+    // timer-only worker. Every other worker handles one job at a time.
++    // Shared and timer Futures are non-blocking cooperative jobs on separate
++    // dedicated workers. Blocking jobs still run one at a time.
      for (const msg of pendingMessages.splice(0, pendingMessages.length)) {
 -      await worker.handle(msg);
-+      if (msg.type === "spawn-timer") {
++      if (msg.type === "spawn-async" || msg.type === "spawn-timer") {
 +        void handleMessage(msg);
 +      } else {
 +        await handleMessage(msg);
@@ -29,10 +33,18 @@ index 50b71bf..cf50d01 100644
      }
    } else {
      // Handle the message like normal.
-diff --git a/src/tasks/post_message_payload.rs b/src/tasks/post_message_payload.rs
+-    await handleMessage(ev.data);
++    if (ev.data.type === "spawn-async" || ev.data.type === "spawn-timer") {
++      void handleMessage(ev.data);
++    } else {
++      await handleMessage(ev.data);
++    }
+   }
+ };
+diff --git i/src/tasks/post_message_payload.rs w/src/tasks/post_message_payload.rs
 index 630497b..d9f6f8d 100644
---- a/src/tasks/post_message_payload.rs
-+++ b/src/tasks/post_message_payload.rs
+--- i/src/tasks/post_message_payload.rs
++++ w/src/tasks/post_message_payload.rs
 @@ -13,6 +13,7 @@ use crate::tasks::{
  #[derive(Debug)]
  pub(crate) enum PostMessagePayload {
@@ -114,61 +126,53 @@ index 630497b..d9f6f8d 100644
      #[wasm_bindgen_test]
      async fn round_trip_spawn_with_module() {
          let wasm: &[u8] = include_bytes!("../../tests/envvar.wasm");
-diff --git a/src/tasks/scheduler.rs b/src/tasks/scheduler.rs
-index abfcd98..7f44d4e 100644
---- a/src/tasks/scheduler.rs
-+++ b/src/tasks/scheduler.rs
-@@ -17,6 +17,8 @@ use crate::tasks::{
-     WorkerMessage,
- };
- 
-+const MAX_ASYNC_WORKERS: usize = 32;
-+
- /// A handle for interacting with the threadpool's scheduler.
- #[derive(Debug, Clone)]
- pub(crate) struct Scheduler {
-@@ -127,6 +129,15 @@ impl Drop for Scheduler {
+diff --git i/src/tasks/scheduler.rs w/src/tasks/scheduler.rs
+index abfcd98..d4b9497 100644
+--- i/src/tasks/scheduler.rs
++++ w/src/tasks/scheduler.rs
+@@ -127,6 +127,12 @@ impl Drop for Scheduler {
  /// The state for the actor in charge of the threadpool.
  #[derive(Debug)]
  struct SchedulerState {
-+    /// Workers reserved for non-blocking async jobs and ready for work.
-+    async_idle: VecDeque<WorkerHandle>,
-+    /// Workers currently running one non-blocking async job.
-+    async_busy: VecDeque<WorkerHandle>,
-+    /// Async jobs waiting for a bounded worker slot.
-+    async_pending: VecDeque<AsyncJob>,
++    /// One worker whose JavaScript event loop cooperatively hosts all
++    /// non-blocking shared Futures.
++    shared_worker: Option<WorkerHandle>,
 +    /// A timer-only worker whose JavaScript event loop may host overlapping
 +    /// timer Futures without mixing them with arbitrary shared tasks.
 +    timer_worker: Option<WorkerHandle>,
      /// Workers that are able to receive work.
      idle: VecDeque<WorkerHandle>,
      /// Workers that are currently blocked on synchronous operations and can't
-@@ -140,6 +151,10 @@ struct SchedulerState {
+@@ -140,6 +146,8 @@ struct SchedulerState {
  impl SchedulerState {
      fn new(mailbox: Scheduler) -> Self {
          SchedulerState {
-+            async_idle: VecDeque::new(),
-+            async_busy: VecDeque::new(),
-+            async_pending: VecDeque::new(),
++            shared_worker: None,
 +            timer_worker: None,
              idle: VecDeque::new(),
              busy: VecDeque::new(),
              mailbox,
-@@ -151,6 +166,10 @@ impl SchedulerState {
+@@ -151,12 +159,31 @@ impl SchedulerState {
          match message {
              SchedulerMessage::Close => {
                  tracing::debug!("Scheduler received Close message");
-+                self.async_idle.clear();
-+                self.async_busy.clear();
-+                self.async_pending.clear();
++                self.shared_worker.take();
 +                self.timer_worker.take();
                  self.idle.clear();
                  // self.busy.clear();
                  Ok(())
-@@ -158,6 +177,16 @@ impl SchedulerState {
-             SchedulerMessage::SpawnAsync(task) => {
-                 self.post_message(PostMessagePayload::Async(AsyncJob::Thunk(task)))
              }
+             SchedulerMessage::SpawnAsync(task) => {
+-                self.post_message(PostMessagePayload::Async(AsyncJob::Thunk(task)))
++                if self.shared_worker.is_none() {
++                    self.shared_worker = Some(self.start_worker()?);
++                }
++                self.shared_worker
++                    .as_ref()
++                    .unwrap()
++                    .send(PostMessagePayload::Async(AsyncJob::Thunk(task)))
++                    .context("Unable to send a shared async message")
++            }
 +            SchedulerMessage::SpawnTimer(task) => {
 +                if self.timer_worker.is_none() {
 +                    self.timer_worker = Some(self.start_worker_handle()?);
@@ -178,76 +182,10 @@ index abfcd98..7f44d4e 100644
 +                    .unwrap()
 +                    .send(PostMessagePayload::Timer(AsyncJob::Thunk(task)))
 +                    .context("Unable to send a timer message")
-+            }
+             }
              SchedulerMessage::SpawnBlocking(task) => {
                  self.post_message(PostMessagePayload::Blocking(BlockingJob::Thunk(task)))
-             }
-@@ -214,6 +243,20 @@ impl SchedulerState {
-                 Ok(())
-             }
-             SchedulerMessage::WorkerIdle { worker_id } => {
-+                if let Some(index) = self
-+                    .async_busy
-+                    .iter()
-+                    .position(|worker| worker.id() == worker_id)
-+                {
-+                    let worker = self.async_busy.remove(index).unwrap();
-+                    if let Some(job) = self.async_pending.pop_front() {
-+                        worker.send(PostMessagePayload::Async(job))?;
-+                        self.async_busy.push_back(worker);
-+                    } else {
-+                        self.async_idle.push_back(worker);
-+                    }
-+                    return Ok(());
-+                }
-                 move_worker(worker_id, &mut self.busy, &mut self.idle);
-                 tracing::trace!(
-                     worker.id=worker_id,
-@@ -230,6 +273,11 @@ impl SchedulerState {
-     /// Send a task to one of the worker threads, preferring workers that aren't
-     /// running synchronous work.
-     fn post_message(&mut self, msg: PostMessagePayload) -> Result<(), Error> {
-+        let msg = match msg {
-+            PostMessagePayload::Async(job) => return self.post_async(job),
-+            msg => msg,
-+        };
-+
-         let worker = self.next_available_worker()?;
- 
-         let would_block = msg.would_block();
-@@ -246,6 +294,31 @@ impl SchedulerState {
-         Ok(())
-     }
- 
-+    fn post_async(&mut self, job: AsyncJob) -> Result<(), Error> {
-+        if let Some(worker) = self.async_idle.pop_front() {
-+            worker
-+                .send(PostMessagePayload::Async(job))
-+                .with_context(|| {
-+                    format!("Unable to send an async message to worker {}", worker.id())
-+                })?;
-+            self.async_busy.push_back(worker);
-+            return Ok(());
-+        }
-+
-+        if self.async_busy.len() < MAX_ASYNC_WORKERS {
-+            let worker = self.start_worker()?;
-+            worker
-+                .send(PostMessagePayload::Async(job))
-+                .with_context(|| {
-+                    format!("Unable to send an async message to worker {}", worker.id())
-+                })?;
-+            self.async_busy.push_back(worker);
-+        } else {
-+            self.async_pending.push_back(job);
-+        }
-+        Ok(())
-+    }
-+
-     fn next_available_worker(&mut self) -> Result<WorkerHandle, Error> {
-         // First, try to send the message to an idle worker
-         if let Some(worker) = self.idle.pop_front() {
-@@ -268,14 +341,7 @@ impl SchedulerState {
+@@ -268,14 +295,7 @@ impl SchedulerState {
      }
  
      fn start_worker(&mut self) -> Result<WorkerHandle, Error> {
@@ -263,7 +201,7 @@ index abfcd98..7f44d4e 100644
  
          // Prime the worker's module cache
          for (&hash, module) in &self.cached_modules {
-@@ -288,6 +354,17 @@ impl SchedulerState {
+@@ -288,6 +308,17 @@ impl SchedulerState {
  
          Ok(handle)
      }
@@ -281,22 +219,19 @@ index abfcd98..7f44d4e 100644
  }
  
  fn move_worker(worker_id: u32, from: &mut VecDeque<WorkerHandle>, to: &mut VecDeque<WorkerHandle>) {
-@@ -320,17 +397,39 @@ mod tests {
+@@ -320,17 +351,36 @@ mod tests {
          assert_eq!(scheduler.idle.len(), 0);
          assert_eq!(scheduler.busy.len(), 0);
  
 -        // then we run the message, which should start up a worker and send it
 -        // the job
-+        // then we run the message on a bounded async worker
++        // then we run the message on the cooperative shared worker
          scheduler.execute(message).unwrap();
  
 -        // One worker should have been created and added to the "ready" queue
 -        // because it's just handling async workloads.
 -        assert_eq!(scheduler.idle.len(), 1);
-+        // The JavaScript completion acknowledgement will later recycle it.
-+        assert_eq!(scheduler.async_busy.len(), 1);
-+        assert_eq!(scheduler.async_idle.len(), 0);
-+        assert_eq!(scheduler.async_pending.len(), 0);
++        assert!(scheduler.shared_worker.is_some());
 +        assert_eq!(scheduler.idle.len(), 0);
          assert_eq!(scheduler.busy.len(), 0);
  
@@ -326,10 +261,10 @@ index abfcd98..7f44d4e 100644
 +        assert_eq!(receiver.await.unwrap(), 42);
 +    }
  }
-diff --git a/src/tasks/scheduler_message.rs b/src/tasks/scheduler_message.rs
+diff --git i/src/tasks/scheduler_message.rs w/src/tasks/scheduler_message.rs
 index 8a05489..0c25654 100644
---- a/src/tasks/scheduler_message.rs
-+++ b/src/tasks/scheduler_message.rs
+--- i/src/tasks/scheduler_message.rs
++++ w/src/tasks/scheduler_message.rs
 @@ -24,6 +24,8 @@ pub(crate) enum SchedulerMessage {
      Close,
      /// Run a promise on a worker thread.
@@ -368,10 +303,10 @@ index 8a05489..0c25654 100644
      pub const TYPE_SPAWN_BLOCKING: &str = "spawn-blocking";
      pub const TYPE_WORKER_IDLE: &str = "worker-idle";
      pub const TYPE_WORKER_BUSY: &str = "worker-busy";
-diff --git a/src/tasks/thread_pool.rs b/src/tasks/thread_pool.rs
-index 97b57da..059d1a3 100644
---- a/src/tasks/thread_pool.rs
-+++ b/src/tasks/thread_pool.rs
+diff --git i/src/tasks/thread_pool.rs w/src/tasks/thread_pool.rs
+index 97b57da..d92d570 100644
+--- i/src/tasks/thread_pool.rs
++++ w/src/tasks/thread_pool.rs
 @@ -45,6 +45,15 @@ impl ThreadPool {
          Ok(())
      }
@@ -399,19 +334,19 @@ index 97b57da..059d1a3 100644
 -        // resolved because the JavaScript VM is still blocked by the syscall.
 -        let _ = self.task_dedicated(Box::new(move || {
 -            wasm_bindgen_futures::spawn_local(async move {
-+        // Run timers on one timer-only Worker. The WASIX syscall Worker is
-+        // synchronously blocked, while arbitrary shared tasks must remain
-+        // isolated until their Future completes. Timer Futures can overlap on
-+        // this dedicated JavaScript event loop and complete sequentially.
++        // Run timers on one timer-only Worker. Shared Futures cooperatively
++        // overlap on a separate worker, while the WASIX syscall Worker may be
++        // synchronously blocked. Timer Futures overlap on this dedicated
++        // JavaScript event loop.
 +        let _ = self.spawn_timer(Box::new(move || {
 +            Box::pin(async move {
                  let global = GlobalScope::current();
                  let _ = JsFuture::from(global.sleep(time)).await;
                  let _ = tx.send(());
-diff --git a/src/tasks/thread_pool_worker.rs b/src/tasks/thread_pool_worker.rs
+diff --git i/src/tasks/thread_pool_worker.rs w/src/tasks/thread_pool_worker.rs
 index f7a3afa..a76e031 100644
---- a/src/tasks/thread_pool_worker.rs
-+++ b/src/tasks/thread_pool_worker.rs
+--- i/src/tasks/thread_pool_worker.rs
++++ w/src/tasks/thread_pool_worker.rs
 @@ -1,6 +1,6 @@
  use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
  

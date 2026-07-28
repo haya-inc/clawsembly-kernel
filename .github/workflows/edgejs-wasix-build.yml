@@ -1112,6 +1112,18 @@ jobs:
               -print \
               | sort
           )
+          diagnostic_index=0
+          while IFS= read -r diagnostic; do
+            diagnostic_index=$((diagnostic_index + 1))
+            cp "${diagnostic}" \
+              "${destination}/browser-diagnostics-${diagnostic_index}.json"
+          done < <(
+            find proof-runner/test-results \
+              -name 'openclaw-self-hosted-agent-turn-browser-diagnostics*.json' \
+              -type f \
+              -print \
+              | sort
+          )
           jq -n \
             --arg evidence "${evidence}" \
             --argjson errorContexts "$(
@@ -1121,12 +1133,20 @@ jobs:
                 | sort \
                 | jq -Rsc 'split("\n") | map(select(length > 0))'
             )" \
+            --argjson browserDiagnostics "$(
+              find "${destination}" \
+                -name 'browser-diagnostics-*.json' \
+                -type f \
+                | sort \
+                | jq -Rsc 'split("\n") | map(select(length > 0))'
+            )" \
             '{
-              schemaVersion: 1,
+              schemaVersion: 2,
               evidence: (
                 if $evidence == "" then null else $evidence end
               ),
-              errorContexts: $errorContexts
+              errorContexts: $errorContexts,
+              browserDiagnostics: $browserDiagnostics
             }' > "${destination}/manifest.json"
 
       - name: Upload self-hosted OpenClaw diagnostics
