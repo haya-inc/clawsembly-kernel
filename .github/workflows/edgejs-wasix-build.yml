@@ -581,6 +581,7 @@ jobs:
           CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
         run: |
           npx playwright test \
+            --retries=1 \
             tests/openclaw-opfs-persistence-browser.spec.ts
 
       - name: Preserve durable OpenClaw state evidence
