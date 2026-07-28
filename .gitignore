@@ -3,4 +3,6 @@ dist/
 test-results/
 playwright-report/
 .cache/
+relay/target/
+provider-broker/target/
 .DS_Store

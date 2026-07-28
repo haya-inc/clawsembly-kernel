@@ -1,0 +1,154 @@
+diff --git a/src/client.rs b/src/client.rs
+index 7219fc5..b852b94 100644
+--- a/src/client.rs
++++ b/src/client.rs
+@@ -938,6 +938,43 @@ impl RemoteSocket {
+         self.pending_accept.replace((child_id, rx_recv));
+         Ok(())
+     }
++
++    fn try_recv_buffered(
++        &mut self,
++        buf: &mut [std::mem::MaybeUninit<u8>],
++        peek: bool,
++    ) -> Result<usize> {
++        loop {
++            if !self.rx_buffer.is_empty() {
++                let amt = self.rx_buffer.len().min(buf.len());
++                let buf: &mut [u8] = unsafe { std::mem::transmute(buf) };
++                buf[..amt].copy_from_slice(&self.rx_buffer[..amt]);
++                if !peek {
++                    self.rx_buffer.advance(amt);
++                }
++                if !self.rx_buffer.is_empty() || !self.rx_recv.is_empty() {
++                    if let Some(handler) = self
++                        .common
++                        .handlers
++                        .lock()
++                        .unwrap()
++                        .get_mut(&self.socket_id)
++                    {
++                        handler.push_interest(InterestType::Readable);
++                    }
++                }
++                return Ok(amt);
++            }
++            match self.rx_recv.try_recv() {
++                Ok(data) if data.is_empty() => return Ok(0),
++                Ok(data) => self.rx_buffer.extend_from_slice(&data),
++                Err(TryRecvError::Disconnected) => {
++                    return Err(NetworkError::ConnectionAborted)
++                }
++                Err(TryRecvError::Empty) => return Err(NetworkError::WouldBlock),
++            }
++        }
++    }
+ }
+ 
+ impl VirtualIoSource for RemoteSocket {
+@@ -1196,22 +1233,7 @@ impl VirtualRawSocket for RemoteSocket {
+     }
+ 
+     fn try_recv(&mut self, buf: &mut [std::mem::MaybeUninit<u8>], peek: bool) -> Result<usize> {
+-        loop {
+-            if !self.rx_buffer.is_empty() {
+-                let amt = self.rx_buffer.len().min(buf.len());
+-                let buf: &mut [u8] = unsafe { std::mem::transmute(buf) };
+-                buf[..amt].copy_from_slice(&self.rx_buffer[..amt]);
+-                if !peek {
+-                    self.rx_buffer.advance(amt);
+-                }
+-                return Ok(amt);
+-            }
+-            match self.rx_recv.try_recv() {
+-                Ok(data) => self.rx_buffer.extend_from_slice(&data),
+-                Err(TryRecvError::Disconnected) => return Err(NetworkError::ConnectionAborted),
+-                Err(TryRecvError::Empty) => return Err(NetworkError::WouldBlock),
+-            }
+-        }
++        self.try_recv_buffered(buf, peek)
+     }
+ 
+     fn set_promiscuous(&mut self, promiscuous: bool) -> Result<()> {
+@@ -1432,22 +1454,7 @@ impl VirtualConnectedSocket for RemoteSocket {
+     }
+ 
+     fn try_recv(&mut self, buf: &mut [std::mem::MaybeUninit<u8>], peek: bool) -> Result<usize> {
+-        loop {
+-            if !self.rx_buffer.is_empty() {
+-                let amt = self.rx_buffer.len().min(buf.len());
+-                let buf: &mut [u8] = unsafe { std::mem::transmute(buf) };
+-                buf[..amt].copy_from_slice(&self.rx_buffer[..amt]);
+-                if !peek {
+-                    self.rx_buffer.advance(amt);
+-                }
+-                return Ok(amt);
+-            }
+-            match self.rx_recv.try_recv() {
+-                Ok(data) => self.rx_buffer.extend_from_slice(&data),
+-                Err(TryRecvError::Disconnected) => return Err(NetworkError::ConnectionAborted),
+-                Err(TryRecvError::Empty) => return Err(NetworkError::WouldBlock),
+-            }
+-        }
++        self.try_recv_buffered(buf, peek)
+     }
+ }
+ 
+diff --git a/src/server.rs b/src/server.rs
+index 816ac49..d180c11 100644
+--- a/src/server.rs
++++ b/src/server.rs
+@@ -1457,7 +1457,14 @@ impl RemoteAdapterSocket {
+                     let mut chunk: [MaybeUninit<u8>; 10240] =
+                         unsafe { MaybeUninit::uninit().assume_init() };
+                     match this.try_recv(&mut chunk, false) {
+-                        Ok(0) => {}
++                        Ok(0) => {
++                            if let Some(task) = common.send(MessageResponse::Recv {
++                                socket_id,
++                                data: Vec::new(),
++                            }) {
++                                ret.push_back(task);
++                            }
++                        }
+                         Ok(amt) => {
+                             let chunk_unsafe: &mut [MaybeUninit<u8>] = &mut chunk[..amt];
+                             let chunk_unsafe: &mut [u8] =
+@@ -1585,13 +1592,14 @@ impl RemoteAdapterHandler {
+ impl InterestHandler for RemoteAdapterHandler {
+     fn push_interest(&mut self, interest: virtual_mio::InterestType) {
+         let mut guard = self.state.lock().unwrap();
+-        guard.driver_wakers.drain(..).for_each(|w| w.wake());
+-        let socket_id = match self.socket_id {
+-            Some(s) => s,
+-            None => return,
+-        };
+-        if interest == virtual_mio::InterestType::Readable {
+-            guard.readable.insert(socket_id);
++        if let Some(socket_id) = self.socket_id {
++            if matches!(
++                interest,
++                virtual_mio::InterestType::Readable | virtual_mio::InterestType::Closed
++            ) {
++                guard.readable.insert(socket_id);
++            }
+         }
++        guard.driver_wakers.drain(..).for_each(|w| w.wake());
+     }
+ 
+diff --git a/src/tcp_pair.rs b/src/tcp_pair.rs
+index 892dc28..f271abe 100644
+--- a/src/tcp_pair.rs
++++ b/src/tcp_pair.rs
+@@ -274,6 +274,11 @@ impl SocketBuffer {
+         if let Some(handler) = state.pull_handler.as_mut() {
+             handler.push_interest(InterestType::Writable);
+         }
++        if !state.buffer.is_empty() {
++            if let Some(handler) = state.push_handler.as_mut() {
++                handler.push_interest(InterestType::Readable);
++            }
++        }
+         state.wakers.drain(..).for_each(|w| w.wake());
+         Ok(amt)
+     }

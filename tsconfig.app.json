@@ -8,9 +8,14 @@
     "src/clawsemblyfs.ts",
     "src/edgejs-wasix-probe.ts",
     "src/main.ts",
+    "src/openclaw-agent-turn-response.ts",
     "src/openclaw-entrypoint-probe.ts",
     "src/openclaw-gateway-health-probe.ts",
+    "src/openclaw-install-lifecycle-probe.ts",
+    "src/openclaw-install-lifecycle.ts",
+    "src/openclaw-opfs-persistence-probe.ts",
     "src/openclaw-package-runtime-probe.ts",
+    "src/opfs-directory-store.ts",
     "src/package-image-probe.ts",
     "src/protocol.ts"
   ]

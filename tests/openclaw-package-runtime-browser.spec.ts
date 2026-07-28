@@ -37,6 +37,15 @@ type BuildEvidence = {
   };
 };
 
+type BrowserBuildContract = {
+  nodeCompatibility: {
+    officialNodeBinary: boolean;
+    profile: string;
+    reportedVersion: string;
+    sourceBaselineVersion: string;
+  };
+};
+
 type RuntimeEvidence = {
   blocker?: string;
   crossOriginIsolated: boolean;
@@ -85,8 +94,6 @@ const edgeArtifactPath = process.env.CLAWSEMBLY_EDGE_WASIX;
 const imagePath = process.env.CLAWSEMBLY_OPENCLAW_IMAGE;
 const imageEvidencePath =
   process.env.CLAWSEMBLY_OPENCLAW_IMAGE_EVIDENCE;
-const nodeDiagnosticEvidencePath =
-  process.env.CLAWSEMBLY_EDGE_NODE_DIAGNOSTIC_EVIDENCE;
 const gatewayDiagnosticTimeoutMs = Number(
   process.env.CLAWSEMBLY_OPENCLAW_GATEWAY_DIAGNOSTIC_TIMEOUT_MS ?? "12000"
 );
@@ -106,6 +113,12 @@ const packageContract = JSON.parse(
     "utf8"
   )
 ) as PackageContract;
+const browserBuildContract = JSON.parse(
+  readFileSync(
+    path.join(process.cwd(), "contracts/edgejs-browser-build.json"),
+    "utf8"
+  )
+) as BrowserBuildContract;
 
 async function sha256File(filename: string): Promise<string> {
   const hash = createHash("sha256");
@@ -227,10 +240,8 @@ test("unmodified OpenClaw Gateway path advances beyond the SQLite boundary", asy
       || imagePath === undefined
       || !existsSync(imagePath)
       || imageEvidencePath === undefined
-      || !existsSync(imageEvidencePath)
-      || nodeDiagnosticEvidencePath === undefined
-      || !existsSync(nodeDiagnosticEvidencePath),
-    "Set the Gateway flag, runtime artifacts, and diagnostic-node evidence"
+      || !existsSync(imageEvidencePath),
+    "Set the Gateway flag, runtime artifact, package image, and build evidence"
   );
   test.setTimeout(360_000);
 
@@ -242,30 +253,6 @@ test("unmodified OpenClaw Gateway path advances beyond the SQLite boundary", asy
   expect(await sha256File(resolvedImagePath)).toBe(
     buildEvidence.image.sha256
   );
-  const nodeDiagnosticEvidence = JSON.parse(
-    readFileSync(path.resolve(nodeDiagnosticEvidencePath!), "utf8")
-  ) as {
-    diagnostic: {
-      nodeVersion: string;
-      sha256: string;
-    };
-    mutation: {
-      equalLength: boolean;
-      occurrences: number;
-    };
-    status: string;
-  };
-  expect(nodeDiagnosticEvidence).toMatchObject({
-    status: "diagnostic-only",
-    diagnostic: {
-      nodeVersion: "24.15.0",
-      sha256: await sha256File(resolvedEdgePath)
-    },
-    mutation: {
-      equalLength: true,
-      occurrences: 2
-    }
-  });
   await page.route((url) => url.pathname === "/edgejs.wasm", async (route) => {
     await route.fulfill({
       contentType: "application/wasm",
@@ -302,7 +289,7 @@ test("unmodified OpenClaw Gateway path advances beyond the SQLite boundary", asy
     executionMode: "timer-bounded-unmodified-gateway-diagnostic",
     crossOriginIsolated: true,
     runtime: {
-      node: "24.15.0"
+      node: browserBuildContract.nodeCompatibility.reportedVersion
     },
     image: {
       bytes: buildEvidence.image.bytes,
@@ -401,7 +388,7 @@ test("unmodified OpenClaw Gateway path advances beyond the SQLite boundary", asy
     ...evidence,
     edgeArtifactSha256: await sha256File(resolvedEdgePath),
     imageSha256: buildEvidence.image.sha256,
-    diagnosticNodeVersionEvidence: nodeDiagnosticEvidence
+    nodeCompatibilityContract: browserBuildContract.nodeCompatibility
   };
   writeFileSync(
     testInfo.outputPath("openclaw-gateway-runtime-browser-evidence.json"),

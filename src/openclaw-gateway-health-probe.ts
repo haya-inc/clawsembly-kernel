@@ -1,5 +1,12 @@
 import "./style.css";
 import { parseClawsemblyFs } from "./clawsemblyfs";
+import {
+  inspectOpenClawInstallState,
+  runOpenClawInstallLifecycle
+} from "./openclaw-install-lifecycle";
+import { isCompletedAgentTurnResponse } from
+  "./openclaw-agent-turn-response";
+import { restoreDirectoryTreeFromOpfs } from "./opfs-directory-store";
 
 type OpenClawPackage = {
   engines?: {
@@ -22,6 +29,11 @@ type HealthResponse = {
     errors: unknown[];
     loaded: unknown[];
   };
+};
+
+type SelfHostedModelCapability = {
+  brokerToken: string;
+  relayToken: string;
 };
 
 type StreamCapture = {
@@ -209,11 +221,85 @@ function isHealthyResponse(value: unknown): value is HealthResponse {
     && candidate.plugins.errors.length === 0;
 }
 
+function consumeSelfHostedModelCapability(
+): SelfHostedModelCapability | undefined {
+  const capabilityKey = "__CLAWSEMBLY_SELF_HOSTED_MODEL_CAPABILITY__";
+  const capabilityGlobal =
+    globalThis as unknown as Record<string, unknown>;
+  const value = capabilityGlobal[capabilityKey];
+  delete capabilityGlobal[capabilityKey];
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const candidate = value as {
+    brokerToken?: unknown;
+    relayToken?: unknown;
+  };
+  if (
+    typeof candidate.relayToken !== "string"
+    || candidate.relayToken.length === 0
+    || candidate.relayToken.length > 128
+  ) {
+    return undefined;
+  }
+  const brokerToken =
+    typeof candidate.brokerToken === "string"
+      && candidate.brokerToken.length > 0
+      && candidate.brokerToken.length <= 128
+      ? candidate.brokerToken
+      : undefined;
+  if (!brokerToken) return undefined;
+  return {
+    brokerToken,
+    relayToken: candidate.relayToken
+  };
+}
+
+function redactSensitiveValues<T>(value: T, sensitive: string[]): T {
+  if (typeof value === "string") {
+    return sensitive.reduce(
+      (redacted, secret) => redacted.replaceAll(secret, "[REDACTED]"),
+      value
+    ) as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map(
+      (entry) => redactSensitiveValues(entry, sensitive)
+    ) as T;
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        redactSensitiveValues(entry, sensitive)
+      ])
+    ) as T;
+  }
+  return value;
+}
+
 const status = requiredElement<HTMLOutputElement>("#status");
 const result = requiredElement<HTMLPreElement>("#result");
 const searchParams = new URLSearchParams(location.search);
 const artifactUrl = searchParams.get("artifact") ?? "/edgejs.wasm";
 const imageUrl = searchParams.get("image") ?? "/openclaw.clawfs";
+const requestedProofKind = searchParams.get("proof");
+const proofKind = requestedProofKind === "agent-turn"
+  || requestedProofKind === "self-hosted-agent-turn"
+  ? requestedProofKind
+  : "health";
+const agentTurnProof = proofKind !== "health";
+const selfHostedModelProof = proofKind === "self-hosted-agent-turn";
+const selfHostedModelCapability = selfHostedModelProof
+  ? consumeSelfHostedModelCapability()
+  : undefined;
+const relayUrl =
+  searchParams.get("relay") ?? "ws://127.0.0.1:18792/v1/network";
+const relayToken = selfHostedModelProof
+  ? selfHostedModelCapability?.relayToken
+  : searchParams.get("token");
+const restoreStore = searchParams.get("restoreStore");
+const diagnosticErrorDetail = searchParams.get("errorDetail") === "1";
 const requestedProofTimeoutMs = Number(searchParams.get("timeoutMs"));
 const proofTimeoutMs =
   Number.isSafeInteger(requestedProofTimeoutMs)
@@ -224,6 +310,38 @@ const proofTimeoutMs =
 const gatewayPort = 18_789;
 const gatewayUrl = `ws://127.0.0.1:${gatewayPort}`;
 const gatewayToken = "clawsembly-diagnostic-non-secret-token";
+const providerHost = "localhost";
+const providerPort = 18_794;
+const providerModel = selfHostedModelProof
+  ? "qwen2.5-0.5b-instruct"
+  : "clawsembly-proof";
+const providerName = selfHostedModelProof
+  ? "clawsembly-broker"
+  : "clawsembly";
+const providerBaseUrl = `http://localhost:${providerPort}/v1`;
+const providerApiKey = selfHostedModelProof
+  ? selfHostedModelCapability?.brokerToken
+  : "clawsembly-fixture-key";
+const providerDisplayName = selfHostedModelProof
+  ? "Clawsembly self-hosted OSS model proof"
+  : "Clawsembly deterministic proof fixture";
+const selfHostedModelTemperature = 0;
+const selfHostedModelToolDeny = ["*"];
+const sensitiveValues = selfHostedModelProof
+  ? [
+      relayToken,
+      selfHostedModelCapability?.brokerToken
+    ].filter(
+      (value): value is string => typeof value === "string" && value.length > 0
+    )
+  : [];
+const agentTurnMarker = "CLAWSEMBLY_AGENT_TURN_OK";
+const agentTurnPrompt =
+  "A human is waiting for a visible answer. Reply with exactly the text "
+  + "between the tags and nothing else: <answer>"
+  + agentTurnMarker
+  + "</answer>";
+const agentTurnTimeoutSeconds = 120;
 const readinessMarker = "http server listening";
 const clientLaunchMarker = "agent runtime plugins pre-warmed";
 const clientCompletionGraceMs = 10_000;
@@ -235,10 +353,38 @@ async function runProbe(): Promise<void> {
         "OpenClaw Gateway WASIX requires a cross-origin-isolated context"
       );
     }
-    const { Directory, init, Runtime, runWasix } =
+    const { Directory, init, initializeLogger, Runtime, runWasix } =
       await import("@wasmer/sdk");
     await init();
-    const wasixRuntime = new Runtime({ registry: null });
+    const runtimeLogLevel = searchParams.get("debug");
+    if (runtimeLogLevel === "debug" || runtimeLogLevel === "trace") {
+      initializeLogger(runtimeLogLevel);
+    }
+    if (agentTurnProof && !relayToken) {
+      throw new Error("The agent-turn relay capability token is required");
+    }
+    if (selfHostedModelProof && !providerApiKey) {
+      throw new Error(
+        "The opaque self-hosted model capability is required"
+      );
+    }
+    const runtimeOptions = agentTurnProof
+      ? {
+          registry: null,
+          networkEgress: {
+            gatewayUrl: relayUrl,
+            gatewayToken: relayToken!,
+            allow: [{
+              host: providerHost,
+              port: providerPort,
+              allowPrivateNetwork: true
+            }]
+          }
+        }
+      : { registry: null };
+    const wasixRuntime = new Runtime(
+      runtimeOptions as ConstructorParameters<typeof Runtime>[0]
+    );
 
     status.textContent = "Fetching Edge.js and the official package image…";
     const [edgeBytes, imageBytes] = await Promise.all([
@@ -299,10 +445,63 @@ async function runProbe(): Promise<void> {
       launcherSha256,
       entrySha256
     };
+    let packageFiles = parsed.files;
+    let diagnosticMutation:
+      | {
+          path: string;
+          purpose: string;
+        }
+      | undefined;
+    if (diagnosticErrorDetail) {
+      packageFiles = { ...parsed.files };
+      const needle = [
+        "`causeCode=${read(cause?.code)}`,",
+        "`message=${error instanceof Error ? error.message : read(record.message)}`"
+      ].join("\n\t\t\t");
+      const replacement = [
+        "`causeCode=${read(cause?.code)}`,",
+        "`causeMessage=${read(cause?.message)}`,",
+        "`causeStack=${read(cause?.stack)}`,",
+        "`message=${error instanceof Error ? error.message : read(record.message)}`"
+      ].join("\n\t\t\t");
+      for (const [filePath, fileBytes] of Object.entries(packageFiles)) {
+        if (!filePath.startsWith("/dist/stream-")) continue;
+        const source = new TextDecoder().decode(fileBytes);
+        if (!source.includes(needle)) continue;
+        packageFiles[filePath] = new TextEncoder().encode(
+          source.replace(needle, replacement)
+        );
+        diagnosticMutation = {
+          path: filePath,
+          purpose:
+            "Expose the nested model-fetch cause message and stack in logs"
+        };
+        break;
+      }
+      if (!diagnosticMutation) {
+        throw new Error("Could not install the error-detail diagnostic");
+      }
+    }
     const networkEvidence = {
-      namespace: "browser-local-loopback",
+      namespace: agentTurnProof
+        ? selfHostedModelProof
+          ? "browser-local-loopback+self-hosted-model-capability-egress"
+          : "browser-local-loopback+capability-egress"
+        : "browser-local-loopback",
       url: gatewayUrl,
-      externalEgress: "denied-by-default"
+      externalEgress: agentTurnProof
+        ? {
+            allow: [{
+              host: providerHost,
+              port: providerPort,
+              allowPrivateNetwork: true
+            }],
+            credentialTransport: "Sec-WebSocket-Protocol",
+            relayUrl,
+            tokenRecorded: false,
+            transport: "self-hosted-virtual-net-websocket-relay"
+          }
+        : "denied-by-default"
     };
     const isolationEvidence = {
       sharedRuntimeNetworkNamespace: true,
@@ -311,17 +510,29 @@ async function runProbe(): Promise<void> {
       gatewayStateRoot: "/openclaw/.clawsembly-gateway-state",
       clientStateRootPattern: "/openclaw/.clawsembly-client-state-{attempt}"
     };
-    const notNorthStarCompletion =
-      "This uses an auditably relabeled diagnostic Node version and does "
-      + "not replace the required genuine Node compatibility profile or "
-      + "real agent-turn proof.";
+    const notNorthStarCompletion = selfHostedModelProof
+      ? "This proves a real model turn with a pinned OSS inference runtime "
+        + "and model while the model-service credential, GGUF weights, and "
+        + "inference process remain outside the browser and both WASIX "
+        + "guests. Durable fresh-browser OPFS recovery is proven separately "
+        + "in the same public build."
+      : proofKind === "agent-turn"
+        ? "This proves the real unmodified OpenClaw agent path against a "
+          + "deterministic OpenAI-compatible fixture under the source-declared "
+          + "Node compatibility profile, but does not replace self-hosted "
+          + "model inference or durable fresh-session OPFS recovery proof."
+      : "This proves the unmodified Gateway health path under the "
+        + "source-declared Node compatibility profile, but does not replace "
+        + "the agent-turn, self-hosted model, or durable fresh-session OPFS "
+        + "recovery proofs.";
     const launchHarnessEvidence = {
       officialEntrypoint: "/openclaw/dist/entry.js",
-      openclawPackageFilesMutated: false,
+      openclawPackageFilesMutated: diagnosticMutation !== undefined,
+      ...(diagnosticMutation ? { diagnosticMutation } : {}),
       clientCompletionGraceMs,
       clientLaunchMarker,
       gateway:
-        "Sets guest process.argv, records the diagnostic runtime label, "
+        "Sets guest process.argv, records the runtime compatibility label, "
         + "and retains a bounded watchdog while dynamically importing the "
         + "official entrypoint.",
       client:
@@ -330,12 +541,71 @@ async function runProbe(): Promise<void> {
         + "output-drain grace once its dynamic import settles."
     };
 
-    const maxClientAttempts = 3;
-    const gatewayOpenclaw = new Directory(parsed.files);
-    const clientOpenclaw = new Directory(parsed.files);
+    const maxClientAttempts = agentTurnProof ? 1 : 3;
+    const gatewayOpenclaw = new Directory(packageFiles);
+    const clientOpenclaw = new Directory(packageFiles);
+    const gatewayStateRoot = "/openclaw/.clawsembly-gateway-state";
+    const mountedGatewayStateRoot =
+      gatewayStateRoot.replace(/^\/openclaw/u, "");
     const gatewayWorkspace = "/openclaw/.clawsembly-gateway-workspace";
-    await gatewayOpenclaw.createDir("/.clawsembly-gateway-state");
+    if (!restoreStore) {
+      await gatewayOpenclaw.createDir(mountedGatewayStateRoot);
+    }
     await gatewayOpenclaw.createDir("/.clawsembly-gateway-workspace");
+    const module = await WebAssembly.compile(edgeBytes);
+    const moduleWithBytes = {
+      module,
+      bytes: edgeBytes
+    } as unknown as WebAssembly.Module;
+    let persistentStateRestore:
+      | Awaited<ReturnType<typeof restoreDirectoryTreeFromOpfs>>
+      | undefined;
+    const installLifecycle = restoreStore
+      ? await (async () => {
+          status.textContent =
+            "Restoring committed OpenClaw state from OPFS…";
+          persistentStateRestore = await restoreDirectoryTreeFromOpfs({
+            directory: gatewayOpenclaw,
+            rootPath: mountedGatewayStateRoot,
+            storeId: restoreStore
+          });
+          const packageStateDatabase = await inspectOpenClawInstallState({
+            directory: gatewayOpenclaw,
+            homeDir: "/openclaw/.clawsembly-gateway-home",
+            module: moduleWithBytes,
+            runWasix,
+            runtime: wasixRuntime,
+            stateDir: gatewayStateRoot
+          });
+          return {
+            schemaVersion: 1 as const,
+            status: "restored-from-opfs" as const,
+            executor:
+              "OPFS snapshot + new @wasmer/sdk Directory + Edge.js/WASIX",
+            requiredEffects: {
+              executions: [],
+              packageStateDatabase
+            },
+            reviewedNonEffects: [],
+            packageFiles: {
+              mutated: false as const,
+              verification:
+                "immutable package remounted before scoped state recovery"
+            }
+          };
+        })()
+      : await (async () => {
+          status.textContent =
+            "Installing required OpenClaw lifecycle effects in the browser kernel…";
+          return runOpenClawInstallLifecycle({
+            directory: gatewayOpenclaw,
+            homeDir: "/openclaw/.clawsembly-gateway-home",
+            module: moduleWithBytes,
+            runWasix,
+            runtime: wasixRuntime,
+            stateDir: gatewayStateRoot
+          });
+        })();
     await gatewayOpenclaw.writeFile(
       "/.clawsembly-gateway-state/openclaw.json",
       new TextEncoder().encode(JSON.stringify({
@@ -346,16 +616,63 @@ async function runProbe(): Promise<void> {
         agents: {
           defaults: {
             workspace: gatewayWorkspace,
-            skipBootstrap: true
+            skipBootstrap: true,
+            ...(agentTurnProof
+              ? {
+                  model: {
+                    primary: `${providerName}/${providerModel}`
+                  },
+                  ...(selfHostedModelProof
+                    ? {
+                        models: {
+                          [`${providerName}/${providerModel}`]: {
+                            params: {
+                              temperature: selfHostedModelTemperature
+                            }
+                          }
+                        }
+                      }
+                    : {})
+                }
+              : {})
           }
-        }
+        },
+        ...(selfHostedModelProof
+          ? {
+              tools: {
+                deny: selfHostedModelToolDeny
+              }
+            }
+          : {}),
+        ...(agentTurnProof
+          ? {
+              models: {
+                providers: {
+                  [providerName]: {
+                    api: "openai-completions",
+                    apiKey: providerApiKey,
+                    baseUrl: providerBaseUrl,
+                    models: [{
+                      id: providerModel,
+                      name: providerDisplayName,
+                      reasoning: false,
+                      input: ["text"],
+                      cost: {
+                        input: 0,
+                        output: 0,
+                        cacheRead: 0,
+                        cacheWrite: 0
+                      },
+                      contextWindow: 32_768,
+                      maxTokens: selfHostedModelProof ? 128 : 256
+                    }]
+                  }
+                }
+              }
+            }
+          : {})
       }, null, 2))
     );
-    const module = await WebAssembly.compile(edgeBytes);
-    const moduleWithBytes = {
-      module,
-      bytes: edgeBytes
-    } as unknown as WebAssembly.Module;
     const gatewayArgs = [
       "gateway",
       "run",
@@ -466,6 +783,8 @@ async function runProbe(): Promise<void> {
         artifact: artifactEvidence,
         image: imageEvidence,
         openclaw: openclawEvidence,
+        installLifecycle,
+        ...(persistentStateRestore ? { persistentStateRestore } : {}),
         network: networkEvidence,
         isolation: isolationEvidence,
         launchHarness: launchHarnessEvidence,
@@ -493,7 +812,11 @@ async function runProbe(): Promise<void> {
       status.dataset.state = "pass";
       status.textContent =
         "MILESTONE · Gateway readiness blocker captured";
-      result.textContent = JSON.stringify(evidence, null, 2);
+      result.textContent = JSON.stringify(
+        redactSensitiveValues(evidence, sensitiveValues),
+        null,
+        2
+      );
       return;
     }
 
@@ -507,23 +830,42 @@ async function runProbe(): Promise<void> {
     const clientLaunchElapsedMs = Math.round(
       performance.now() - startedAt
     );
-    status.textContent =
-      "Gateway ready; starting the official OpenClaw health client…";
-    const clientArgs = [
-      "/openclaw/dist/entry.js",
-      "gateway",
-      "call",
-      "health",
-      "--url",
-      gatewayUrl,
-      "--token",
-      gatewayToken,
-      "--timeout",
-      "60000",
-      "--json"
-    ];
+    status.textContent = agentTurnProof
+      ? selfHostedModelProof
+        ? "Gateway ready; starting a self-hosted OSS model turn…"
+        : "Gateway ready; starting an official OpenClaw agent turn…"
+      : "Gateway ready; starting the official OpenClaw health client…";
+    const clientArgs = agentTurnProof
+      ? [
+          "/openclaw/dist/entry.js",
+          "agent",
+          "--agent",
+          "main",
+          "--message",
+          agentTurnPrompt,
+          "--thinking",
+          "off",
+          "--timeout",
+          String(agentTurnTimeoutSeconds),
+          "--json"
+        ]
+      : [
+          "/openclaw/dist/entry.js",
+          "gateway",
+          "call",
+          "health",
+          "--url",
+          gatewayUrl,
+          "--token",
+          gatewayToken,
+          "--timeout",
+          "60000",
+          "--json"
+        ];
     const clientArgv = ["/bin/edge", ...clientArgs];
-    const clientProofTimeoutMs = Math.min(75_000, proofTimeoutMs);
+    const clientProofTimeoutMs = agentTurnProof
+      ? Math.min(150_000, proofTimeoutMs)
+      : Math.min(105_000, proofTimeoutMs);
     const clientTimeoutMarker =
       `CLAWSEMBLY_CLIENT_PROOF_TIMEOUT=${clientProofTimeoutMs}`;
     const runClientAttempt = async (attempt: number) => {
@@ -586,13 +928,18 @@ async function runProbe(): Promise<void> {
         })),
         clientStdout.waitUntil((captured) => {
           try {
-            return isHealthyResponse(parseJsonOutput(captured));
+            const parsedOutput = parseJsonOutput(captured);
+            return agentTurnProof
+              ? isCompletedAgentTurnResponse(parsedOutput, agentTurnMarker)
+              : isHealthyResponse(parsedOutput);
           } catch {
             return false;
           }
-        }, "a complete healthy Gateway JSON response", remainingMs).then(
+        }, agentTurnProof
+          ? "a complete OpenClaw agent-turn JSON response"
+          : "a complete healthy Gateway JSON response", remainingMs).then(
           () => ({
-            kind: "client-health-output" as const
+              kind: "client-proof-output" as const
           }),
           () => new Promise<never>(() => {})
         ),
@@ -623,7 +970,7 @@ async function runProbe(): Promise<void> {
             stdout: clientStdout.snapshot(),
             stderr: clientStderr.snapshot()
           }
-        : outcome.kind === "client-health-output"
+        : outcome.kind === "client-proof-output"
           ? {
               code: null,
               ok: true,
@@ -637,18 +984,20 @@ async function runProbe(): Promise<void> {
               stderr: clientStderr.snapshot()
                 + `CLAWSEMBLY_CLIENT_${outcome.kind.toUpperCase().replaceAll("-", "_")}\n`
             };
-      let attemptHealth: unknown;
-      let healthParseError: string | undefined;
+      let attemptResponse: unknown;
+      let responseParseError: string | undefined;
       if (attemptResult.stdout.trim()) {
         try {
-          attemptHealth = parseJsonOutput(attemptResult.stdout);
+          attemptResponse = parseJsonOutput(attemptResult.stdout);
         } catch (error) {
-          healthParseError = error instanceof Error
+          responseParseError = error instanceof Error
             ? error.message
             : String(error);
         }
       }
-      const attemptPassed = isHealthyResponse(attemptHealth);
+      const attemptPassed = agentTurnProof
+        ? isCompletedAgentTurnResponse(attemptResponse, agentTurnMarker)
+        : isHealthyResponse(attemptResponse);
       return {
         attempt,
         stateRoot: clientStateRoot,
@@ -656,11 +1005,15 @@ async function runProbe(): Promise<void> {
         completion: attemptPassed
           ? outcome.kind === "client-exit" && attemptResult.code === 0
             ? "client-exit-zero"
-            : "health-output-observed"
+            : agentTurnProof
+              ? "agent-turn-output-observed"
+              : "health-output-observed"
           : outcome.kind,
         result: attemptResult,
-        health: attemptHealth,
-        ...(healthParseError ? { healthParseError } : {}),
+        health: attemptResponse,
+        ...(responseParseError
+          ? { healthParseError: responseParseError }
+          : {}),
         passed: attemptPassed,
         retryableTransportError:
           outcome.kind === "client-exit"
@@ -678,7 +1031,9 @@ async function runProbe(): Promise<void> {
     > = [];
     for (let attempt = 1; attempt <= maxClientAttempts; attempt += 1) {
       status.textContent =
-        `Gateway ready; running official health client (${attempt}/${maxClientAttempts})…`;
+        `Gateway ready; running official ${
+          agentTurnProof ? "agent-turn" : "health"
+        } client (${attempt}/${maxClientAttempts})…`;
       const clientAttempt = await runClientAttempt(attempt);
       clientAttempts.push(clientAttempt);
       if (clientAttempt.passed) break;
@@ -699,7 +1054,7 @@ async function runProbe(): Promise<void> {
     if (!selectedClient) {
       throw new Error("No official OpenClaw client attempt was executed");
     }
-    const healthPassed = successfulClient !== undefined;
+    const proofPassed = successfulClient !== undefined;
     const gatewayExitedDuringClient = clientAttempts.some(
       (attempt) => attempt.outcome === "gateway-exit"
     );
@@ -708,29 +1063,70 @@ async function runProbe(): Promise<void> {
     )?.gatewayOutput;
     const evidence = {
       schemaVersion: 1,
-      status: healthPassed ? "gateway-health-pass" : "blocked",
-      ...(healthPassed
+      status: proofPassed
+        ? agentTurnProof
+          ? selfHostedModelProof
+            ? "self-hosted-agent-turn-pass"
+            : "agent-turn-pass"
+          : "gateway-health-pass"
+        : "blocked",
+      ...(proofPassed
         ? {}
         : {
             blocker: selectedClient.retryableTransportError
               ? "gateway-client-transport-error"
               : selectedClient.outcome
           }),
-      claim: healthPassed
-        ? "A second browser guest executed the exact official OpenClaw CLI "
-          + "and completed an authenticated health RPC against the real "
-          + "unmodified Gateway over browser-local loopback."
-        : "The real Gateway reached readiness, but its official client did "
-          + "not complete a valid authenticated health RPC.",
+      claim: proofPassed
+        ? agentTurnProof
+          ? selfHostedModelProof
+            ? "A second browser guest executed the exact official OpenClaw "
+              + "CLI, submitted a real agent turn through the unmodified "
+              + "Gateway, and received an actual Qwen response from a pinned "
+              + "self-hosted llama.cpp process while only an opaque operation "
+              + "capability entered the browser."
+            : "A second browser guest executed the exact official OpenClaw "
+              + "CLI, submitted a real agent turn through the unmodified "
+              + "Gateway, and received the deterministic model reply through "
+              + "the capability-scoped TCP relay."
+          : "A second browser guest executed the exact official OpenClaw CLI "
+            + "and completed an authenticated health RPC against the real "
+            + "unmodified Gateway over browser-local loopback."
+        : agentTurnProof
+          ? "The real Gateway reached readiness, but its official client did "
+            + "not complete a valid agent turn."
+          : "The real Gateway reached readiness, but its official client did "
+            + "not complete a valid authenticated health RPC.",
       notNorthStarCompletion,
       crossOriginIsolated,
       executor: "@wasmer/sdk + Edge.js QuickJS/WASIX",
       artifact: artifactEvidence,
       image: imageEvidence,
       openclaw: openclawEvidence,
+      installLifecycle,
+      ...(persistentStateRestore ? { persistentStateRestore } : {}),
       network: networkEvidence,
       isolation: isolationEvidence,
       launchHarness: launchHarnessEvidence,
+      ...(agentTurnProof
+        ? {
+            agentResponseValidation: {
+              contract: "strict-assistant-payload-v1",
+              expectedText: agentTurnMarker,
+              acceptedTextSources: [
+                "result.payloads[].text",
+                "result.meta.finalAssistantVisibleText",
+                "result.meta.finalAssistantRawText"
+              ],
+              requiredOutcome:
+                "status=ok; summary=completed; aborted=false; "
+                + "stopReason=stop; fallbackUsed=false; "
+                + "assistant-stage success",
+              arbitraryMetadataSearched: false,
+              promptEchoesAccepted: false
+            }
+          }
+        : {}),
       gateway: {
         args: gatewayArgs,
         readinessMarker,
@@ -738,10 +1134,14 @@ async function runProbe(): Promise<void> {
         clientLaunchElapsedMs,
         readyElapsedMs,
         state: gatewayExitedDuringClient
-          ? healthPassed
-            ? "exited-after-health-output"
+          ? proofPassed
+            ? agentTurnProof
+              ? "exited-after-agent-turn-output"
+              : "exited-after-health-output"
             : "exited-before-health-completed"
-          : "running-at-health-proof",
+          : agentTurnProof
+            ? "running-at-agent-turn-proof"
+            : "running-at-health-proof",
         ...(gatewayOutput
           ? {
               result: {
@@ -754,6 +1154,95 @@ async function runProbe(): Promise<void> {
         stdout: gatewayStdout.snapshot(),
         stderr: gatewayStderr.snapshot()
       },
+      ...(proofKind === "agent-turn"
+        ? {
+            providerFixture: {
+              api: "openai-completions",
+              baseUrl: providerBaseUrl,
+              expectedMarker: agentTurnMarker,
+              model: `${providerName}/${providerModel}`
+            }
+          }
+        : {}),
+      ...(selfHostedModelProof
+        ? {
+            selfHostedModel: {
+              api: "openai-completions",
+              browserReceivesModelServiceCredential: false,
+              guestEndpoint: providerBaseUrl,
+              guestOperationCapability: {
+                authority:
+                  `POST ${providerBaseUrl}/chat/completions`,
+                model: providerModel,
+                recorded: false,
+                streamingRequired: true
+              },
+              expectedMarker: agentTurnMarker,
+              generation: {
+                temperature: selfHostedModelTemperature
+              },
+              proofAgentPolicy: {
+                allowedTools: [],
+                deny: selfHostedModelToolDeny,
+                rationale:
+                  "This response-only proof grants no tool authority, keeping "
+                  + "the model prompt and capability surface minimal without "
+                  + "modifying the OpenClaw package."
+              },
+              model: `${providerName}/${providerModel}`,
+              runtime: {
+                implementation: "llama.cpp",
+                license: "MIT",
+                release: "b9637",
+                sourceCommit:
+                  "aedb2a5e9ca3d4064148bbb919e0ddc0c1b70ab3",
+                distribution: {
+                  platform: "ubuntu-x64",
+                  sha256:
+                    "a50ee14f021a9d8e92e30f622f7e3be1318ee1125bb9a9ba8d2025388df48743",
+                  url:
+                    "https://github.com/ggml-org/llama.cpp/releases/download/"
+                    + "b9637/llama-b9637-bin-ubuntu-x64.tar.gz"
+                },
+                endpoint:
+                  "http://127.0.0.1:18795/v1/chat/completions",
+                loopbackOnly: true,
+                model: {
+                  id: providerModel,
+                  license: "Apache-2.0",
+                  repository:
+                    "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+                  revision:
+                    "d78c9c2baefc6237025b685bb0d6db90288ef3d6",
+                  file:
+                    "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+                  sha256:
+                    "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db"
+                },
+                authentication: {
+                  credential: "host-local llama.cpp API key",
+                  recorded: false,
+                  visibleToGuest: false
+                },
+                transport:
+                  "explicitly allowed host-loopback HTTP; no external network"
+              },
+              capabilityBroker: {
+                implementation: "clawsembly-provider-broker",
+                security: {
+                  exactEndpointAndModel: true,
+                  loopbackOnly: true,
+                  maxConcurrency: 1,
+                  maxRequestBytes: 2_097_152,
+                  maxRequests: 1,
+                  maxResponseBytes: 2_097_152,
+                  redirects: "disabled",
+                  systemProxy: "disabled"
+                }
+              }
+            }
+          }
+        : {}),
       client: {
         args: clientArgs.slice(1),
         distinctGuestProcess: true,
@@ -779,16 +1268,25 @@ async function runProbe(): Promise<void> {
       }
     };
     status.dataset.state = "pass";
-    status.textContent = healthPassed
-      ? "PASS · Official OpenClaw client completed Gateway health RPC"
+    status.textContent = proofPassed
+      ? agentTurnProof
+        ? selfHostedModelProof
+          ? "PASS · Unmodified OpenClaw completed a self-hosted model turn"
+          : "PASS · Unmodified OpenClaw completed a real agent turn"
+        : "PASS · Official OpenClaw client completed Gateway health RPC"
       : "MILESTONE · Gateway client blocker captured";
-    result.textContent = JSON.stringify(evidence, null, 2);
+    result.textContent = JSON.stringify(
+      redactSensitiveValues(evidence, sensitiveValues),
+      null,
+      2
+    );
   } catch (error) {
     status.dataset.state = "fail";
     status.textContent = "FAIL";
-    result.textContent = error instanceof Error
+    const errorText = error instanceof Error
       ? `${error.message}\n${error.stack ?? ""}`
       : String(error);
+    result.textContent = redactSensitiveValues(errorText, sensitiveValues);
   }
 }
 

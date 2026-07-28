@@ -99,42 +99,46 @@ connections.
 ## Gateway milestone and remaining North Star gates
 
 The compiled browser binding is now exercised beyond the isolated state
-contract. The diagnostic-only Node-floor artifact starts the exact unmodified
-OpenClaw Gateway in normal local mode while the long-lived writable state
+contract. The source-built OpenClaw compatibility profile starts the exact
+unmodified OpenClaw Gateway in normal local mode while the long-lived writable state
 connection and read-only migration inspection overlap. A separate Edge.js
 guest runs the official CLI and receives a valid authenticated health response
 through the browser-local loopback namespace.
 
 This still does not satisfy the North Star:
 
-- The pinned Edge.js reports Node 24.13.2. OpenClaw requires Node 24.15.0 or
-  newer on the Node 24 line because of its SQLite WAL-reset safety gate. The
-  focused state proof is safe because the injected SQLite is 3.53.0, but the
-  exact top-level `openclaw.mjs` wrapper still rejects the runtime version. In
-  Chromium it now exits synchronously with code 1, empty stdout, the exact
-  version diagnostic, and no fall-through into `dist/entry.js`.
+- The source-built Edge.js artifact preserves its `v24.13.2-pre` implementation
+  baseline while declaring an independently audited `24.15.0` compatibility
+  version for the pinned OpenClaw workload. This is a source-level runtime
+  profile, not a post-build label mutation or a claim of general Node
+  conformance. The exact top-level `openclaw.mjs` accepts it unchanged.
 - The published Edge.js WASIX archive was post-processed with exception
   references. The browser lane therefore source-builds a pinned, legacy-EH,
   self-contained QuickJS artifact instead of depending on the mutable registry
   package. It also source-builds a patched Wasmer JS executor so the browser
   can compile the large module asynchronously while preserving its original
   bytes across WASIX Workers. Chromium startup, exact `process.exit` semantics,
-  and the official launcher boundary for this source-pinned pair are proven by
+  and the official launcher path for this source-pinned pair are proven by
   [GitHub Actions run 30197574607](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30197574607);
-  the remaining version gate is a proven Node compatibility profile. The
-  Gateway health proof uses a separately generated artifact whose two embedded
-  version labels are auditably changed to 24.15.0; it does not claim the
-  underlying runtime implements that release.
-- QuickJS's optional JavaScript `WebAssembly` global is disabled because its
-  WASIX implementation imports native Wasmer's `wasm_c_api_v0` namespace.
-  Reintroducing that surface through a browser-native OSS adapter is a tracked
-  compatibility gate, not an implicit host dependency.
+  current CI additionally requires source-baseline/compatibility-version
+  separation, SQLite 3.53.4, the exact unmodified package hashes, Gateway
+  health, and the agent turn to pass on one artifact.
+- QuickJS's JavaScript `WebAssembly` global is backed by a statically linked
+  `wasmi` C API compiled into the WASIX guest. Chromium proves nested module
+  compilation and execution without native Wasmer imports or ambient
+  capabilities.
 - The WASIX compiler sysroot is pinned to `v2025-12-10.1` so its process ABI
   matches Wasmer JS 0.10's WASIX 6.1 implementation. Newer process imports are
   not replaced with success-looking stubs.
-- Required lifecycle effects, durable OPFS recovery, worker behavior reached
-  by a real turn, capability-authorized model-provider egress, and a real
-  Gateway-backed agent turn remain unproven.
+- Required lifecycle effects are proven by the version-bound browser install
+  contract. The generation-addressed OPFS store separately proves recovery of
+  that official state after a complete browser restart. The deterministic
+  browser fixture proves the unmodified Gateway-backed agent path and its
+  capability-authorized TCP transport. A separate lane proves an actual model
+  response from checksum-pinned llama.cpp and Qwen processes. The guest
+  receives only a one-request operation capability; the model-service
+  credential, GGUF, and inference process stay on host loopback.
 
-These remaining gates stay explicit in the evidence; Gateway health cannot
-silently turn them into a completion claim.
+This proof remains scoped to the pinned OpenClaw workload; it does not turn
+Gateway health or one model response into a claim of complete Node or plugin
+compatibility.

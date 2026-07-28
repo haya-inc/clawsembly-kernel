@@ -89,7 +89,7 @@ The browser runtime is source-built from pinned upstream commits:
 ```text
 Chromium Worker
   -> patched Wasmer JS (browser-native async compilation)
-  -> WASIX scheduler (module bytes + pending-job Worker ownership)
+  -> WASIX scheduler (module bytes + cooperative shared/timer Workers)
   -> self-contained Edge.js WASIX
   -> embedded QuickJS N-API provider
   -> Node-compatible OpenClaw process
@@ -135,11 +135,17 @@ additionally prove WAL database bytes survive
 one Edge.js process and can be reopened read-only by another process sharing
 the same mounted directory.
 
-That mounted directory is currently an in-memory Wasmer JS capability object.
-It proves the SQLite and process boundary, but does not yet satisfy the North
-Star persistence requirement. The final storage broker must commit the
-capability directory to OPFS and recover it in a fresh browser session without
-granting ambient filesystem access to the guest.
+The mounted Wasmer JS directory remains a process-local capability object while
+OpenClaw runs. The kernel now commits its mutable state subtree to a
+generation-addressed OPFS store. A manifest records every directory, file
+length, and file SHA-256; its hash is committed through `HEAD.json` only after
+the whole generation is durable. Recovery creates a new Wasmer `Directory`,
+verifies the manifest and every payload file, and mounts no ambient host path.
+The browser proof fully closes Chromium between commit and recovery, then a new
+Edge.js process reopens OpenClaw's installed-plugin SQLite registry without
+re-running lifecycle scripts. A second clean restored directory starts the
+unmodified Gateway and completes the official authenticated health RPC. See
+[the OPFS directory store](opfs-directory-store.md).
 
 ### Complete package image
 
@@ -150,16 +156,33 @@ a deterministic `ClawsemblyFS` image. The browser verifies and mounts that
 complete image at `/openclaw`; OpenClaw files remain byte-identical.
 
 Required lifecycle scripts are recorded with their exact package identities
-and commands. They are not silently treated as complete: executing or replacing
-each required lifecycle effect inside the capability kernel remains an
-explicit gate before the package-install requirement is satisfied.
+and commands. The browser kernel executes the exact root pre/postinstall and
+`protobufjs` scripts against a shared capability directory. The root
+postinstall leaves the clean package files unchanged, creates the SQLite-backed
+installed plugin index, and a separate Edge.js process verifies all 33 records.
+The Google hook is a literal no-op. OpenClaw's own `allowBuilds` policy disables
+the `tree-sitter-bash` native build, and its reached command-explainer path uses
+the validated published Wasm grammar instead. This is a version-bound install
+contract, not permission to run arbitrary dependency scripts.
 
-Edge.js's optional QuickJS `globalThis.WebAssembly` implementation is disabled
-in this first browser build. That implementation imports native Wasmer's
-`wasm_c_api_v0` namespace, which Wasmer JS does not expose. The audited build
-rejects that namespace so an apparently self-contained artifact cannot regress
-to a hidden native-host dependency. Restoring nested JavaScript WebAssembly
-through an OSS browser-native adapter remains an explicit compatibility gate.
+Edge.js's QuickJS `globalThis.WebAssembly` surface is now backed by the
+MIT/Apache-2.0 `wasmi_c_api_impl` crate, compiled for
+`wasm32-unknown-unknown` and statically linked into the WASIX guest. The
+adapter implements Edge.js's existing standard Wasm C API integration without
+importing native Wasmer's `wasm_c_api_v0` namespace. Nested modules receive no
+ambient filesystem or network authority; JavaScript imports remain their only
+explicit host interface. Chromium proves a guest-created module compiling,
+instantiating, and exporting the value `42`.
+
+QuickJS is ref-counted and releases an otherwise unrooted `WeakRef` target
+immediately, while ECMAScript keeps a target observed by `WeakRef` alive until
+the end of the current job. Undici creates a `Response`, wraps it in
+`WeakRef`, and immediately dereferences it before resolving `fetch()`. The
+Edge.js compatibility patch holds constructor and successful `deref()` targets
+through the current microtask job, then clears the temporary roots. A browser
+regression probe verifies an unrooted target can be dereferenced in the
+constructing job; the full OpenClaw agent test exercises the same contract
+through Undici.
 
 The Wasmer JS patch is still required. Stock `@wasmer/sdk@0.10.0` validates a
 large byte buffer through its older compiler path, while passing only an
@@ -167,24 +190,67 @@ already-compiled `WebAssembly.Module` loses the original bytes required by
 WASIX child Workers. The kernel compiles asynchronously with Chromium, passes
 `{ module, bytes }`, and preserves both across scheduler messages.
 
-The scheduler also reserves a Worker until an asynchronous job's Future
-completes. Stock scheduling marks the Worker reusable as soon as an async
-payload launches. A WASIX sleep therefore leaves a pending JavaScript timer on
-that Worker, which can then receive a synchronous WASM process that blocks the
-timer's event loop. Under concurrent Gateway/client execution this starves the
-sleeping process even though its TCP data is already readable. The audited
-patch keeps the Worker busy through Future completion; the throttled browser
-loopback test is the regression proof.
+The scheduler separates three execution classes. Blocking WASM work retains
+exclusive Workers, and a Worker is released only after its JavaScript handler
+promise resolves. Dropping a Rust-side busy guard is not treated as completion.
+
+Non-blocking `task_shared` Futures use a lazily created pool of at most eight
+cooperative Workers for the scheduler lifetime. A Worker acknowledges when its
+JavaScript handler has accepted a shared Future; until that acknowledgement,
+the scheduler will not place another message on that Worker. Later Futures wait
+in one ready queue and are dispatched to the next acknowledging Worker. Each
+handler launches the Future without awaiting any preceding Future. This matches
+the `VirtualTaskManager` contract that shared tasks must yield rather than
+block. A shared Future never reserves a Worker, acknowledgements do not wait for
+Future completion, and there is no Future-completion queue.
+
+Both properties are required for long-lived networking actors. Reserving one
+Worker per Future eventually fills any fixed pool and leaves later SSE
+body-delivery work queued behind actors that intentionally never terminate.
+Conversely, concentrating every Future on one JavaScript event loop, or blindly
+sending round-robin messages to a Worker that has not accepted its preceding
+message, lets a CPU-heavy poll delay an otherwise independent client import or
+agent request on slower hosts. Eight acknowledgement-backpressured lanes bound
+Worker creation, cap each lane at one unacknowledged message, and let independent
+event loops keep network and client progress moving.
+
+The pinned Wasmer JS baseline originally resolved multithreaded
+`wasm-bindgen-futures` tasks with `wasm-bindgen@0.2.101`. Its
+`Atomics.waitAsync` Promise callback could run the task without first marking
+the `AtomicWaker` awake, losing a cross-thread wake or sporadically reaching an
+invalid wait state. In the self-hosted agent proof, the host model completed
+and the Gateway received initial assistant chunks, but the browser task then
+stalled before SSE completion. The audited patch upgrades the exact dependency
+family to `wasm-bindgen@0.2.106` and `wasm-bindgen-futures@0.4.56`, which contain
+the upstream `wasm-bindgen#4821` wake-before-run fix, and adapts Wasmer JS to the
+new `TryFromJsValue` interface. A subsequent public Ubuntu proof showed that a
+different Future boundary could still remain parked after a lost browser
+notification: the model and broker completed, but the final SSE chunks did not
+reach the official client. The dependency patch therefore also bounds native
+`Atomics.waitAsync` and its synchronous-Worker fallback to one second. A timed
+out wait re-polls the Future, providing a liveness backstop without buffering
+the response or widening the client's 120-second watchdog.
+
+`sleep_now` uses a separate timer-only Worker. Timer Futures may wait
+concurrently on that Worker's JavaScript event loop, and buffered timers are
+started concurrently after Worker initialization. The timer Worker never
+receives module-cache work or arbitrary shared tasks. This prevents each WASIX
+sleep from consuming a complete SDK Worker and keeps timer delivery independent
+of shared networking tasks. Rust wakers remain off the browser main thread,
+where `Atomics.wait` is forbidden. The throttled browser loopback test and full
+self-hosted agent turn are the regression proofs.
 
 The pinned `wasmer-wasix@0.601.0` also promotes a successful `Exit(0)` returned
 by a spawned, non-main WASM thread into `WasiProcess::terminate(0)`. Edge.js's
 WASIX libc thread trampoline can take that path after routine background work,
 which previously ended a live Gateway or client with code 0 and no Node
 shutdown event. The audited dependency patch keeps successful spawned-thread
-completion local while preserving process-wide propagation for nonzero exits.
-Three consecutive official Gateway health proofs pass with this rule; the
-preceding diagnostic build reproduced the faulty child-thread termination path
-twice with a unique exit code.
+completion local and skips `WasiFunctionEnv::on_exit` for that one path,
+because it also shuts down the process-wide instance group even when no exit
+code is propagated. Nonzero child exits retain the existing process-wide
+termination and cleanup. Three consecutive official Gateway health proofs pass
+with this rule; the preceding diagnostic build reproduced the faulty
+child-thread termination path twice with a unique exit code.
 
 The pinned Wasmer JS source also constructs a configured `WasiEnvBuilder` but
 then executes a different, unconfigured `WasiRunner`. That loses command-line
@@ -209,7 +275,7 @@ not the final efficiency design. A browser-native wake bridge may replace it
 once it preserves the same Node lifecycle behavior without starving embedder
 tasks.
 
-### Browser-local virtual networking
+### Browser-local loopback and capability egress
 
 The runtime now contains a browser-local virtual network namespace rather than
 delegating OpenClaw execution to a remote machine. The patched Wasmer JS
@@ -235,27 +301,119 @@ loopback sub-gate, including:
 - explicit listen, connect, listener-lifetime, and denied-egress behavior; and
 - ordinary Node `net` callback completion over synchronous WASIX virtual TCP.
 
+External TCP is a separate, optional capability on that same runtime object.
+Without `networkEgress`, every non-loopback route still fails with
+`PermissionDenied`. When granted, the browser accepts only an absolute relay
+`ws:` URL on loopback or a `wss:` URL elsewhere, a capability token, and an
+allowlist of exact DNS names and ports. Wildcards, numeric external IPs,
+unlisted ports, duplicate grants, and private or special-use addresses are
+denied by default. A private-network grant is explicit and exists primarily so
+the deterministic test fixture can remain local.
+
+The relay in `relay/` is MIT-licensed, self-hostable Rust. It authenticates the
+capability token with a constant-time comparison in
+`Sec-WebSocket-Protocol`, so credentials do not enter the relay URL. It exposes
+only DNS resolution and outbound TCP through `virtual-net`; it provides no
+remote shell, filesystem, process execution, UDP, inbound listener, or remote
+operating system. The relay independently enforces the same DNS-name, port,
+and private-address policy, making a compromised guest insufficient to widen
+the grant.
+
+The grant is deliberately described as a DNS-derived TCP endpoint capability.
+At the TCP layer, multiple DNS names can share one IP address; HTTPS authority
+and server identity therefore remain enforced by the guest's normal TLS/SNI
+and certificate validation. A future hostile-guest use case requiring
+isolation between virtual hosts on one shared IP would need a name-preserving
+TLS or HTTP relay rather than claiming that property from raw TCP.
+
+Node normally asks `getaddrinfo` for `AI_ADDRCONFIG`. The WASIX musl
+implementation probes address-family availability with UDP sockets, but this
+kernel intentionally grants DNS and TCP without UDP. The Edge.js/libuv patch
+clears only that redundant flag on WASI and still invokes the ordinary WASIX
+resolver. Browser evidence therefore exercises an unmodified
+`net.createConnection({host, port})`, not a custom JavaScript lookup shim.
+
+Two transport adapters close upstream lifecycle gaps. `virtual-net@0.601.0`
+does not forward a remote TCP EOF frame and its relay ignores a host socket's
+closed readiness. The audited dependency patch drains both readable and closed
+events, then forwards EOF as an empty receive response. The remote client also
+re-arms readable readiness while received frames remain queued and returns that
+empty frame as a zero-length read. The browser-local loopback buffer likewise
+re-arms readable readiness after a partial read while bytes remain buffered.
+This prevents readiness-bit coalescing from stranding fragmented SSE or
+WebSocket lifecycle frames behind the first consumed frame. Its remote client
+also reports writable readiness continuously after connection; the capability
+socket emits the single initial completion required by libuv and waits for real
+backpressure before signaling another writable event.
+
 The same namespace now carries the real OpenClaw protocol. The
-diagnostic-only Node-floor artifact starts the exact unmodified
+single source-built compatibility artifact starts the exact unmodified
 `openclaw@2026.7.1-2` Gateway in normal local mode. After the Gateway emits its
 own readiness markers, a second Edge.js guest runs the official
 `gateway call health` CLI, authenticates with a capability-scoped token, and
 receives a healthy JSON response over `ws://127.0.0.1:18789`. Gateway and
 client mount byte-identical package images into distinct filesystem
-instances. The response proves eight loaded plugins, no plugin errors, active
-configuration reload, and the default `main` agent.
+instances. The response proves the two official migrated startup plugins
+(`memory-core` and `ollama`), no plugin errors, active configuration reload,
+and the default `main` agent.
 
-This is a Gateway compatibility milestone, not a Node-version claim. The
-artifact differs from the source-built Edge.js Wasm only by two equal-length
-embedded version-label substitutions, and its evidence records both hashes
-and offsets. Genuine Node 24.15 compatibility, authorized model-provider
-egress, a real agent turn, and persistent recovery in a fresh browser session
-remain separate gates.
+The agent-turn proof then runs the official `openclaw agent` CLI in that
+second guest. The unmodified Gateway builds the real model request, sends it
+through Undici and the explicitly granted outbound-TCP capability, consumes a
+streaming OpenAI-compatible response from a deterministic local fixture, and
+returns the assistant marker to the CLI. The fixture records the request
+method, path, authorization, model, streaming flag, message roles, and
+instruction without receiving relay credentials or any wider guest authority.
 
-External model-provider traffic may later use a separately authorized
-self-hostable transport, but it cannot substitute for local Gateway loopback.
-The virtual network must fail unsupported routes explicitly and must never
-turn a requested loopback bind into a wildcard host bind.
+A separate self-hosted-model lane replaces the deterministic fixture with an
+actual OSS inference stack. The job downloads llama.cpp release `b9637` and
+Qwen2.5 0.5B Instruct Q4_K_M from immutable public revisions, verifies the
+release archive, executable, GGUF SHA-256, and GGUF byte length, and then binds
+both processes to host loopback. The model runs with its full 32K context so
+OpenClaw completes the requested turn without widening the one-request
+capability for automatic compaction. OpenClaw's supported per-model parameters
+set temperature to zero, and the broker rejects any request that does not carry
+that exact value, making the small-model proof reproducible rather than
+sampling-dependent.
+
+The response-only proof also configures the unmodified OpenClaw instance with
+`tools.deny: ["*"]`. The requested turn only has to produce a visible assistant
+answer, so it receives no tool authority. This keeps both the capability surface
+and the tool-schema portion of the small proof model's prompt minimal. Broader
+OpenClaw tool compatibility remains a separate claim.
+
+An OSS broker is the only inference endpoint visible to the browser kernel.
+The browser receives a bearer token authorizing one streaming completion for
+one exact model. The broker validates that request, replaces the bearer with a
+different host-local llama.cpp API key, and forwards it only to
+`127.0.0.1:18795`. Allowing plaintext upstream transport requires the explicit
+`--allow-loopback-http-upstream` flag and still rejects non-loopback hosts,
+implicit ports, query strings, redirects, and system proxies. Thus the GGUF,
+model-service credential, inference process, and arbitrary host networking
+never enter either WASIX guest.
+
+The Edge.js implementation baseline and compatibility claim remain distinct.
+`edgejs --version` reports the source identity `v24.13.2-pre`, while
+`process.version` and `process.versions.node` report the contract-gated
+compatibility version `v24.15.0` and `24.15.0`. That value is compiled from
+audited source, not substituted into a finished Wasm binary. The profile is
+scoped to the pinned unmodified OpenClaw workload and does not claim full Node
+test-suite conformance or that Edge.js is an official Node binary.
+
+OpenClaw introduced the Node 24.15 floor to reject embedded SQLite releases
+affected by the WAL-reset corruption bug. This kernel queries the loaded SQLite
+library and proves 3.53.4, above OpenClaw's 3.51.3 safe floor, before the
+unmodified Gateway uses state. The required install lifecycle effects execute
+on the same filesystem before Gateway startup. The deterministic fixture proves
+the real OpenClaw agent code path and capability transport. The self-hosted lane
+proves actual inference through a one-request opaque capability. Durable
+recovery is separately proven through a complete browser restart.
+
+Model-provider traffic can use this separately authorized self-hostable
+transport, but it cannot substitute for local Gateway loopback. Browser-local
+listeners always win over an egress resolution, unsupported routes fail
+explicitly, and a requested loopback bind is never turned into a wildcard host
+bind.
 
 The Edge.js compiler sysroot is pinned to wasix-libc `v2025-12-10.1`, the last
 release using the `proc_exec3`/`proc_spawn2` ABI implemented by Wasmer JS
@@ -265,30 +423,32 @@ semantics would violate the kernel's compatibility and capability boundaries.
 CI installs only that release's legacy-EH sysroot asset and verifies its pinned
 SHA-256, avoiding the toolchain's unrelated newer `exnref` asset set.
 
-The browser lane is publicly proven by
-[GitHub Actions run 30203815745](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30203815745).
-Chromium reported three arguments (`edgejs`, `-e`, and the evidence program),
-captured the runtime marker, and observed a clean exit. A second process proved
-that `process.exit(7)` unwinds immediately: stdout is exactly `before-exit\n`,
-the following statement is not executed, and WASIX reports code 7. A third
-process executes the exact official `openclaw.mjs` launcher and stops at its
-honest Node version gate with code 1, empty stdout, and no `dist/entry.js`
-fall-through. Additional guests prove synchronous SQLite persistence and the
-browser-local loopback exchange described above. The evidence pins:
+The
+[public browser build workflow](https://github.com/haya-inc/clawsembly-kernel/actions/workflows/edgejs-wasix-build.yml)
+builds the source-pinned runtime and executes the complete lane. Chromium
+reports three arguments (`edgejs`, `-e`, and the evidence program), captures
+the runtime marker, and observes a clean exit. A second process proves that
+`process.exit(7)` unwinds immediately: stdout is exactly `before-exit\n`, the
+following statement is not executed, and WASIX reports code 7. A third process
+executes the exact official `openclaw.mjs` launcher and proves that it accepts
+the source-built compatibility profile without modifying the launcher.
+Additional guests prove synchronous SQLite persistence and the browser-local
+loopback exchange described above. The evidence pins:
 
 - Edge `0.0.0-554eb9b`
-- Node `24.13.2`
+- Edge.js source baseline `v24.13.2-pre`
+- OpenClaw-scoped Node compatibility version `24.15.0`
 - V8 `0.0.0-node.0`
-- Edge.js WASIX SHA-256
-  `706af076949e662f3af2c2d57ae5e23b25956bf796377fa84b56bb048be208ae`
-- Wasmer JS runtime Wasm SHA-256
-  `467cbca59bd647262cd6f7377f6354a36f72f696d959acc60fb79ed52fa2c46d`
+- the Edge.js WASIX and source-built Wasmer JS SHA-256 digests
 - OpenClaw `2026.7.1-2` npm integrity
   `sha512-ycF3yPcbjN6bUPeaUx6Mh6vze1hQWoD3CT/wWcmD7a8xaHHHRUaAlaq+lFxMHf1ssEgODVAwjlzYqp2twkYZ7g==`
 
-That earlier run proves the browser runtime lane. The newer Gateway health
-proof extends the lane through readiness and authenticated client RPC, but
-still does not satisfy the complete North Star.
+The same workflow extends the lane through Gateway readiness, authenticated
+client RPC, the deterministic agent turn, fresh-browser OPFS recovery, and an
+actual Qwen turn through an opaque inference capability. The demonstrated
+model path no longer depends on a proprietary hosted API or places its
+model-service credential in the guest. Complete compatibility across every
+OpenClaw plugin, tool, and channel remains outside this proof's current scope.
 
 ## OPFS WAL precondition
 

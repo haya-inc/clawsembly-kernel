@@ -3,12 +3,28 @@ import "./style.css";
 type EdgeVersions = {
   edge: string;
   node: string;
+  processVersion: string;
   v8: string;
+  weakRefKeepsTargetDuringJob: boolean;
+};
+
+type NodeCompatibilityEvidence = {
+  distinctSourceAndCompatibilityVersions: boolean;
+  processVersion: string;
+  processVersionsNode: string;
+  sourceBaselineVersion: string;
 };
 
 type EventLoopMarker = {
   elapsedMs: number;
   timerKeepAlive: boolean;
+};
+
+type NestedWebAssemblyMarker = {
+  ambientCapabilities: "none";
+  answer: number;
+  available: boolean;
+  implementation: "wasmi-c-api-static";
 };
 
 type WasixOutput = {
@@ -57,6 +73,8 @@ const browserCpuThrottlingRate = Number(
 const marker = "clawsembly-edgejs-wasix-browser";
 const markerPrefix = "CLAWSEMBLY_EDGE_WASIX=";
 const eventLoopMarkerPrefix = "CLAWSEMBLY_EDGE_EVENT_LOOP=";
+const nestedWebAssemblyMarkerPrefix =
+  "CLAWSEMBLY_EDGE_NESTED_WEBASSEMBLY=";
 const sqliteMarkerPrefix = "CLAWSEMBLY_EDGE_SQLITE=";
 
 function markerPayload<T>(
@@ -180,11 +198,15 @@ async function runProbe(): Promise<void> {
     const module = await WebAssembly.compile(bytes);
     status.textContent = "Starting Edge.js inside the browser…";
     const runtimeScript = [
+      "const weakRef=new WeakRef({marker:'clawsembly-weakref-job'});",
       `console.log(${JSON.stringify(markerPrefix)} + JSON.stringify({`,
       `marker: ${JSON.stringify(marker)},`,
       "edge: process.versions.edge,",
       "node: process.versions.node,",
-      "v8: process.versions.v8",
+      "processVersion: process.version,",
+      "v8: process.versions.v8,",
+      "weakRefKeepsTargetDuringJob:",
+      "weakRef.deref()?.marker==='clawsembly-weakref-job'",
       "}))"
     ].join("");
     const moduleWithBytes = { module, bytes } as unknown as WebAssembly.Module;
@@ -204,6 +226,81 @@ async function runProbe(): Promise<void> {
     >(output as WasixOutput, markerPrefix);
     if (runtime.marker !== marker) {
       throw new Error(`Unexpected Edge.js marker: ${runtime.marker}`);
+    }
+
+    status.textContent =
+      "Separating the Edge.js source baseline from its Node compatibility profile…";
+    const sourceVersionInstance = await runWasix(moduleWithBytes, {
+      program: "edgejs",
+      args: ["--version"],
+      runtime: wasixRuntime
+    });
+    const sourceVersionOutput =
+      await sourceVersionInstance.wait() as WasixOutput;
+    const sourceBaselineVersion = sourceVersionOutput.stdout.trim();
+    const nodeCompatibility: NodeCompatibilityEvidence = {
+      processVersion: runtime.processVersion,
+      processVersionsNode: runtime.node,
+      sourceBaselineVersion,
+      distinctSourceAndCompatibilityVersions:
+        sourceBaselineVersion !== runtime.processVersion
+    };
+    if (
+      !sourceVersionOutput.ok
+      || sourceVersionOutput.stderr !== ""
+      || sourceBaselineVersion.length === 0
+      || runtime.processVersion !== `v${runtime.node}`
+      || !nodeCompatibility.distinctSourceAndCompatibilityVersions
+    ) {
+      throw new Error(
+        "Edge.js source/compatibility version evidence mismatch: "
+        + JSON.stringify({ nodeCompatibility, sourceVersionOutput })
+      );
+    }
+
+    status.textContent =
+      "Verifying guest-side WebAssembly through the static Wasmi C API…";
+    const nestedWebAssemblyScript = [
+      `const prefix=${JSON.stringify(nestedWebAssemblyMarkerPrefix)};`,
+      "const bytes=Uint8Array.from([",
+      "0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,",
+      "7,10,1,6,97,110,115,119,101,114,0,0,10,6,1,4,0,65,42,11",
+      "]);",
+      "const module=new WebAssembly.Module(bytes);",
+      "const instance=new WebAssembly.Instance(module,{});",
+      "const answer=instance.exports.answer();",
+      "console.log(prefix+JSON.stringify({",
+      "available:true,implementation:'wasmi-c-api-static',",
+      "ambientCapabilities:'none',answer",
+      "}));"
+    ].join("");
+    const nestedWebAssemblyInstance = await runWasix(moduleWithBytes, {
+      program: "edgejs",
+      args: ["-e", nestedWebAssemblyScript],
+      runtime: wasixRuntime
+    });
+    const nestedWebAssemblyOutput =
+      await nestedWebAssemblyInstance.wait() as WasixOutput;
+    if (!nestedWebAssemblyOutput.ok) {
+      throw new Error(
+        "Edge.js guest WebAssembly probe failed: "
+        + JSON.stringify(nestedWebAssemblyOutput)
+      );
+    }
+    const nestedWebAssembly = markerPayload<NestedWebAssemblyMarker>(
+      nestedWebAssemblyOutput,
+      nestedWebAssemblyMarkerPrefix
+    );
+    if (
+      !nestedWebAssembly.available
+      || nestedWebAssembly.implementation !== "wasmi-c-api-static"
+      || nestedWebAssembly.ambientCapabilities !== "none"
+      || nestedWebAssembly.answer !== 42
+    ) {
+      throw new Error(
+        "Edge.js guest WebAssembly contract mismatch: "
+        + JSON.stringify(nestedWebAssembly)
+      );
     }
 
     status.textContent =
@@ -582,6 +679,8 @@ async function runProbe(): Promise<void> {
       executor: "@wasmer/sdk",
       artifactBytes: bytes.byteLength,
       runtime,
+      nodeCompatibility,
+      nestedWebAssembly,
       eventLoop,
       exitCode: output.code,
       stderr: output.stderr,

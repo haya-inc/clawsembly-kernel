@@ -65,8 +65,12 @@ export default defineConfig({
     rollupOptions: {
       input: [
         "index.html",
+        "install-lifecycle-probe.html",
+        "openclaw-agent-turn-probe.html",
+        "openclaw-opfs-persistence-probe.html",
         "openclaw-probe.html",
         "openclaw-gateway-health-probe.html",
+        "network-egress-probe.html",
         "package-image-probe.html",
         "package-runtime-probe.html",
         "wasix-probe.html"

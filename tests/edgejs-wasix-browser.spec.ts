@@ -9,9 +9,31 @@ import path from "node:path";
 
 type BrowserBuildContract = {
   browserExecutor: {
+    multithreadWaker: {
+      lostWakeRecovery: "bounded-wait-async-repoll";
+      maxSleepMs: 1000;
+      upstreamFix: "wasm-bindgen#4821";
+      waitAsyncPromiseCallback: "wake-before-run";
+      wasmBindgen: "0.2.106";
+      wasmBindgenFutures: "0.4.56";
+    };
     package: string;
     schedulerStress: {
-      asyncWorkerReservation: "until-future-completion";
+      asyncConcurrency:
+        "concurrent-cooperative-nonblocking-futures-per-worker";
+      asyncBackpressure:
+        "queue-until-javascript-handler-invocation-acknowledged";
+      asyncCompletionDependency: "none";
+      asyncDispatch: "acceptance-acknowledged-ready-queue";
+      asyncFutureReservation: "none";
+      asyncWorkerAllocation: "lazy-bounded-cooperative-pool";
+      asyncWorkerLifetime: "scheduler-lifetime";
+      blockingWorkerRelease: "after-javascript-handler-completion";
+      maxAsyncWorkers: 8;
+      maxUnacknowledgedAsyncMessagesPerWorker: 1;
+      timerConcurrency: "concurrent-timer-futures";
+      timerWorkerAllocation: "one-dedicated-timer-worker-per-scheduler";
+      sleepTimerReservation: "until-javascript-timer-resolution";
       browserCpuThrottlingRate: number;
     };
     version: string;
@@ -21,6 +43,10 @@ type BrowserBuildContract = {
     marker: string;
     node: string;
     v8: string;
+  };
+  nodeCompatibility: {
+    reportedVersion: string;
+    sourceBaselineVersion: string;
   };
   sqlite: {
     version: string;
@@ -36,11 +62,25 @@ type BrowserEvidence = {
     timerKeepAlive: boolean;
   };
   exitCode: number;
+  nestedWebAssembly: {
+    ambientCapabilities: "none";
+    answer: number;
+    available: boolean;
+    implementation: "wasmi-c-api-static";
+  };
   runtime: {
     edge: string;
     marker: string;
     node: string;
+    processVersion: string;
     v8: string;
+    weakRefKeepsTargetDuringJob: boolean;
+  };
+  nodeCompatibility: {
+    distinctSourceAndCompatibilityVersions: boolean;
+    processVersion: string;
+    processVersionsNode: string;
+    sourceBaselineVersion: string;
   };
   processExit: {
     code: number;
@@ -147,6 +187,14 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
   });
   const cpuThrottlingRate =
     contract.browserExecutor.schedulerStress.browserCpuThrottlingRate;
+  expect(contract.browserExecutor.multithreadWaker).toEqual({
+    wasmBindgen: "0.2.106",
+    wasmBindgenFutures: "0.4.56",
+    waitAsyncPromiseCallback: "wake-before-run",
+    upstreamFix: "wasm-bindgen#4821",
+    maxSleepMs: 1000,
+    lostWakeRecovery: "bounded-wait-async-repoll"
+  });
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Emulation.setCPUThrottlingRate", {
     rate: cpuThrottlingRate
@@ -182,7 +230,23 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
       timerKeepAlive: true
     },
     exitCode: 0,
-    runtime: contract.expectedRuntime,
+    runtime: {
+      ...contract.expectedRuntime,
+      processVersion: `v${contract.nodeCompatibility.reportedVersion}`,
+      weakRefKeepsTargetDuringJob: true
+    },
+    nodeCompatibility: {
+      distinctSourceAndCompatibilityVersions: true,
+      processVersion: `v${contract.nodeCompatibility.reportedVersion}`,
+      processVersionsNode: contract.nodeCompatibility.reportedVersion,
+      sourceBaselineVersion: contract.nodeCompatibility.sourceBaselineVersion
+    },
+    nestedWebAssembly: {
+      available: true,
+      implementation: "wasmi-c-api-static",
+      ambientCapabilities: "none",
+      answer: 42
+    },
     processExit: {
       code: 7,
       ok: false,

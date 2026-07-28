@@ -1,10 +1,28 @@
 diff --git a/src/syscalls/wasix/thread_spawn.rs b/src/syscalls/wasix/thread_spawn.rs
 --- a/src/syscalls/wasix/thread_spawn.rs
 +++ b/src/syscalls/wasix/thread_spawn.rs
-@@ -216,2 +216,4 @@ fn call_module_internal<M: MemorySize>(
+@@ -212,9 +212,22 @@ fn call_module_internal<M: MemorySize>(
+     );
+     trace!("callback finished (ret={:?})", thread_result);
+ 
++    let successful_child_exit = matches!(
++        &thread_result,
++        Err(err)
++            if matches!(
++                err.downcast_ref::<WasiError>(),
++                Some(WasiError::Exit(code)) if code.is_success()
++            )
++    );
+     let exit_code = handle_thread_result(env, store, thread_result)?;
+ 
 -    // Clean up the environment on exit
 -    env.on_exit(store, exit_code);
 +    // WASIX libc can surface a successful child-thread trampoline as Exit(0).
-+    // Keep that completion local while preserving process-wide nonzero exits.
-+    let process_exit_code = exit_code.filter(|code| !code.is_success());
-+    env.on_exit(store, process_exit_code);
++    // Keep that completion entirely local. WasiFunctionEnv::on_exit() also
++    // shuts down the linker instance group, so calling it with None can still
++    // terminate the main process even when no process exit code is propagated.
++    if !successful_child_exit {
++        env.on_exit(store, exit_code);
++    }
+     Ok(())
+ }

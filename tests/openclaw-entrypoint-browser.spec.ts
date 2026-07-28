@@ -16,15 +16,15 @@ type OpenClawArtifactContract = {
 };
 
 type EntrypointEvidence = {
-  actualNodeVersion: string;
+  actualNodeVersion?: string;
   artifactBytes: number;
-  blocker: string;
+  blocker?: string;
   crossOriginIsolated: boolean;
   executor: string;
   exitCode: number;
-  launcherNodeRange: string;
+  launcherNodeRange?: string;
   launcherBytes: number;
-  requiredNodeEngine: string;
+  requiredNodeEngine?: string;
   schemaVersion: number;
   status: string;
   stderr: string;
@@ -41,7 +41,7 @@ const contract = JSON.parse(
   )
 ) as OpenClawArtifactContract;
 
-test("official OpenClaw launcher reaches its first honest browser boundary", async ({ page }, testInfo) => {
+test("official OpenClaw launcher accepts the source-built compatibility profile", async ({ page }, testInfo) => {
   test.skip(
     edgeArtifactPath === undefined
       || !existsSync(edgeArtifactPath)
@@ -125,25 +125,14 @@ test("official OpenClaw launcher reaches its first honest browser boundary", asy
   ) as EntrypointEvidence;
   expect(evidence).toMatchObject({
     schemaVersion: 1,
-    status: "blocked",
-    blocker: "node-version-gate",
+    status: "pass",
     crossOriginIsolated: true,
     executor: "@wasmer/sdk",
-    exitCode: 1,
-    actualNodeVersion: "v24.13.2",
-    requiredNodeEngine: contract.nodeEngine,
+    exitCode: 0,
     version: contract.version,
-    stdout: ""
+    stdout: `OpenClaw ${contract.version}\n`,
+    stderr: ""
   });
-  expect(evidence.stderr).toContain(
-    `openclaw: Node.js ${evidence.launcherNodeRange} is required `
-    + `(current: ${evidence.actualNodeVersion}).`
-  );
-  expect(
-    evidence.launcherNodeRange
-      .replace(/, or /gu, " || ")
-      .replace(/, /gu, " || ")
-  ).toBe(contract.nodeEngine);
   expect(evidence.stderr).not.toContain("missing dist/entry");
   expect(evidence.artifactBytes).toBeGreaterThan(1_000_000);
   expect(evidence.launcherBytes).toBe(launcherBytes.byteLength);

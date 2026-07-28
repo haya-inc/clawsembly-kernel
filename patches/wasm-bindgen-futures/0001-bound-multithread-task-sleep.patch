@@ -1,0 +1,87 @@
+diff --git i/src/task/multithread.rs w/src/task/multithread.rs
+index 295f4e6..2610ab9 100644
+--- i/src/task/multithread.rs
++++ w/src/task/multithread.rs
+@@ -14,6 +14,10 @@ use wasm_bindgen::prelude::*;
+ 
+ const SLEEPING: i32 = 0;
+ const AWAKE: i32 = 1;
++// Cross-thread producers and browser notifications are both fallible
++// boundaries. Re-poll at a low fixed frequency so one missed notification
++// cannot park a live Future forever.
++const MAX_SLEEP_MILLIS: f64 = 1_000.0;
+ 
+ struct AtomicWaker {
+     state: AtomicI32,
+@@ -180,11 +184,17 @@ fn wait_async(ptr: &AtomicI32, current_value: i32) -> Option<js_sys::Promise> {
+         Some(crate::task::wait_async_polyfill::wait_async(
+             ptr,
+             current_value,
++            MAX_SLEEP_MILLIS,
+         ))
+     } else {
+         let mem = wasm_bindgen::memory().unchecked_into::<js_sys::WebAssembly::Memory>();
+         let array = js_sys::Int32Array::new(&mem.buffer());
+-        let result = Atomics::wait_async(&array, ptr.as_ptr() as u32 / 4, current_value);
++        let result = Atomics::wait_async(
++            &array,
++            ptr.as_ptr() as u32 / 4,
++            current_value,
++            MAX_SLEEP_MILLIS,
++        );
+         if result.async_() {
+             Some(result.value())
+         } else {
+@@ -198,7 +208,12 @@ fn wait_async(ptr: &AtomicI32, current_value: i32) -> Option<js_sys::Promise> {
+         type WaitAsyncResult;
+ 
+         #[wasm_bindgen(static_method_of = Atomics, js_name = waitAsync)]
+-        fn wait_async(buf: &js_sys::Int32Array, index: u32, value: i32) -> WaitAsyncResult;
++        fn wait_async(
++            buf: &js_sys::Int32Array,
++            index: u32,
++            value: i32,
++            timeout: f64,
++        ) -> WaitAsyncResult;
+ 
+         #[wasm_bindgen(static_method_of = Atomics, js_name = waitAsync, getter)]
+         fn get_wait_async() -> JsValue;
+diff --git i/src/task/wait_async_polyfill.rs w/src/task/wait_async_polyfill.rs
+index eed90c7..8265507 100644
+--- i/src/task/wait_async_polyfill.rs
++++ w/src/task/wait_async_polyfill.rs
+@@ -64,7 +64,7 @@ fn free_helper(helper: Worker) {
+     helpers.truncate(10); // random arbitrary limit chosen here
+ }
+ 
+-pub fn wait_async(ptr: &AtomicI32, value: i32) -> Promise {
++pub fn wait_async(ptr: &AtomicI32, value: i32, timeout: f64) -> Promise {
+     Promise::new(&mut |resolve, _reject| {
+         let helper = alloc_helper();
+         let helper_ref = helper.clone();
+@@ -77,10 +77,11 @@ pub fn wait_async(ptr: &AtomicI32, value: i32) -> Promise {
+         });
+         helper.set_onmessage(Some(onmessage_callback.as_ref().unchecked_ref()));
+ 
+-        let data = Array::of3(
++        let data = Array::of4(
+             &wasm_bindgen::memory(),
+             &JsValue::from(ptr.as_ptr() as u32 / 4),
+             &JsValue::from(value),
++            &JsValue::from(timeout),
+         );
+ 
+         helper
+diff --git i/src/task/worker.js w/src/task/worker.js
+index d25dab6..2e8d1ee 100644
+--- i/src/task/worker.js
++++ w/src/task/worker.js
+@@ -1,6 +1,6 @@
+ onmessage = function (ev) {
+-    let [ia, index, value] = ev.data;
++    let [ia, index, value, timeout] = ev.data;
+     ia = new Int32Array(ia.buffer);
+-    let result = Atomics.wait(ia, index, value);
++    let result = Atomics.wait(ia, index, value, timeout);
+     postMessage(result);
+ };

@@ -14,15 +14,18 @@
     "package-contract:generate": "node scripts/generate-openclaw-package-contract.mjs",
     "package-contract:check": "node scripts/generate-openclaw-package-contract.mjs --check",
     "package-image:build": "node scripts/build-openclaw-package-image.mjs",
-    "edgejs:diagnostic-node-floor": "node scripts/create-edgejs-node-version-diagnostic.mjs",
     "contract:check": "node scripts/generate-openclaw-sqlite-contract.mjs --check && npm run package-contract:check && node scripts/verify-edgejs-browser-build-contract.mjs",
     "typecheck": "tsc -p tsconfig.app.json && tsc -p tsconfig.worker.json && tsc -p tsconfig.node.json",
     "build": "npm run typecheck && vite build",
     "preview": "vite preview",
     "test:clawsemblyfs": "node --test tests/clawsemblyfs.test.ts",
+    "test:agent-turn-response": "node --test tests/openclaw-agent-turn-response.test.ts",
     "test:browser": "playwright test",
     "test:edgejs": "node scripts/run-edgejs-openclaw-state-contract.mjs",
-    "check": "npm run contract:check && npm run build && npm run test:clawsemblyfs && npm run test:browser && npm run test:edgejs"
+    "relay:patch": "node scripts/apply-cargo-dependency-patches.mjs --manifest relay/Cargo.toml --package virtual-net",
+    "relay:check": "npm run relay:patch && cargo fmt --manifest-path relay/Cargo.toml -- --check && cargo check --locked --manifest-path relay/Cargo.toml && cargo test --locked --manifest-path relay/Cargo.toml",
+    "broker:check": "cargo fmt --manifest-path provider-broker/Cargo.toml -- --check && cargo check --locked --manifest-path provider-broker/Cargo.toml && cargo test --locked --manifest-path provider-broker/Cargo.toml",
+    "check": "npm run contract:check && npm run build && npm run relay:check && npm run broker:check && npm run test:clawsemblyfs && npm run test:agent-turn-response && npm run test:browser && npm run test:edgejs"
   },
   "dependencies": {
     "@sqlite.org/sqlite-wasm": "3.53.0-build1"
