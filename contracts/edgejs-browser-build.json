@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 11,
+  "schemaVersion": 12,
   "runtimeProvider": "quickjs",
   "upstream": {
     "repository": "https://github.com/wasmerio/edgejs",
@@ -120,7 +120,7 @@
         "package": "virtual-net",
         "version": "0.601.0",
         "path": "patches/virtual-net/0001-forward-remote-tcp-eof.patch",
-        "sha256": "63786a70e2912bafa4c2b85d2d653617e0c36736afd721a78190b9f64a2ef3ef"
+        "sha256": "2ba12a8e71d67463958d06d4cead62907ac85a17a51ca70180b5271f3d8651be"
       }
     ],
     "networkCapability": {
@@ -137,6 +137,10 @@
         "authority": "dns-derived-ip-and-port",
         "rawIp": "deny",
         "privateNetwork": "deny-unless-explicit",
+        "tcpReceiveLifecycle": {
+          "closedInterest": "drain-and-forward-eof",
+          "eofFrame": "empty-receive"
+        },
         "exposes": [
           "dns-resolution",
           "outbound-tcp"

@@ -1,5 +1,5 @@
 diff --git a/src/server.rs b/src/server.rs
-index 816ac49..c27146e 100644
+index 816ac49..d180c11 100644
 --- a/src/server.rs
 +++ b/src/server.rs
 @@ -1457,7 +1457,14 @@ impl RemoteAdapterSocket {
@@ -18,3 +18,25 @@ index 816ac49..c27146e 100644
                          Ok(amt) => {
                              let chunk_unsafe: &mut [MaybeUninit<u8>] = &mut chunk[..amt];
                              let chunk_unsafe: &mut [u8] =
+@@ -1585,13 +1592,14 @@ impl RemoteAdapterHandler {
+ impl InterestHandler for RemoteAdapterHandler {
+     fn push_interest(&mut self, interest: virtual_mio::InterestType) {
+         let mut guard = self.state.lock().unwrap();
+-        guard.driver_wakers.drain(..).for_each(|w| w.wake());
+-        let socket_id = match self.socket_id {
+-            Some(s) => s,
+-            None => return,
+-        };
+-        if interest == virtual_mio::InterestType::Readable {
+-            guard.readable.insert(socket_id);
++        if let Some(socket_id) = self.socket_id {
++            if matches!(
++                interest,
++                virtual_mio::InterestType::Readable | virtual_mio::InterestType::Closed
++            ) {
++                guard.readable.insert(socket_id);
++            }
+         }
++        guard.driver_wakers.drain(..).for_each(|w| w.wake());
+     }
+ 

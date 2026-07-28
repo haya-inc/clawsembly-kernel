@@ -150,13 +150,40 @@ test("unmodified OpenClaw completes an agent turn through capability egress", as
       pageError.then((error) => ({ error, kind: "pageerror" as const }))
     ]);
     if (outcome.kind === "pageerror") throw outcome.error;
+    const resultText = await page.locator("#result").innerText();
+    const parsedResult = JSON.parse(resultText) as unknown;
+    const persistedEvidence = {
+      ...(parsedResult !== null
+        && typeof parsedResult === "object"
+        && !Array.isArray(parsedResult)
+        ? parsedResult
+        : { result: parsedResult }),
+      providerFixtureHost: {
+        implementation: "deterministic OpenAI-compatible SSE fixture",
+        interChunkDelayMs: 75,
+        streamDelivery: [
+          "headers",
+          "assistant",
+          "finish",
+          "done",
+          "eof"
+        ],
+        requests
+      }
+    };
+    writeFileSync(
+      testInfo.outputPath("openclaw-agent-turn-browser-evidence.json"),
+      `${JSON.stringify(persistedEvidence, null, 2)}\n`
+    );
+    await testInfo.attach("openclaw-agent-turn-browser-evidence", {
+      body: Buffer.from(JSON.stringify(persistedEvidence, null, 2)),
+      contentType: "application/json"
+    });
     if (await status.getAttribute("data-state") === "fail") {
-      throw new Error(await page.locator("#result").innerText());
+      throw new Error(resultText);
     }
 
-    const evidence = JSON.parse(
-      await page.locator("#result").innerText()
-    ) as AgentTurnEvidence;
+    const evidence = parsedResult as AgentTurnEvidence;
     expect(evidence).toMatchObject({
       schemaVersion: 1,
       status: "agent-turn-pass",
@@ -242,22 +269,6 @@ test("unmodified OpenClaw completes an agent turn through capability egress", as
     expect(completionRequest?.messageCount).toBeGreaterThanOrEqual(2);
     expect(completionRequest?.messageRoles).toContain("system");
     expect(completionRequest?.messageRoles).toContain("user");
-
-    const persistedEvidence = {
-      ...evidence,
-      providerFixtureHost: {
-        implementation: "deterministic OpenAI-compatible SSE fixture",
-        requests
-      }
-    };
-    writeFileSync(
-      testInfo.outputPath("openclaw-agent-turn-browser-evidence.json"),
-      `${JSON.stringify(persistedEvidence, null, 2)}\n`
-    );
-    await testInfo.attach("openclaw-agent-turn-browser-evidence", {
-      body: Buffer.from(JSON.stringify(persistedEvidence, null, 2)),
-      contentType: "application/json"
-    });
   } finally {
     relay?.kill("SIGTERM");
     fixture.closeAllConnections();
@@ -271,6 +282,10 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+async function delay(milliseconds: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function handleFixtureRequest(
@@ -328,7 +343,9 @@ async function handleFixtureRequest(
       Connection: "keep-alive",
       "Content-Type": "text/event-stream"
     });
+    response.flushHeaders();
     const created = 1_785_134_400;
+    await delay(75);
     response.write(`data: ${JSON.stringify({
       id: "chatcmpl-clawsembly-proof",
       object: "chat.completion.chunk",
@@ -343,6 +360,7 @@ async function handleFixtureRequest(
         finish_reason: null
       }]
     })}\n\n`);
+    await delay(75);
     response.write(`data: ${JSON.stringify({
       id: "chatcmpl-clawsembly-proof",
       object: "chat.completion.chunk",
@@ -359,7 +377,10 @@ async function handleFixtureRequest(
         total_tokens: 2
       }
     })}\n\n`);
-    response.end("data: [DONE]\n\n");
+    await delay(75);
+    response.write("data: [DONE]\n\n");
+    await delay(75);
+    response.end();
     return;
   }
 
