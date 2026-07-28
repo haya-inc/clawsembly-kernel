@@ -88,6 +88,11 @@ type SelfHostedAgentTurnEvidence = {
     generation: {
       temperature: number;
     };
+    proofAgentPolicy: {
+      allowedTools: string[];
+      deny: string[];
+      rationale: string;
+    };
     guestEndpoint: string;
     guestOperationCapability: {
       authority: string;
@@ -308,6 +313,10 @@ test(
           generation: {
             temperature: 0
           },
+          proofAgentPolicy: {
+            allowedTools: [],
+            deny: ["*"]
+          },
           guestEndpoint: "http://localhost:18794/v1",
           guestOperationCapability: {
             authority:
@@ -409,6 +418,10 @@ test(
       ).toBe(true);
       expect(browserEvidence.gateway.stdout).toContain("[ws] ← req agent");
       expect(browserEvidence.gateway.stdout).toContain("[ws] → res ✓ agent");
+      expect(browserEvidence.gateway.stdout).toContain(
+        "[agents/tool-policy] tool policy removed"
+      );
+      expect(browserEvidence.gateway.stdout).toContain("matched *");
       expect([
         "running-at-agent-turn-proof",
         "exited-after-agent-turn-output"

@@ -195,19 +195,24 @@ exclusive Workers, and a Worker is released only after its JavaScript handler
 promise resolves. Dropping a Rust-side busy guard is not treated as completion.
 
 Non-blocking `task_shared` Futures use a lazily created pool of at most eight
-cooperative Workers for the scheduler lifetime. Dispatch is round-robin, and
-each Worker's JavaScript message handler launches a Future without awaiting the
-preceding Future. This matches the `VirtualTaskManager` contract that shared
-tasks must yield rather than block. A shared Future never reserves a Worker and
-there is no Future-completion queue.
+cooperative Workers for the scheduler lifetime. A Worker acknowledges when its
+JavaScript handler has accepted a shared Future; until that acknowledgement,
+the scheduler will not place another message on that Worker. Later Futures wait
+in one ready queue and are dispatched to the next acknowledging Worker. Each
+handler launches the Future without awaiting any preceding Future. This matches
+the `VirtualTaskManager` contract that shared tasks must yield rather than
+block. A shared Future never reserves a Worker, acknowledgements do not wait for
+Future completion, and there is no Future-completion queue.
 
 Both properties are required for long-lived networking actors. Reserving one
 Worker per Future eventually fills any fixed pool and leaves later SSE
 body-delivery work queued behind actors that intentionally never terminate.
-Conversely, concentrating every Future on one JavaScript event loop lets a
-CPU-heavy poll delay an otherwise independent client import or agent request on
-slower hosts. Eight cooperative lanes bound Worker creation while allowing
-independent event loops to keep network and client progress moving.
+Conversely, concentrating every Future on one JavaScript event loop, or blindly
+sending round-robin messages to a Worker that has not accepted its preceding
+message, lets a CPU-heavy poll delay an otherwise independent client import or
+agent request on slower hosts. Eight acknowledgement-backpressured lanes bound
+Worker creation, cap each lane at one unacknowledged message, and let independent
+event loops keep network and client progress moving.
 
 `sleep_now` uses a separate timer-only Worker. Timer Futures may wait
 concurrently on that Worker's JavaScript event loop, and buffered timers are
@@ -353,6 +358,12 @@ capability for automatic compaction. OpenClaw's supported per-model parameters
 set temperature to zero, and the broker rejects any request that does not carry
 that exact value, making the small-model proof reproducible rather than
 sampling-dependent.
+
+The response-only proof also configures the unmodified OpenClaw instance with
+`tools.deny: ["*"]`. The requested turn only has to produce a visible assistant
+answer, so it receives no tool authority. This keeps both the capability surface
+and the tool-schema portion of the small proof model's prompt minimal. Broader
+OpenClaw tool compatibility remains a separate claim.
 
 An OSS broker is the only inference endpoint visible to the browser kernel.
 The browser receives a bearer token authorizing one streaming completion for

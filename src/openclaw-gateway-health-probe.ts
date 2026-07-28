@@ -326,6 +326,7 @@ const providerDisplayName = selfHostedModelProof
   ? "Clawsembly self-hosted OSS model proof"
   : "Clawsembly deterministic proof fixture";
 const selfHostedModelTemperature = 0;
+const selfHostedModelToolDeny = ["*"];
 const sensitiveValues = selfHostedModelProof
   ? [
       relayToken,
@@ -636,6 +637,13 @@ async function runProbe(): Promise<void> {
               : {})
           }
         },
+        ...(selfHostedModelProof
+          ? {
+              tools: {
+                deny: selfHostedModelToolDeny
+              }
+            }
+          : {}),
         ...(agentTurnProof
           ? {
               models: {
@@ -1172,6 +1180,14 @@ async function runProbe(): Promise<void> {
               expectedMarker: agentTurnMarker,
               generation: {
                 temperature: selfHostedModelTemperature
+              },
+              proofAgentPolicy: {
+                allowedTools: [],
+                deny: selfHostedModelToolDeny,
+                rationale:
+                  "This response-only proof grants no tool authority, keeping "
+                  + "the model prompt and capability surface minimal without "
+                  + "modifying the OpenClaw package."
               },
               model: `${providerName}/${providerModel}`,
               runtime: {

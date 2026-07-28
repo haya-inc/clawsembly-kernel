@@ -13,13 +13,16 @@ type BrowserBuildContract = {
     schedulerStress: {
       asyncConcurrency:
         "concurrent-cooperative-nonblocking-futures-per-worker";
-      asyncDispatch:
-        "round-robin-non-awaited-javascript-handler-promises";
+      asyncBackpressure:
+        "queue-until-javascript-handler-invocation-acknowledged";
+      asyncCompletionDependency: "none";
+      asyncDispatch: "acceptance-acknowledged-ready-queue";
       asyncFutureReservation: "none";
       asyncWorkerAllocation: "lazy-bounded-cooperative-pool";
       asyncWorkerLifetime: "scheduler-lifetime";
       blockingWorkerRelease: "after-javascript-handler-completion";
       maxAsyncWorkers: 8;
+      maxUnacknowledgedAsyncMessagesPerWorker: 1;
       timerConcurrency: "concurrent-timer-futures";
       timerWorkerAllocation: "one-dedicated-timer-worker-per-scheduler";
       sleepTimerReservation: "until-javascript-timer-resolution";
