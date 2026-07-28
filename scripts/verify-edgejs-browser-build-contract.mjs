@@ -27,7 +27,7 @@ const nestedWasmLock = readFileSync(
   "utf8"
 );
 
-assert.equal(contract.schemaVersion, 13);
+assert.equal(contract.schemaVersion, 14);
 assert.equal(contract.runtimeProvider, "quickjs");
 assert.equal(contract.upstream.commit, edgeArtifact.source.commit);
 assert.equal(contract.upstream.repository, edgeArtifact.source.repository);
@@ -162,7 +162,10 @@ assert.deepEqual(contract.browserExecutor.networkCapability, {
   default: "deny",
   loopback: {
     scope: "runtime-object",
-    transport: "browser-local"
+    transport: "browser-local",
+    tcpReceiveLifecycle: {
+      partialReads: "rearm-readable-while-buffered"
+    }
   },
   egress: {
     transport: "virtual-net-over-websocket",

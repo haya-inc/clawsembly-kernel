@@ -292,7 +292,8 @@ mod tests {
     use virtual_net::{
         meta::{MessageRequest, MessageResponse, RequestType, ResponseType},
         ruleset::Direction,
-        InterestHandler, InterestType, RemoteNetworkingClient,
+        InterestHandler, InterestType, LoopbackNetworking, RemoteNetworkingClient,
+        VirtualConnectedSocket,
     };
 
     #[derive(Clone, Debug, Default)]
@@ -481,6 +482,38 @@ mod tests {
         assert_eq!(socket.try_recv(&mut buffer, false).unwrap(), 0);
 
         driver.abort();
+    }
+
+    #[tokio::test]
+    async fn partial_loopback_read_rearms_level_readiness() {
+        let networking = LoopbackNetworking::default();
+        let address = "127.0.0.1:18789".parse().unwrap();
+        let mut listener = networking
+            .listen_tcp(address, false, false, false)
+            .await
+            .unwrap();
+        let mut sender = networking
+            .loopback_connect_to("127.0.0.100:18789".parse().unwrap(), address)
+            .unwrap();
+        let (mut receiver, _) = listener.try_accept().unwrap();
+        let state = CollapsingReadableState::default();
+        receiver
+            .set_handler(Box::new(CollapsingReadableHandler {
+                state: state.clone(),
+            }))
+            .unwrap();
+
+        assert_eq!(sender.try_send(b"assistant-finish").unwrap(), 16);
+        assert!(state.pop());
+        let mut buffer = [MaybeUninit::<u8>::uninit(); 9];
+        let first = receiver.try_recv(&mut buffer, false).unwrap();
+        assert_eq!(assume_initialized(&buffer[..first]), b"assistant");
+        assert!(
+            state.pop(),
+            "remaining loopback bytes did not rearm readable"
+        );
+        let second = receiver.try_recv(&mut buffer, false).unwrap();
+        assert_eq!(assume_initialized(&buffer[..second]), b"-finish");
     }
 
     fn assume_initialized(bytes: &[MaybeUninit<u8>]) -> &[u8] {

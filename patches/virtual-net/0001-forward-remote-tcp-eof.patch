@@ -136,3 +136,19 @@ index 816ac49..d180c11 100644
 +        guard.driver_wakers.drain(..).for_each(|w| w.wake());
      }
  
+diff --git a/src/tcp_pair.rs b/src/tcp_pair.rs
+index 892dc28..f271abe 100644
+--- a/src/tcp_pair.rs
++++ b/src/tcp_pair.rs
+@@ -274,6 +274,11 @@ impl SocketBuffer {
+         if let Some(handler) = state.pull_handler.as_mut() {
+             handler.push_interest(InterestType::Writable);
+         }
++        if !state.buffer.is_empty() {
++            if let Some(handler) = state.push_handler.as_mut() {
++                handler.push_interest(InterestType::Readable);
++            }
++        }
+         state.wakers.drain(..).for_each(|w| w.wake());
+         Ok(amt)
+     }
