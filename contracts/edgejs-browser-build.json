@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 19,
+  "schemaVersion": 20,
   "runtimeProvider": "quickjs",
   "upstream": {
     "repository": "https://github.com/wasmerio/edgejs",
@@ -125,6 +125,12 @@
         "version": "0.601.0",
         "path": "patches/virtual-net/0001-forward-remote-tcp-eof.patch",
         "sha256": "121f18dcdb67ab0ba9a991bc06331bc048a92a12d7aecabf7ef1e17bc6f90fef"
+      },
+      {
+        "package": "wasm-bindgen-futures",
+        "version": "0.4.56",
+        "path": "patches/wasm-bindgen-futures/0001-bound-multithread-task-sleep.patch",
+        "sha256": "e78a38213b658328eb836ef3eaceba7626a78495554690d132318f8644b09c30"
       }
     ],
     "networkCapability": {
@@ -164,7 +170,9 @@
       "wasmBindgen": "0.2.106",
       "wasmBindgenFutures": "0.4.56",
       "waitAsyncPromiseCallback": "wake-before-run",
-      "upstreamFix": "wasm-bindgen#4821"
+      "upstreamFix": "wasm-bindgen#4821",
+      "maxSleepMs": 1000,
+      "lostWakeRecovery": "bounded-wait-async-repoll"
     },
     "schedulerStress": {
       "asyncWorkerLifetime": "scheduler-lifetime",

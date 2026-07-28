@@ -10,6 +10,8 @@ import path from "node:path";
 type BrowserBuildContract = {
   browserExecutor: {
     multithreadWaker: {
+      lostWakeRecovery: "bounded-wait-async-repoll";
+      maxSleepMs: 1000;
       upstreamFix: "wasm-bindgen#4821";
       waitAsyncPromiseCallback: "wake-before-run";
       wasmBindgen: "0.2.106";
@@ -189,7 +191,9 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
     wasmBindgen: "0.2.106",
     wasmBindgenFutures: "0.4.56",
     waitAsyncPromiseCallback: "wake-before-run",
-    upstreamFix: "wasm-bindgen#4821"
+    upstreamFix: "wasm-bindgen#4821",
+    maxSleepMs: 1000,
+    lostWakeRecovery: "bounded-wait-async-repoll"
   });
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Emulation.setCPUThrottlingRate", {

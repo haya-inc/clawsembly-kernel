@@ -223,8 +223,13 @@ and the Gateway received initial assistant chunks, but the browser task then
 stalled before SSE completion. The audited patch upgrades the exact dependency
 family to `wasm-bindgen@0.2.106` and `wasm-bindgen-futures@0.4.56`, which contain
 the upstream `wasm-bindgen#4821` wake-before-run fix, and adapts Wasmer JS to the
-new `TryFromJsValue` interface. This restores the wakeup contract instead of
-buffering the response or widening the client watchdog.
+new `TryFromJsValue` interface. A subsequent public Ubuntu proof showed that a
+different Future boundary could still remain parked after a lost browser
+notification: the model and broker completed, but the final SSE chunks did not
+reach the official client. The dependency patch therefore also bounds native
+`Atomics.waitAsync` and its synchronous-Worker fallback to one second. A timed
+out wait re-polls the Future, providing a liveness backstop without buffering
+the response or widening the client's 120-second watchdog.
 
 `sleep_now` uses a separate timer-only Worker. Timer Futures may wait
 concurrently on that Worker's JavaScript event loop, and buffered timers are

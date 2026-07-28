@@ -27,7 +27,7 @@ const nestedWasmLock = readFileSync(
   "utf8"
 );
 
-assert.equal(contract.schemaVersion, 19);
+assert.equal(contract.schemaVersion, 20);
 assert.equal(contract.runtimeProvider, "quickjs");
 assert.equal(contract.upstream.commit, edgeArtifact.source.commit);
 assert.equal(contract.upstream.repository, edgeArtifact.source.repository);
@@ -139,7 +139,8 @@ assert.deepEqual(
   ),
   [
     { package: "wasmer-wasix", version: "0.601.0" },
-    { package: "virtual-net", version: "0.601.0" }
+    { package: "virtual-net", version: "0.601.0" },
+    { package: "wasm-bindgen-futures", version: "0.4.56" }
   ]
 );
 for (const patch of contract.browserExecutor.dependencyPatches) {
@@ -162,7 +163,9 @@ assert.deepEqual(contract.browserExecutor.multithreadWaker, {
   wasmBindgen: "0.2.106",
   wasmBindgenFutures: "0.4.56",
   waitAsyncPromiseCallback: "wake-before-run",
-  upstreamFix: "wasm-bindgen#4821"
+  upstreamFix: "wasm-bindgen#4821",
+  maxSleepMs: 1000,
+  lostWakeRecovery: "bounded-wait-async-repoll"
 });
 assert.deepEqual(contract.browserExecutor.networkCapability, {
   default: "deny",
