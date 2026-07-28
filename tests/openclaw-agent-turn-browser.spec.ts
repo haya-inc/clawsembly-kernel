@@ -276,7 +276,9 @@ test("unmodified OpenClaw completes an agent turn through capability egress", as
     expect(evidence.notNorthStarCompletion).not.toContain("relabeled");
 
     const completionRequest = requests.find(
-      (request) => request.path === "/v1/chat/completions"
+      (request) =>
+        request.path === "/v1/chat/completions"
+        && request.inputContainsInstruction
     );
     expect(completionRequest).toMatchObject({
       authorizationMatches: true,
@@ -362,12 +364,17 @@ test("unmodified OpenClaw completes an agent turn through capability egress", as
         };
       };
     };
-    const workspaceRequests = requests.slice(workspaceRequestStart);
+    const workspaceScenarioRequests = requests.slice(workspaceRequestStart);
+    const workspaceRequests = workspaceScenarioRequests.filter(
+      (request) => request.workspaceTurn
+    );
     const workspaceEvidence = {
       ...workspaceResult,
       providerFixtureHost: {
         implementation:
           "deterministic OpenAI-compatible multi-step tool-call fixture",
+        unrelatedBackgroundRequests:
+          workspaceScenarioRequests.length - workspaceRequests.length,
         requests: workspaceRequests
       }
     };
@@ -590,9 +597,14 @@ async function handleFixtureRequest(
       };
       finishReason = "tool_calls";
     } else {
+      const content = workspaceTurn
+        ? workspaceResponseMarker
+        : serializedBody.includes(agentTurnPrompt)
+          ? responseMarker
+          : "CLAWSEMBLY_BACKGROUND_TURN_IGNORED";
       delta = {
         role: "assistant",
-        content: workspaceTurn ? workspaceResponseMarker : responseMarker
+        content
       };
       finishReason = "stop";
     }
@@ -642,7 +654,9 @@ async function handleFixtureRequest(
       index: 0,
       message: {
         role: "assistant",
-        content: responseMarker
+        content: serializedBody.includes(agentTurnPrompt)
+          ? responseMarker
+          : "CLAWSEMBLY_BACKGROUND_TURN_IGNORED"
       },
       finish_reason: "stop"
     }],
