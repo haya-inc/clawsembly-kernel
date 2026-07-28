@@ -74,14 +74,22 @@ type SelfHostedAgentTurnEvidence = {
     capabilityBroker: {
       hostProcess?: {
         ready: JsonRecord;
+        rejectedAfterRevocation?: {
+          body: JsonRecord;
+          httpStatus: number;
+        };
+        revocation?: JsonRecord;
         upstreamResponse: JsonRecord;
       };
       implementation: string;
       security: {
+        capabilityTtlSeconds: number;
         exactEndpointAndModel: boolean;
+        hostOnlyRevocation: boolean;
         loopbackOnly: boolean;
         maxConcurrency: number;
         maxRequests: number;
+        revocationPath: string;
       };
     };
     expectedMarker: string;
@@ -98,7 +106,9 @@ type SelfHostedAgentTurnEvidence = {
       authority: string;
       model: string;
       recorded: boolean;
+      revocable: boolean;
       streamingRequired: boolean;
+      ttlSeconds: number;
     };
     hostProcess?: {
       inferenceRuntime: {
@@ -147,6 +157,7 @@ const relayPath = process.env.CLAWSEMBLY_NETWORK_RELAY;
 const llamaServerPath = process.env.CLAWSEMBLY_LLAMA_SERVER;
 const modelPath = process.env.CLAWSEMBLY_SELF_HOSTED_MODEL;
 const brokerToken = "clawsembly-one-self-hosted-completion";
+const brokerAdminToken = "clawsembly-host-only-revocation";
 const relayToken = "clawsembly-self-hosted-model-network-proof";
 const modelServiceApiKey = "clawsembly-host-local-model-service-key";
 const brokerPort = 18_794;
@@ -290,6 +301,7 @@ test(
       ].join("\n");
       for (const secret of [
         modelServiceApiKey,
+        brokerAdminToken,
         brokerToken,
         relayToken
       ]) {
@@ -323,7 +335,9 @@ test(
               "POST http://localhost:18794/v1/chat/completions",
             model: modelId,
             recorded: false,
-            streamingRequired: true
+            revocable: true,
+            streamingRequired: true,
+            ttlSeconds: 300
           },
           expectedMarker: responseMarker,
           model: `clawsembly-broker/${modelId}`,
@@ -354,9 +368,12 @@ test(
             implementation: "clawsembly-provider-broker",
             security: {
               exactEndpointAndModel: true,
+              capabilityTtlSeconds: 300,
+              hostOnlyRevocation: true,
               loopbackOnly: true,
               maxConcurrency: 1,
-              maxRequests: 1
+              maxRequests: 1,
+              revocationPath: "/v1/capability/revoke"
             }
           }
         },
@@ -447,6 +464,9 @@ test(
         model: modelId,
         maxRequests: 1,
         maxConcurrency: 1,
+        capabilityTtlSeconds: 300,
+        capabilityRevoked: false,
+        revocationPath: "/v1/capability/revoke",
         providerCredentialRecorded: false,
         temperature: 0
       });
@@ -461,6 +481,49 @@ test(
         temperature: 0,
         requestBodyRecorded: false
       });
+      const revocationResponse = await fetch(
+        `http://127.0.0.1:${brokerPort}/v1/capability/revoke`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${brokerAdminToken}`
+          }
+        }
+      );
+      const revocation = await revocationResponse.json() as JsonRecord;
+      expect(revocationResponse.status).toBe(200);
+      expect(revocation).toMatchObject({
+        alreadyRevoked: false,
+        status: "revoked"
+      });
+      const rejectedAfterRevocationResponse = await fetch(
+        `http://127.0.0.1:${brokerPort}/v1/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${brokerToken}`,
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({
+            messages: [{
+              content: "This request must not reach the model.",
+              role: "user"
+            }],
+            model: modelId,
+            stream: true,
+            temperature: 0
+          })
+        }
+      );
+      const rejectedAfterRevocation =
+        await rejectedAfterRevocationResponse.json() as JsonRecord;
+      expect(rejectedAfterRevocationResponse.status).toBe(403);
+      expect(rejectedAfterRevocation).toMatchObject({
+        error: {
+          code: "capability_revoked",
+          type: "clawsembly_capability_error"
+        }
+      });
 
       const modelBytes = Number(
         process.env.CLAWSEMBLY_SELF_HOSTED_MODEL_BYTES ?? "491400032"
@@ -473,6 +536,11 @@ test(
             ...browserEvidence.selfHostedModel.capabilityBroker,
             hostProcess: {
               ready: ready!,
+              rejectedAfterRevocation: {
+                body: rejectedAfterRevocation,
+                httpStatus: rejectedAfterRevocationResponse.status
+              },
+              revocation,
               upstreamResponse: upstreamResponse!
             }
           },
@@ -496,6 +564,7 @@ test(
       const serializedEvidence = `${JSON.stringify(evidence, null, 2)}\n`;
       for (const secret of [
         modelServiceApiKey,
+        brokerAdminToken,
         brokerToken,
         relayToken
       ]) {
@@ -573,6 +642,7 @@ function boundedTail(value: string, maxChars = 64 * 1024): string {
 function redactSensitiveText(value: string): string {
   return [
     modelServiceApiKey,
+    brokerAdminToken,
     brokerToken,
     relayToken
   ].reduce(
@@ -628,10 +698,13 @@ async function startBroker(executable: string): Promise<CapturedProcess> {
     `http://127.0.0.1:${modelPort}/v1/chat/completions`,
     "--allow-loopback-http-upstream",
     "--max-requests",
-    "1"
+    "1",
+    "--capability-ttl-seconds",
+    "300"
   ], {
     env: {
       CLAWSEMBLY_PROVIDER_API_KEY: modelServiceApiKey,
+      CLAWSEMBLY_PROVIDER_ADMIN_TOKEN: brokerAdminToken,
       CLAWSEMBLY_PROVIDER_BROKER_TOKEN: brokerToken
     },
     stdio: "pipe"

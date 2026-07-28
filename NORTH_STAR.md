@@ -37,6 +37,13 @@ The objective is complete only when a reproducible browser test can:
 Passing a synthetic agent, a compatibility mock, a partial boot, or a patched
 OpenClaw build does not satisfy this definition.
 
+For criterion 5, “pair a real client” means completing the authentication flow
+native to the demonstrated official client class. The official CLI uses
+Gateway token authentication; node or control-UI clients use OpenClaw device
+pairing and must complete that flow when they are the tested client. The audit
+must not substitute one client class's pairing record for another class's real
+authentication.
+
 ## Constraints
 
 - The kernel and every mandatory runtime component must be open source and

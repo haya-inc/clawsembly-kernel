@@ -4,7 +4,7 @@ use std::{
     str::FromStr,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -32,8 +32,10 @@ use tokio::{
 use zeroize::Zeroize;
 
 const BROKER_PATH: &str = "/v1/chat/completions";
+const REVOKE_PATH: &str = "/v1/capability/revoke";
 const DEFAULT_LISTEN: &str = "127.0.0.1:18794";
 const DEFAULT_MODEL: &str = "qwen2.5-0.5b-instruct";
+const DEFAULT_CAPABILITY_TTL_SECONDS: u64 = 300;
 const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
@@ -52,8 +54,10 @@ impl Drop for Secret {
 }
 
 struct Config {
+    admin_token: Secret,
     allow_loopback_http_upstream: bool,
     broker_token: Secret,
+    capability_ttl_seconds: u64,
     listen: SocketAddr,
     max_requests: u64,
     model: String,
@@ -64,6 +68,7 @@ struct Config {
 impl Config {
     fn parse() -> anyhow::Result<Self> {
         let mut allow_loopback_http_upstream = false;
+        let mut capability_ttl_seconds = DEFAULT_CAPABILITY_TTL_SECONDS;
         let mut listen = SocketAddr::from_str(DEFAULT_LISTEN).unwrap();
         let mut max_requests = 100_u64;
         let mut model = DEFAULT_MODEL.to_string();
@@ -74,6 +79,13 @@ impl Config {
             match argument.as_str() {
                 "--allow-loopback-http-upstream" => {
                     allow_loopback_http_upstream = true;
+                }
+                "--capability-ttl-seconds" => {
+                    capability_ttl_seconds = args
+                        .next()
+                        .context("--capability-ttl-seconds requires an integer")?
+                        .parse()
+                        .context("--capability-ttl-seconds must be an integer")?;
                 }
                 "--listen" => {
                     listen = args
@@ -104,10 +116,13 @@ impl Config {
                          [--listen 127.0.0.1:18794] \\
                          [--upstream HTTPS_URL] [--model MODEL_ID] \\
                          [--max-requests COUNT] \\
+                         [--capability-ttl-seconds SECONDS] \\
                          [--allow-loopback-http-upstream]\n\n\
                          Set CLAWSEMBLY_PROVIDER_BROKER_TOKEN to the opaque \\
-                         guest capability and CLAWSEMBLY_PROVIDER_API_KEY to \\
-                         the model-service credential."
+                         guest capability, CLAWSEMBLY_PROVIDER_ADMIN_TOKEN to \\
+                         the host-only revocation credential, and \\
+                         CLAWSEMBLY_PROVIDER_API_KEY to the model-service \\
+                         credential."
                     );
                     std::process::exit(0);
                 }
@@ -122,16 +137,25 @@ impl Config {
         if !(1..=10_000).contains(&max_requests) {
             bail!("--max-requests must be between 1 and 10000");
         }
+        validate_capability_ttl_seconds(capability_ttl_seconds)?;
         let broker_token = env::var("CLAWSEMBLY_PROVIDER_BROKER_TOKEN")
             .context("CLAWSEMBLY_PROVIDER_BROKER_TOKEN is required")?;
         validate_capability_token(&broker_token)?;
+        let admin_token = env::var("CLAWSEMBLY_PROVIDER_ADMIN_TOKEN")
+            .context("CLAWSEMBLY_PROVIDER_ADMIN_TOKEN is required")?;
+        validate_capability_token(&admin_token)?;
+        if bool::from(admin_token.as_bytes().ct_eq(broker_token.as_bytes())) {
+            bail!("provider admin and guest capability tokens must differ");
+        }
         let provider_api_key = env::var("CLAWSEMBLY_PROVIDER_API_KEY")
             .context("CLAWSEMBLY_PROVIDER_API_KEY is required")?;
         validate_provider_api_key(&provider_api_key)?;
 
         Ok(Self {
+            admin_token: Secret(admin_token),
             allow_loopback_http_upstream,
             broker_token: Secret(broker_token),
+            capability_ttl_seconds,
             listen,
             max_requests,
             model,
@@ -142,7 +166,9 @@ impl Config {
 }
 
 struct BrokerState {
+    admin_token: Secret,
     broker_token: Secret,
+    capability_expires_at: Instant,
     client: Client,
     concurrent_request: Arc<Semaphore>,
     max_requests: u64,
@@ -150,6 +176,7 @@ struct BrokerState {
     provider_api_key: Secret,
     request_count: AtomicU64,
     request_sequence: AtomicU64,
+    revoked: AtomicBool,
     upstream: Url,
 }
 
@@ -176,8 +203,11 @@ async fn main() -> anyhow::Result<()> {
     let upstream_scheme = config.upstream.scheme().to_string();
     let model = config.model.clone();
     let max_requests = config.max_requests;
+    let capability_ttl_seconds = config.capability_ttl_seconds;
     let state = Arc::new(BrokerState {
+        admin_token: config.admin_token,
         broker_token: config.broker_token,
+        capability_expires_at: Instant::now() + Duration::from_secs(capability_ttl_seconds),
         client,
         concurrent_request: Arc::new(Semaphore::new(1)),
         max_requests,
@@ -185,10 +215,12 @@ async fn main() -> anyhow::Result<()> {
         provider_api_key: config.provider_api_key,
         request_count: AtomicU64::new(0),
         request_sequence: AtomicU64::new(0),
+        revoked: AtomicBool::new(false),
         upstream: config.upstream,
     });
     let app = Router::new()
         .route(BROKER_PATH, post(chat_completions))
+        .route(REVOKE_PATH, post(revoke_capability))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .with_state(state);
     let listener = TcpListener::bind(listen)
@@ -202,12 +234,15 @@ async fn main() -> anyhow::Result<()> {
             "status": "ready",
             "listen": local_address.to_string(),
             "path": BROKER_PATH,
+            "revocationPath": REVOKE_PATH,
             "upstreamAuthority": authority,
             "model": model,
             "maxRequestBytes": MAX_REQUEST_BYTES,
             "maxResponseBytes": MAX_RESPONSE_BYTES,
             "maxRequests": max_requests,
             "maxConcurrency": 1,
+            "capabilityTtlSeconds": capability_ttl_seconds,
+            "capabilityRevoked": false,
             "upstreamScheme": upstream_scheme,
             "loopbackHttpExplicitlyAllowed": config.allow_loopback_http_upstream,
             "temperature": 0,
@@ -228,6 +263,9 @@ async fn chat_completions(
     let request_id = state.request_sequence.fetch_add(1, Ordering::Relaxed) + 1;
     if !authorized(&headers, state.broker_token.expose()) {
         return error_response(StatusCode::UNAUTHORIZED, "unauthorized");
+    }
+    if let Some(code) = capability_denial(&state, Instant::now()) {
+        return error_response(StatusCode::FORBIDDEN, code);
     }
     let Ok(permit) = state.concurrent_request.clone().try_acquire_owned() else {
         return error_response(StatusCode::TOO_MANY_REQUESTS, "concurrent_request");
@@ -298,6 +336,42 @@ async fn chat_completions(
     response
         .body(Body::from_stream(guarded_provider_stream(upstream, permit)))
         .unwrap_or_else(|_| error_response(StatusCode::BAD_GATEWAY, "response_build_failed"))
+}
+
+fn capability_denial(state: &BrokerState, now: Instant) -> Option<&'static str> {
+    if state.revoked.load(Ordering::Acquire) {
+        Some("capability_revoked")
+    } else if now >= state.capability_expires_at {
+        Some("capability_expired")
+    } else {
+        None
+    }
+}
+
+async fn revoke_capability(State(state): State<Arc<BrokerState>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, state.admin_token.expose()) {
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized");
+    }
+    let already_revoked = state.revoked.swap(true, Ordering::AcqRel);
+    println!(
+        "{}",
+        json!({
+            "status": if already_revoked {
+                "capability-already-revoked"
+            } else {
+                "capability-revoked"
+            },
+            "guestCapabilityRecorded": false,
+            "adminCredentialRecorded": false
+        })
+    );
+    json_response(
+        StatusCode::OK,
+        json!({
+            "status": "revoked",
+            "alreadyRevoked": already_revoked
+        }),
+    )
 }
 
 fn build_provider_request(state: &BrokerState, body: Bytes) -> Result<reqwest::Request, ()> {
@@ -377,20 +451,23 @@ fn validate_request_body(body: &[u8], expected_model: &str) -> Result<(), &'stat
 }
 
 fn error_response(status: StatusCode, code: &'static str) -> Response {
-    let body = Body::from(
+    json_response(
+        status,
         json!({
             "error": {
                 "type": "clawsembly_capability_error",
                 "code": code
             }
-        })
-        .to_string(),
-    );
+        }),
+    )
+}
+
+fn json_response(status: StatusCode, value: Value) -> Response {
     Response::builder()
         .status(status)
         .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
         .header(CACHE_CONTROL, HeaderValue::from_static("no-store"))
-        .body(body)
+        .body(Body::from(value.to_string()))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
@@ -478,6 +555,13 @@ fn validate_capability_token(token: &str) -> anyhow::Result<()> {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
     {
         bail!("broker capability token must be 1-128 URL-safe characters");
+    }
+    Ok(())
+}
+
+fn validate_capability_ttl_seconds(seconds: u64) -> anyhow::Result<()> {
+    if !(1..=86_400).contains(&seconds) {
+        bail!("--capability-ttl-seconds must be between 1 and 86400");
     }
     Ok(())
 }
@@ -612,6 +696,15 @@ mod tests {
     }
 
     #[test]
+    fn capability_ttl_is_bounded() {
+        assert!(validate_capability_ttl_seconds(1).is_ok());
+        assert!(validate_capability_ttl_seconds(300).is_ok());
+        assert!(validate_capability_ttl_seconds(86_400).is_ok());
+        assert!(validate_capability_ttl_seconds(0).is_err());
+        assert!(validate_capability_ttl_seconds(86_401).is_err());
+    }
+
+    #[test]
     fn provider_keys_must_be_safe_bearer_header_values() {
         assert!(validate_provider_api_key("github-token_123").is_ok());
         assert!(validate_provider_api_key("").is_err());
@@ -629,7 +722,9 @@ mod tests {
     #[test]
     fn provider_request_replaces_guest_authority_with_the_host_secret() {
         let state = BrokerState {
+            admin_token: Secret("host-admin-capability".to_string()),
             broker_token: Secret("guest-capability".to_string()),
+            capability_expires_at: Instant::now() + Duration::from_secs(300),
             client: Client::builder().no_proxy().build().unwrap(),
             concurrent_request: Arc::new(Semaphore::new(1)),
             max_requests: 1,
@@ -637,8 +732,10 @@ mod tests {
             provider_api_key: Secret("host-provider-secret".to_string()),
             request_count: AtomicU64::new(0),
             request_sequence: AtomicU64::new(0),
+            revoked: AtomicBool::new(false),
             upstream: Url::parse("https://inference.example/v1/chat/completions").unwrap(),
         };
+        assert_eq!(capability_denial(&state, Instant::now()), None);
         let body = Bytes::from_static(
             br#"{"model":"qwen2.5-0.5b-instruct","stream":true,"messages":[{}]}"#,
         );
@@ -663,6 +760,16 @@ mod tests {
         assert_eq!(
             request.body().and_then(reqwest::Body::as_bytes),
             Some(&body[..])
+        );
+        state.revoked.store(true, Ordering::Release);
+        assert_eq!(
+            capability_denial(&state, Instant::now()),
+            Some("capability_revoked")
+        );
+        state.revoked.store(false, Ordering::Release);
+        assert_eq!(
+            capability_denial(&state, state.capability_expires_at),
+            Some("capability_expired")
         );
     }
 }

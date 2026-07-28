@@ -76,13 +76,21 @@ CLAWSEMBLY_NETWORK_RELAY_TOKEN=replace-with-a-capability-token \
 ```
 
 The relay defaults to loopback, exact DNS names and ports, and denial of
-private or special-use destinations. Use `--allow-private-network` only for an
-intentional private target.
+private or special-use destinations. It also defaults to four simultaneous
+guest connections and 2 MiB WebSocket frames. Use `--allow-private-network`
+only for an intentional private target.
 
 For the interactive probe:
 
 ```bash
 npm run dev
+```
+
+For a digest-verified local llama.cpp/Qwen run of the complete browser proof,
+see the [self-host guide](docs/self-host.md) or run:
+
+```bash
+npm run self-host:prove -- --help
 ```
 
 To run only the Edge.js/OpenClaw artifact proof:
@@ -180,18 +188,34 @@ Experimental. Current execution milestones:
   operation capability enters the browser; the
   GGUF, inference process, and model-service API key remain outside both WASIX
   guests. The proof job has no repository or external AI-service permission.
+- The official OpenClaw tool path now has a browser-workspace proof. A
+  deterministic model protocol asks unmodified OpenClaw to write, read, and
+  attempt one forbidden outside-workspace write. The resulting workspace is
+  committed to OPFS and restored into a fresh guest Directory with manifest
+  and per-file SHA-256 verification.
+- The guest model capability now has a short TTL and a separate host-only
+  revocation endpoint. The proof revokes it after the successful Qwen turn,
+  retries with the former guest token, and requires HTTP 403 without another
+  provider request. The TCP relay independently bounds concurrent guests and
+  WebSocket frame size.
+- A weekly update workflow compares the pinned official OpenClaw artifact with
+  npm's latest tag and opens or refreshes a compatibility-evaluation issue.
+  It never bumps the release without regenerating the version-bound proofs.
 
-This does not yet claim the North Star is complete. The source-built runtime now
-has an explicit, workload-scoped Node compatibility profile: it transparently
-separates the Edge.js `v24.13.2-pre` implementation baseline from the `24.15.0`
-version exposed to OpenClaw, and proves why that floor is safe for this workload
-instead of claiming general Node conformance. SQLite WAL-reset safety is pinned
-to 3.53.4 and its compiled browser binding is proven. Nested JavaScript
-WebAssembly, the deterministic Gateway-backed agent path, durable state, and a
-real self-hosted OSS model turn are also proven. This closes the model-service
-credential boundary for the demonstrated path. It does not yet claim complete
-compatibility for every OpenClaw plugin, tool, channel, or hostile multi-tenant
-deployment.
+The North Star is complete for the pinned `openclaw@2026.7.1-2` release and
+the demonstrated workload. The immutable
+[public source-build proof](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30407132572)
+rebuilds the runtime and records Gateway health, deterministic and self-hosted
+agent turns, workspace tools, fresh-browser OPFS recovery, least-privilege
+capability revocation, and the required post-revocation HTTP 403. The
+source-built runtime has an explicit, workload-scoped Node compatibility
+profile: it transparently separates the Edge.js `v24.13.2-pre` implementation
+baseline from the `24.15.0` version exposed to OpenClaw, and proves why that
+floor is safe for this workload instead of claiming general Node conformance.
+SQLite WAL-reset safety is pinned to 3.53.4 and its compiled browser binding is
+proven. This closes the model-service credential boundary for the demonstrated
+path. It does not claim complete compatibility for every OpenClaw plugin, tool,
+channel, general Node.js workload, or hostile multi-tenant deployment.
 See
 [the artifact-derived SQLite contract](docs/openclaw-sqlite-contract.md) and
 [the Node compatibility profile](docs/node-compatibility-profile.md). The
@@ -200,7 +224,10 @@ executed effects and deliberately unauthorized native build. The
 [OPFS directory store](docs/opfs-directory-store.md) records the commit,
 integrity, recovery, and browser-restart contract. The
 [model capability broker](docs/model-capability-broker.md) records the
-self-hosted inference and credential boundary.
+self-hosted inference and credential boundary. The
+[North Star completion audit](docs/north-star-audit.md) maps every completion
+criterion to its executable public evidence and defines the scope of the
+completion claim.
 
 ## License
 

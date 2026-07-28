@@ -9,12 +9,16 @@ use std::{
 use anyhow::{bail, Context};
 use futures_util::{SinkExt, StreamExt};
 use subtle::ConstantTimeEq;
-use tokio::{net::TcpListener, sync::mpsc};
+use tokio::{
+    net::TcpListener,
+    sync::{mpsc, Semaphore},
+};
 use tokio_tungstenite::{
-    accept_hdr_async,
+    accept_hdr_async_with_config,
     tungstenite::{
         handshake::server::{ErrorResponse, Request, Response},
         http::{header::SEC_WEBSOCKET_PROTOCOL, HeaderValue, StatusCode},
+        protocol::WebSocketConfig,
         Message,
     },
 };
@@ -27,12 +31,18 @@ use virtual_net::{
 
 const CAPABILITY_PROTOCOL_PREFIX: &str = "clawsembly.capability.";
 const NETWORK_PATH: &str = "/v1/network";
+const DEFAULT_MAX_CONNECTIONS: usize = 4;
+const DEFAULT_MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
+const MAX_CONFIGURED_CONNECTIONS: usize = 1_024;
+const MAX_CONFIGURED_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Config {
     listen: SocketAddr,
     allow: Vec<(String, u16)>,
     allow_private_network: bool,
+    max_connections: usize,
+    max_frame_bytes: usize,
     token: String,
 }
 
@@ -41,6 +51,8 @@ impl Config {
         let mut listen = "127.0.0.1:18792".parse().unwrap();
         let mut allow = Vec::new();
         let mut allow_private_network = false;
+        let mut max_connections = DEFAULT_MAX_CONNECTIONS;
+        let mut max_frame_bytes = DEFAULT_MAX_FRAME_BYTES;
         let mut args = env::args().skip(1);
 
         while let Some(argument) = args.next() {
@@ -57,11 +69,26 @@ impl Config {
                     allow.push(parse_host_port(&value)?);
                 }
                 "--allow-private-network" => allow_private_network = true,
+                "--max-connections" => {
+                    max_connections = parse_bounded_usize(
+                        &args.next().context("--max-connections requires a value")?,
+                        "--max-connections",
+                        MAX_CONFIGURED_CONNECTIONS,
+                    )?;
+                }
+                "--max-frame-bytes" => {
+                    max_frame_bytes = parse_bounded_usize(
+                        &args.next().context("--max-frame-bytes requires a value")?,
+                        "--max-frame-bytes",
+                        MAX_CONFIGURED_FRAME_BYTES,
+                    )?;
+                }
                 "--help" | "-h" => {
                     println!(
                         "Usage: clawsembly-network-relay [--listen IP:PORT] \\
                          --allow HOST:PORT [--allow HOST:PORT ...] \\
-                         [--allow-private-network]\n\n\
+                         [--allow-private-network] \\
+                         [--max-connections COUNT] [--max-frame-bytes BYTES]\n\n\
                          Set CLAWSEMBLY_NETWORK_RELAY_TOKEN to a 1-128 character \\
                          URL-safe capability token."
                     );
@@ -87,6 +114,8 @@ impl Config {
             listen,
             allow,
             allow_private_network,
+            max_connections,
+            max_frame_bytes,
             token,
         })
     }
@@ -146,21 +175,32 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("failed to listen on {}", config.listen))?;
     let local_address = listener.local_addr()?;
+    let connection_slots = Arc::new(Semaphore::new(config.max_connections));
 
     println!(
         "{{\"status\":\"ready\",\"listen\":\"{local_address}\",\
          \"path\":\"{NETWORK_PATH}\",\"allowCount\":{},\
-         \"allowPrivateNetwork\":{}}}",
+         \"allowPrivateNetwork\":{},\"maxConnections\":{},\
+         \"maxFrameBytes\":{}}}",
         config.allow.len(),
-        config.allow_private_network
+        config.allow_private_network,
+        config.max_connections,
+        config.max_frame_bytes
     );
 
     loop {
         let (stream, peer_address) = listener.accept().await?;
+        let Ok(connection_slot) = connection_slots.clone().try_acquire_owned() else {
+            eprintln!("relay connection {peer_address} rejected: connection limit reached");
+            drop(stream);
+            continue;
+        };
         let token = config.token.clone();
         let networking = networking.clone();
+        let max_frame_bytes = config.max_frame_bytes;
         tokio::spawn(async move {
-            if let Err(error) = serve_connection(stream, token, networking).await {
+            let _connection_slot = connection_slot;
+            if let Err(error) = serve_connection(stream, token, networking, max_frame_bytes).await {
                 eprintln!("relay connection {peer_address} closed: {error:#}");
             }
         });
@@ -171,31 +211,40 @@ async fn serve_connection(
     stream: tokio::net::TcpStream,
     token: String,
     networking: Arc<TcpEgressNetworking>,
+    max_frame_bytes: usize,
 ) -> anyhow::Result<()> {
     let expected_protocol = format!("{CAPABILITY_PROTOCOL_PREFIX}{token}");
     let response_protocol = HeaderValue::from_str(&expected_protocol)?;
-    let websocket = accept_hdr_async(stream, move |request: &Request, mut response: Response| {
-        if request.uri().path() != NETWORK_PATH {
-            return Err(handshake_error(StatusCode::NOT_FOUND, "not found"));
-        }
-        let authorized = request
-            .headers()
-            .get(SEC_WEBSOCKET_PROTOCOL)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|protocols| {
-                protocols.split(',').map(str::trim).any(|candidate| {
-                    candidate.len() == expected_protocol.len()
-                        && bool::from(candidate.as_bytes().ct_eq(expected_protocol.as_bytes()))
-                })
-            });
-        if !authorized {
-            return Err(handshake_error(StatusCode::UNAUTHORIZED, "unauthorized"));
-        }
-        response
-            .headers_mut()
-            .insert(SEC_WEBSOCKET_PROTOCOL, response_protocol.clone());
-        Ok(response)
-    })
+    let websocket = accept_hdr_async_with_config(
+        stream,
+        move |request: &Request, mut response: Response| {
+            if request.uri().path() != NETWORK_PATH {
+                return Err(handshake_error(StatusCode::NOT_FOUND, "not found"));
+            }
+            let authorized = request
+                .headers()
+                .get(SEC_WEBSOCKET_PROTOCOL)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|protocols| {
+                    protocols.split(',').map(str::trim).any(|candidate| {
+                        candidate.len() == expected_protocol.len()
+                            && bool::from(candidate.as_bytes().ct_eq(expected_protocol.as_bytes()))
+                    })
+                });
+            if !authorized {
+                return Err(handshake_error(StatusCode::UNAUTHORIZED, "unauthorized"));
+            }
+            response
+                .headers_mut()
+                .insert(SEC_WEBSOCKET_PROTOCOL, response_protocol.clone());
+            Ok(response)
+        },
+        Some(WebSocketConfig {
+            max_message_size: Some(max_frame_bytes),
+            max_frame_size: Some(max_frame_bytes),
+            ..WebSocketConfig::default()
+        }),
+    )
     .await
     .context("WebSocket handshake failed")?;
     eprintln!("authorized virtual-net WebSocket");
@@ -282,6 +331,16 @@ fn validate_token(token: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn parse_bounded_usize(value: &str, label: &str, maximum: usize) -> anyhow::Result<usize> {
+    let parsed = value
+        .parse::<usize>()
+        .with_context(|| format!("{label} must be an integer"))?;
+    if parsed == 0 || parsed > maximum {
+        bail!("{label} must be between 1 and {maximum}");
+    }
+    Ok(parsed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,6 +395,8 @@ mod tests {
             listen: "127.0.0.1:18792".parse().unwrap(),
             allow: vec![("api.example.com".to_string(), 443)],
             allow_private_network: false,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+            max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             token: "test-token".to_string(),
         };
         let ruleset = config.ruleset().unwrap();
@@ -361,6 +422,8 @@ mod tests {
             listen: "127.0.0.1:18792".parse().unwrap(),
             allow: vec![("api.example.com".to_string(), 443)],
             allow_private_network: false,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+            max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             token: "test-token".to_string(),
         };
         let ruleset = config.ruleset().unwrap();
@@ -389,6 +452,14 @@ mod tests {
             parse_host_port("API.EXAMPLE.COM:443").unwrap(),
             ("api.example.com".to_string(), 443)
         );
+    }
+
+    #[test]
+    fn resource_limit_parser_rejects_zero_and_excessive_values() {
+        assert_eq!(parse_bounded_usize("4", "--max-connections", 8).unwrap(), 4);
+        assert!(parse_bounded_usize("0", "--max-connections", 8).is_err());
+        assert!(parse_bounded_usize("9", "--max-connections", 8).is_err());
+        assert!(parse_bounded_usize("nope", "--max-connections", 8).is_err());
     }
 
     #[tokio::test]

@@ -3,10 +3,8 @@ name: Build browser-compatible Edge.js WASIX
 on:
   push:
     branches:
-      - agent/edgejs-wasix-build
-      - agent/openclaw-entrypoint
-      - agent/openclaw-package-image
-      - agent/openclaw-agent-turn
+      - main
+      - agent/**
     paths:
       - .github/workflows/edgejs-wasix-build.yml
       - contracts/edgejs-artifact.json
@@ -165,6 +163,19 @@ jobs:
         with:
           toolchain: ${{ steps.contract.outputs.rust_version }}
           components: rustfmt, clippy
+
+      - name: Restore source-build caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            provider-broker/target
+            relay/target
+            ${{ runner.temp }}/clawsembly-nested-wasm-target
+            ${{ runner.temp }}/clawsembly-wasmer-js-target
+          key: clawsembly-source-build-${{ runner.os }}-${{ hashFiles('contracts/edgejs-browser-build.json', 'package-lock.json', 'nested-wasm/Cargo.lock', 'provider-broker/Cargo.lock', 'relay/Cargo.lock', 'patches/wasmer-js/**', 'patches/wasmer-wasix/**', 'patches/virtual-net/**') }}
+          restore-keys: |
+            clawsembly-source-build-${{ runner.os }}-
 
       - name: Install pinned wasixcc
         uses: wasix-org/wasixcc@8a505d4605b15fd466a3881d286582b23e4ffecb
@@ -377,9 +388,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node scripts/apply-cargo-dependency-patches.mjs \
-            --manifest relay/Cargo.toml \
-            --package virtual-net
           npm run relay:check
           cargo build --locked --release --manifest-path relay/Cargo.toml
           test -x relay/target/release/clawsembly-network-relay
@@ -570,6 +578,7 @@ jobs:
           CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
         run: |
           npx playwright test \
+            --retries=1 \
             tests/openclaw-opfs-persistence-browser.spec.ts
 
       - name: Preserve durable OpenClaw state evidence
@@ -696,6 +705,7 @@ jobs:
           CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
           CLAWSEMBLY_NETWORK_RELAY: ${{ github.workspace }}/relay/target/release/clawsembly-network-relay
           CLAWSEMBLY_OPENCLAW_AGENT_TURN_PROOF: "1"
+          CLAWSEMBLY_OPENCLAW_AGENT_TURN_SCENARIO: "agent-turn"
           CLAWSEMBLY_OPENCLAW_AGENT_TURN_TIMEOUT_MS: "300000"
           CLAWSEMBLY_OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
           CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
@@ -744,6 +754,81 @@ jobs:
             '{
               schemaVersion: 1,
               evidence: (if $evidence == "" then null else $evidence end),
+              workspaceEvidence: null,
+              errorContexts: $errorContexts
+            }' > "${destination}/manifest.json"
+
+      - name: Prove OpenClaw workspace tools and OPFS recovery
+        if: ${{ always() }}
+        env:
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
+          CLAWSEMBLY_NETWORK_RELAY: ${{ github.workspace }}/relay/target/release/clawsembly-network-relay
+          CLAWSEMBLY_OPENCLAW_AGENT_TURN_PROOF: "1"
+          CLAWSEMBLY_OPENCLAW_AGENT_TURN_SCENARIO: "workspace-tool-turn"
+          CLAWSEMBLY_OPENCLAW_AGENT_TURN_TIMEOUT_MS: "300000"
+          CLAWSEMBLY_OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
+        run: |
+          npx playwright test \
+            --retries=1 \
+            tests/openclaw-agent-turn-browser.spec.ts
+
+      - name: Preserve OpenClaw workspace-tool attempt evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="artifacts/agent-turn-attempt"
+          mkdir -p "${destination}"
+          mkdir -p test-results
+          workspace_evidence="$(
+            find test-results \
+              -name openclaw-workspace-tool-turn-browser-evidence.json \
+              -type f \
+              -print \
+              | head -n 1
+          )"
+          if test -n "${workspace_evidence}"; then
+            cp "${workspace_evidence}" \
+              artifacts/openclaw-workspace-tool-turn-browser-evidence.json
+            cp "${workspace_evidence}" "${destination}/"
+          fi
+          agent_evidence="artifacts/openclaw-agent-turn-browser-evidence.json"
+          if ! test -f "${agent_evidence}"; then
+            agent_evidence=""
+          fi
+          while IFS= read -r context; do
+            cp "${context}" \
+              "${destination}/workspace-error-context-$(
+                basename "$(dirname "${context}")"
+              ).md"
+          done < <(
+            find test-results -name error-context.md -type f -print | sort
+          )
+          jq -n \
+            --arg evidence "${agent_evidence}" \
+            --arg workspaceEvidence "${workspace_evidence}" \
+            --argjson errorContexts "$(
+              find "${destination}" \
+                -name '*error-context-*.md' \
+                -type f \
+                | sort \
+                | jq -Rsc 'split("\n") | map(select(length > 0))'
+            )" \
+            '{
+              schemaVersion: 1,
+              evidence: (
+                if ($evidence | length) == 0
+                then null
+                else $evidence
+                end
+              ),
+              workspaceEvidence: (
+                if $workspaceEvidence == ""
+                then null
+                else $workspaceEvidence
+                end
+              ),
               errorContexts: $errorContexts
             }' > "${destination}/manifest.json"
 
@@ -790,6 +875,7 @@ jobs:
           package_mount_evidence="artifacts/openclaw-package-image-browser-evidence.json"
           gateway_evidence="artifacts/openclaw-gateway-runtime-browser-evidence.json"
           agent_turn_evidence="artifacts/openclaw-agent-turn-browser-evidence.json"
+          workspace_tool_evidence="artifacts/openclaw-workspace-tool-turn-browser-evidence.json"
           nested_wasm_smoke_evidence="nested-wasm/dist/link-smoke-evidence.json"
           gateway_health_evidence=""
           # Playwright resets test-results before the following agent test;
@@ -814,6 +900,7 @@ jobs:
           test -s "${package_mount_evidence}"
           test -s "${gateway_evidence}"
           test -s "${agent_turn_evidence}"
+          test -s "${workspace_tool_evidence}"
           test -n "${gateway_health_evidence}"
           test -s "${nested_wasm_smoke_evidence}"
           cp "${gateway_health_evidence}" \
@@ -862,6 +949,7 @@ jobs:
             --slurpfile gateway "${gateway_evidence}" \
             --slurpfile gatewayHealth "${gateway_health_evidence}" \
             --slurpfile agentTurn "${agent_turn_evidence}" \
+            --slurpfile workspaceTool "${workspace_tool_evidence}" \
             --slurpfile nestedWasmSmoke "${nested_wasm_smoke_evidence}" \
             --argjson nodeCompatibilityContract "$(
               jq '.nodeCompatibility' contracts/edgejs-browser-build.json
@@ -887,7 +975,7 @@ jobs:
                 contracts/edgejs-browser-build.json
             )" \
             '{
-              schemaVersion: 4,
+              schemaVersion: 5,
               edgeSourceCommit: $edgeSourceCommit,
               runtimeProvider: $runtimeProvider,
               patches: $edgePatches,
@@ -949,7 +1037,8 @@ jobs:
               openclawRuntimeProof: {
                 browser: $gateway[0],
                 healthRpc: $gatewayHealth[0],
-                agentTurn: $agentTurn[0]
+                agentTurn: $agentTurn[0],
+                workspaceToolTurn: $workspaceTool[0]
               }
             }' > artifacts/edgejs-wasix-build-evidence.json
           cat artifacts/edgejs-wasix-build-evidence.json
@@ -1009,6 +1098,12 @@ jobs:
           chmod +x proof-inputs/clawsembly-network-relay
           chmod +x proof-inputs/clawsembly-provider-broker
 
+      - name: Restore pinned inference inputs
+        uses: actions/cache@v4
+        with:
+          path: self-hosted-model
+          key: clawsembly-llama-b9637-qwen2.5-0.5b-q4-k-m
+
       - name: Acquire pinned OSS inference runtime and model
         shell: bash
         run: |
@@ -1020,14 +1115,27 @@ jobs:
               'https://github.com/ggml-org/llama.cpp/releases/download/' \
               'b9637/llama-b9637-bin-ubuntu-x64.tar.gz'
           )"
-          curl --fail --location --retry 3 \
-            --output "${llama_archive}" "${llama_url}"
+          if ! printf '%s  %s\n' \
+            a50ee14f021a9d8e92e30f622f7e3be1318ee1125bb9a9ba8d2025388df48743 \
+            "${llama_archive}" \
+            | sha256sum --check
+          then
+            curl --fail --location --retry 3 \
+              --output "${llama_archive}" "${llama_url}"
+          fi
           printf '%s  %s\n' \
             a50ee14f021a9d8e92e30f622f7e3be1318ee1125bb9a9ba8d2025388df48743 \
             "${llama_archive}" \
             | sha256sum --check
-          tar -xzf "${llama_archive}" -C self-hosted-model
           llama_server="self-hosted-model/llama-b9637/llama-server"
+          if ! printf '%s  %s\n' \
+            77eb1229a117e3034b873a46382bffcecc0f9815bd14e825a0706f8fc0b07564 \
+            "${llama_server}" \
+            | sha256sum --check
+          then
+            rm -rf self-hosted-model/llama-b9637
+            tar -xzf "${llama_archive}" -C self-hosted-model
+          fi
           printf '%s  %s\n' \
             77eb1229a117e3034b873a46382bffcecc0f9815bd14e825a0706f8fc0b07564 \
             "${llama_server}" \
@@ -1040,8 +1148,14 @@ jobs:
               'd78c9c2baefc6237025b685bb0d6db90288ef3d6/' \
               'qwen2.5-0.5b-instruct-q4_k_m.gguf?download=true'
           )"
-          curl --fail --location --retry 3 \
-            --output "${model}" "${model_url}"
+          if ! printf '%s  %s\n' \
+            74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db \
+            "${model}" \
+            | sha256sum --check
+          then
+            curl --fail --location --retry 3 \
+              --output "${model}" "${model_url}"
+          fi
           printf '%s  %s\n' \
             74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db \
             "${model}" \
@@ -1054,6 +1168,12 @@ jobs:
           node-version: 24.18.0
           cache: npm
           cache-dependency-path: proof-runner/package-lock.json
+
+      - name: Restore Chromium cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: clawsembly-playwright-${{ runner.os }}-${{ hashFiles('proof-runner/package-lock.json') }}
 
       - name: Install browser proof dependencies
         working-directory: proof-runner
@@ -1174,7 +1294,16 @@ jobs:
           test -s "${base}"
           test -s "${self_hosted}"
           test -s "${broker_binary}"
-          jq -e '.schemaVersion == 4' "${base}" >/dev/null
+          jq -e '
+            .schemaVersion == 5
+            and .openclawRuntimeProof.workspaceToolTurn.status
+              == "workspace-tool-turn-pass"
+            and .openclawRuntimeProof.workspaceToolTurn.workspaceTool
+              .outsideWorkspace.existsAfterTurn == false
+            and .openclawRuntimeProof.workspaceToolTurn.workspaceTool
+              .restore.verification
+              == "manifest-and-every-file-sha256"
+          ' "${base}" >/dev/null
           jq -e '
             . as $proof
             | .status == "self-hosted-agent-turn-pass"
@@ -1248,6 +1377,17 @@ jobs:
               .providerCredentialRecorded == false
             and .selfHostedModel.capabilityBroker.hostProcess.upstreamResponse
               .requestBodyRecorded == false
+            and .selfHostedModel.capabilityBroker.security
+              .hostOnlyRevocation == true
+            and .selfHostedModel.capabilityBroker.security
+              .capabilityTtlSeconds == 300
+            and .selfHostedModel.capabilityBroker.hostProcess.revocation
+              .status == "revoked"
+            and .selfHostedModel.capabilityBroker.hostProcess
+              .rejectedAfterRevocation.httpStatus == 403
+            and .selfHostedModel.capabilityBroker.hostProcess
+              .rejectedAfterRevocation.body.error.code
+              == "capability_revoked"
           ' "${self_hosted}" >/dev/null
           cp "${self_hosted}" \
             final-artifacts/openclaw-self-hosted-agent-turn-browser-evidence.json
@@ -1267,7 +1407,7 @@ jobs:
             --arg brokerBinarySha256 "${broker_binary_sha256}" \
             --arg brokerSourceSha256 "${broker_source_sha256}" \
             --slurpfile selfHosted "${self_hosted}" '
-            .schemaVersion = 6
+            .schemaVersion = 7
             | .openclawRuntimeProof.selfHostedAgentTurn = $selfHosted[0]
             | .selfHostedInference = {
                 runtime: $selfHosted[0].selfHostedModel.runtime,
@@ -1288,7 +1428,7 @@ jobs:
           ' "${base}" > "${base}.next"
           mv "${base}.next" "${base}"
           jq -e '
-            .schemaVersion == 6
+            .schemaVersion == 7
             and .openclawRuntimeProof.selfHostedAgentTurn.status
               == "self-hosted-agent-turn-pass"
             and .openclawRuntimeProof.selfHostedAgentTurn

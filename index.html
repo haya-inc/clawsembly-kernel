@@ -3,21 +3,159 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Clawsembly Kernel · OpenClaw state contract</title>
+    <meta
+      name="description"
+      content="Operate and inspect Clawsembly's browser-local OpenClaw kernel contract."
+    />
+    <title>Clawsembly · Kernel console</title>
   </head>
   <body>
-    <main>
-      <p class="eyebrow">Clawsembly Kernel · Artifact-derived contract</p>
-      <h1>Official OpenClaw state, browser-native</h1>
-      <p>
-        The probe executes the exact state schema extracted from the pinned
-        OpenClaw artifact through a Node-compatible synchronous API, then
-        verifies the same OPFS database from a fresh Worker.
-      </p>
-      <button id="run" type="button">Run OpenClaw contract probe</button>
-      <output id="status" data-state="idle">Idle</output>
-      <pre id="result" aria-live="polite"></pre>
-    </main>
+    <div class="shell">
+      <header class="topbar">
+        <a class="wordmark" href="/" aria-label="Clawsembly home">
+          <span class="wordmark-mark" aria-hidden="true">C/</span>
+          <span>Clawsembly</span>
+        </a>
+        <div class="runtime-label">
+          <span class="signal" aria-hidden="true"></span>
+          browser-local kernel
+        </div>
+        <a class="source-link" href="https://github.com/haya-inc/clawsembly-kernel">
+          Source ↗
+        </a>
+      </header>
+
+      <aside class="rail" aria-label="Kernel layers">
+        <span class="rail-label">Execution stack</span>
+        <ol>
+          <li data-layer="active"><span>01</span> Browser</li>
+          <li data-layer="active"><span>02</span> WASIX</li>
+          <li data-layer="active"><span>03</span> Node personality</li>
+          <li><span>04</span> OpenClaw</li>
+        </ol>
+        <p class="rail-note">
+          No remote VM.<br />
+          No patched OpenClaw.
+        </p>
+      </aside>
+
+      <main>
+        <section class="intro" aria-labelledby="console-title">
+          <p class="eyebrow">Kernel console / contract surface</p>
+          <h1 id="console-title">
+            OpenClaw,<br />
+            <span>inside the browser.</span>
+          </h1>
+          <p class="lede">
+            This local console runs the artifact-derived SQLite contract
+            against official SQLite Wasm, crosses a fresh Worker boundary,
+            and verifies the surviving OPFS state.
+          </p>
+        </section>
+
+        <section class="probe-panel" aria-labelledby="probe-title">
+          <div class="panel-heading">
+            <div>
+              <p class="section-index">01 / Local proof</p>
+              <h2 id="probe-title">State persistence contract</h2>
+            </div>
+            <output id="status" data-state="idle">
+              <span class="status-dot" aria-hidden="true"></span>
+              Idle
+            </output>
+          </div>
+
+          <div class="metrics" aria-label="Probe results">
+            <div>
+              <span class="metric-label">Worker generations</span>
+              <strong id="worker-count">—</strong>
+            </div>
+            <div>
+              <span class="metric-label">Schema objects</span>
+              <strong id="schema-count">—</strong>
+            </div>
+            <div>
+              <span class="metric-label">OPFS recovery</span>
+              <strong id="persistence-state">unverified</strong>
+            </div>
+          </div>
+
+          <div class="probe-actions">
+            <button id="run" class="primary-action" type="button">
+              <span>Run contract</span>
+              <span aria-hidden="true">→</span>
+            </button>
+            <button id="download" class="quiet-action" type="button" disabled>
+              Download evidence
+            </button>
+          </div>
+
+          <details class="evidence">
+            <summary>
+              <span>Raw evidence</span>
+              <span class="summary-hint">JSON / version-bound</span>
+            </summary>
+            <pre id="result" aria-live="polite"></pre>
+          </details>
+        </section>
+
+        <section class="boundary-section" aria-labelledby="boundary-title">
+          <div class="section-heading">
+            <p class="section-index">02 / Authority model</p>
+            <h2 id="boundary-title">What crosses the boundary</h2>
+          </div>
+          <div class="boundary-grid">
+            <article>
+              <span class="boundary-state allowed">guest</span>
+              <h3>Operation capability</h3>
+              <p>
+                Exact endpoint, exact model, bounded request, short TTL, and
+                host-controlled revocation.
+              </p>
+            </article>
+            <article>
+              <span class="boundary-state denied">host only</span>
+              <h3>Provider credential</h3>
+              <p>
+                The model API key, inference process, and model weights never
+                enter either browser guest.
+              </p>
+            </article>
+            <article>
+              <span class="boundary-state allowed">OPFS</span>
+              <h3>Mutable workspace</h3>
+              <p>
+                Generation-addressed commits verify the manifest and every
+                file hash before mounting restored state.
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <section class="handoff" aria-labelledby="handoff-title">
+          <p class="section-index">03 / Reproduce</p>
+          <h2 id="handoff-title">Bring the entire proof home.</h2>
+          <p>
+            The public source-build lane pins OpenClaw, Edge.js, Wasmer,
+            SQLite, llama.cpp, and Qwen. For local operation, start with the
+            self-host guide and verify every digest before launch.
+          </p>
+          <div class="handoff-links">
+            <a
+              href="https://github.com/haya-inc/clawsembly-kernel/blob/main/docs/self-host.md"
+            >Self-host guide <span>→</span></a>
+            <a
+              href="https://github.com/haya-inc/clawsembly-kernel/blob/main/NORTH_STAR.md"
+            >Definition of done <span>→</span></a>
+          </div>
+        </section>
+      </main>
+
+      <footer>
+        <span>Clawsembly Kernel</span>
+        <span>MIT · experimental</span>
+      </footer>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

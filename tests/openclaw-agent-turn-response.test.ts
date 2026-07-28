@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isCompletedAgentTurnResponse } from
-  "../src/openclaw-agent-turn-response.ts";
+import {
+  isCompletedAgentTurnResponse,
+  isCompletedWorkspaceToolTurnResponse
+} from "../src/openclaw-agent-turn-response.ts";
 
 const marker = "CLAWSEMBLY_AGENT_TURN_OK";
 
@@ -91,4 +93,102 @@ test("rejects marker substrings and marker text outside assistant fields", () =>
   result.payloads = [{ text: "provider error" }];
   meta.finalPromptText = `Reply exactly: ${marker}`;
   assert.equal(isCompletedAgentTurnResponse(response, marker), false);
+});
+
+function completedWorkspaceResponse(): Record<string, unknown> {
+  const response = completedResponse();
+  const result = response.result as Record<string, unknown>;
+  const meta = result.meta as Record<string, unknown>;
+  result.payloads = [
+    { text: "CLAWSEMBLY_WORKSPACE_TOOL_OK" },
+    {
+      text: "⚠️ Write: `to /openclaw/.clawsembly-outside.txt` failed"
+    }
+  ];
+  meta.finalAssistantVisibleText = "CLAWSEMBLY_WORKSPACE_TOOL_OK";
+  meta.finalAssistantRawText = "CLAWSEMBLY_WORKSPACE_TOOL_OK";
+  meta.replayInvalid = true;
+  meta.toolSummary = {
+    calls: 3,
+    tools: ["write", "read"],
+    failures: 1
+  };
+  return response;
+}
+
+test("accepts the exact workspace tool proof and expected denial", () => {
+  const response = completedWorkspaceResponse();
+  assert.equal(
+    isCompletedWorkspaceToolTurnResponse(
+      response,
+      "CLAWSEMBLY_WORKSPACE_TOOL_OK"
+    ),
+    true
+  );
+  assert.equal(
+    isCompletedAgentTurnResponse(response, "CLAWSEMBLY_WORKSPACE_TOOL_OK"),
+    false
+  );
+});
+
+test("accepts OpenClaw's decorated denied-write rendering", () => {
+  const response = completedWorkspaceResponse();
+  const result = response.result as Record<string, unknown>;
+  result.payloads = [
+    { text: "CLAWSEMBLY_WORKSPACE_TOOL_OK" },
+    {
+      text:
+        "⚠️ ✍️ Write: `to /openclaw/.clawsembly-outside.txt (14 chars)` failed"
+    }
+  ];
+  assert.equal(
+    isCompletedWorkspaceToolTurnResponse(
+      response,
+      "CLAWSEMBLY_WORKSPACE_TOOL_OK"
+    ),
+    true
+  );
+});
+
+test("rejects workspace responses without the exact denied tool call", () => {
+  for (const mutation of [
+    (response: Record<string, unknown>) => {
+      const result = response.result as Record<string, unknown>;
+      result.payloads = [
+        { text: "CLAWSEMBLY_WORKSPACE_TOOL_OK" },
+        { text: "unrelated warning" }
+      ];
+    },
+    (response: Record<string, unknown>) => {
+      const result = response.result as Record<string, unknown>;
+      result.payloads = [
+        { text: "CLAWSEMBLY_WORKSPACE_TOOL_OK" },
+        {
+          text:
+            "⚠️ ✍️ Write: `to /openclaw/.clawsembly-outside.txt (13 chars)` failed"
+        }
+      ];
+    },
+    (response: Record<string, unknown>) => {
+      const result = response.result as Record<string, unknown>;
+      const meta = result.meta as Record<string, unknown>;
+      const toolSummary = meta.toolSummary as Record<string, unknown>;
+      toolSummary.calls = 2;
+    },
+    (response: Record<string, unknown>) => {
+      const result = response.result as Record<string, unknown>;
+      const meta = result.meta as Record<string, unknown>;
+      meta.replayInvalid = false;
+    }
+  ]) {
+    const response = completedWorkspaceResponse();
+    mutation(response);
+    assert.equal(
+      isCompletedWorkspaceToolTurnResponse(
+        response,
+        "CLAWSEMBLY_WORKSPACE_TOOL_OK"
+      ),
+      false
+    );
+  }
 });
