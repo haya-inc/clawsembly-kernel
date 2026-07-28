@@ -194,15 +194,20 @@ The scheduler separates three execution classes. Blocking WASM work retains
 exclusive Workers, and a Worker is released only after its JavaScript handler
 promise resolves. Dropping a Rust-side busy guard is not treated as completion.
 
-Non-blocking `task_shared` Futures cooperatively overlap on one dedicated
-shared Worker for the scheduler lifetime. Its JavaScript message handler
-launches each Future without awaiting the preceding Future, matching the
-`VirtualTaskManager` contract that shared tasks must yield rather than block.
-This is required for long-lived networking actors: reserving one Worker per
-Future eventually fills any fixed pool and leaves later SSE body-delivery work
-queued behind actors that intentionally never terminate. The dedicated
-cooperative Worker bounds Worker creation without imposing a false
-Future-completion queue.
+Non-blocking `task_shared` Futures use a lazily created pool of at most eight
+cooperative Workers for the scheduler lifetime. Dispatch is round-robin, and
+each Worker's JavaScript message handler launches a Future without awaiting the
+preceding Future. This matches the `VirtualTaskManager` contract that shared
+tasks must yield rather than block. A shared Future never reserves a Worker and
+there is no Future-completion queue.
+
+Both properties are required for long-lived networking actors. Reserving one
+Worker per Future eventually fills any fixed pool and leaves later SSE
+body-delivery work queued behind actors that intentionally never terminate.
+Conversely, concentrating every Future on one JavaScript event loop lets a
+CPU-heavy poll delay an otherwise independent client import or agent request on
+slower hosts. Eight cooperative lanes bound Worker creation while allowing
+independent event loops to keep network and client progress moving.
 
 `sleep_now` uses a separate timer-only Worker. Timer Futures may wait
 concurrently on that Worker's JavaScript event loop, and buffered timers are

@@ -127,36 +127,48 @@ index 630497b..d9f6f8d 100644
      async fn round_trip_spawn_with_module() {
          let wasm: &[u8] = include_bytes!("../../tests/envvar.wasm");
 diff --git i/src/tasks/scheduler.rs w/src/tasks/scheduler.rs
-index abfcd98..d4b9497 100644
+index abfcd98..4e282f7 100644
 --- i/src/tasks/scheduler.rs
 +++ w/src/tasks/scheduler.rs
-@@ -127,6 +127,12 @@ impl Drop for Scheduler {
+@@ -17,6 +17,8 @@ use crate::tasks::{
+     WorkerMessage,
+ };
+ 
++const MAX_SHARED_WORKERS: usize = 8;
++
+ /// A handle for interacting with the threadpool's scheduler.
+ #[derive(Debug, Clone)]
+ pub(crate) struct Scheduler {
+@@ -127,6 +129,14 @@ impl Drop for Scheduler {
  /// The state for the actor in charge of the threadpool.
  #[derive(Debug)]
  struct SchedulerState {
-+    /// One worker whose JavaScript event loop cooperatively hosts all
-+    /// non-blocking shared Futures.
-+    shared_worker: Option<WorkerHandle>,
++    /// A fixed-size set of workers whose JavaScript event loops cooperatively
++    /// host non-blocking shared Futures.
++    shared_workers: Vec<WorkerHandle>,
++    /// The next cooperative worker that receives a shared Future.
++    next_shared_worker: usize,
 +    /// A timer-only worker whose JavaScript event loop may host overlapping
 +    /// timer Futures without mixing them with arbitrary shared tasks.
 +    timer_worker: Option<WorkerHandle>,
      /// Workers that are able to receive work.
      idle: VecDeque<WorkerHandle>,
      /// Workers that are currently blocked on synchronous operations and can't
-@@ -140,6 +146,8 @@ struct SchedulerState {
+@@ -140,6 +150,9 @@ struct SchedulerState {
  impl SchedulerState {
      fn new(mailbox: Scheduler) -> Self {
          SchedulerState {
-+            shared_worker: None,
++            shared_workers: Vec::new(),
++            next_shared_worker: 0,
 +            timer_worker: None,
              idle: VecDeque::new(),
              busy: VecDeque::new(),
              mailbox,
-@@ -151,12 +159,31 @@ impl SchedulerState {
+@@ -151,12 +164,32 @@ impl SchedulerState {
          match message {
              SchedulerMessage::Close => {
                  tracing::debug!("Scheduler received Close message");
-+                self.shared_worker.take();
++                self.shared_workers.clear();
 +                self.timer_worker.take();
                  self.idle.clear();
                  // self.busy.clear();
@@ -164,12 +176,13 @@ index abfcd98..d4b9497 100644
              }
              SchedulerMessage::SpawnAsync(task) => {
 -                self.post_message(PostMessagePayload::Async(AsyncJob::Thunk(task)))
-+                if self.shared_worker.is_none() {
-+                    self.shared_worker = Some(self.start_worker()?);
++                if self.shared_workers.len() < MAX_SHARED_WORKERS {
++                    let worker = self.start_worker()?;
++                    self.shared_workers.push(worker);
 +                }
-+                self.shared_worker
-+                    .as_ref()
-+                    .unwrap()
++                let worker_index = self.next_shared_worker % self.shared_workers.len();
++                self.next_shared_worker = self.next_shared_worker.wrapping_add(1);
++                self.shared_workers[worker_index]
 +                    .send(PostMessagePayload::Async(AsyncJob::Thunk(task)))
 +                    .context("Unable to send a shared async message")
 +            }
@@ -185,7 +198,21 @@ index abfcd98..d4b9497 100644
              }
              SchedulerMessage::SpawnBlocking(task) => {
                  self.post_message(PostMessagePayload::Blocking(BlockingJob::Thunk(task)))
-@@ -268,14 +295,7 @@ impl SchedulerState {
+@@ -165,7 +198,12 @@ impl SchedulerState {
+                 let module: js_sys::WebAssembly::Module = JsValue::from(module).unchecked_into();
+                 self.cached_modules.insert(hash, module.clone());
+ 
+-                for worker in self.idle.iter().chain(self.busy.iter()) {
++                for worker in self
++                    .shared_workers
++                    .iter()
++                    .chain(self.idle.iter())
++                    .chain(self.busy.iter())
++                {
+                     worker.send(PostMessagePayload::Notification(
+                         Notification::CacheModule {
+                             hash,
+@@ -268,14 +306,7 @@ impl SchedulerState {
      }
  
      fn start_worker(&mut self) -> Result<WorkerHandle, Error> {
@@ -201,7 +228,7 @@ index abfcd98..d4b9497 100644
  
          // Prime the worker's module cache
          for (&hash, module) in &self.cached_modules {
-@@ -288,6 +308,17 @@ impl SchedulerState {
+@@ -288,6 +319,17 @@ impl SchedulerState {
  
          Ok(handle)
      }
@@ -219,19 +246,19 @@ index abfcd98..d4b9497 100644
  }
  
  fn move_worker(worker_id: u32, from: &mut VecDeque<WorkerHandle>, to: &mut VecDeque<WorkerHandle>) {
-@@ -320,17 +351,36 @@ mod tests {
+@@ -320,17 +362,56 @@ mod tests {
          assert_eq!(scheduler.idle.len(), 0);
          assert_eq!(scheduler.busy.len(), 0);
  
 -        // then we run the message, which should start up a worker and send it
 -        // the job
-+        // then we run the message on the cooperative shared worker
++        // then we run the message on a cooperative shared worker
          scheduler.execute(message).unwrap();
  
 -        // One worker should have been created and added to the "ready" queue
 -        // because it's just handling async workloads.
 -        assert_eq!(scheduler.idle.len(), 1);
-+        assert!(scheduler.shared_worker.is_some());
++        assert_eq!(scheduler.shared_workers.len(), 1);
 +        assert_eq!(scheduler.idle.len(), 0);
          assert_eq!(scheduler.busy.len(), 0);
  
@@ -239,6 +266,26 @@ index abfcd98..d4b9497 100644
          // back a result
          assert_eq!(receiver.await.unwrap(), 42);
      }
++
++    #[wasm_bindgen_test]
++    async fn shared_workers_are_bounded_and_round_robin() {
++        let (tx, _) = mpsc::unbounded_channel();
++        let tx = unsafe { Scheduler::new(tx, wasmer::js::current_thread_id()) };
++        let mut scheduler = SchedulerState::new(tx);
++
++        for _ in 0..MAX_SHARED_WORKERS + 1 {
++            scheduler
++                .execute(SchedulerMessage::SpawnAsync(Box::new(
++                    || Box::pin(async {}),
++                )))
++                .unwrap();
++        }
++
++        assert_eq!(scheduler.shared_workers.len(), MAX_SHARED_WORKERS);
++        assert_eq!(scheduler.next_shared_worker, MAX_SHARED_WORKERS + 1);
++        assert_eq!(scheduler.idle.len(), 0);
++        assert_eq!(scheduler.busy.len(), 0);
++    }
 +
 +    #[wasm_bindgen_test]
 +    async fn spawn_a_timer_function() {
