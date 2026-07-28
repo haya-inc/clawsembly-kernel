@@ -14,13 +14,24 @@ source.
 | 2 | Install the unmodified artifact and required dependency graph/effects | Public pass | complete shrinkwrap image plus in-browser root lifecycle and `protobufjs` postinstall proof |
 | 3 | Supply every runtime behavior reached by the tested release | Public pass for the demonstrated path | source-built Node compatibility profile, compiled SQLite, processes, Workers, nested Wasm, loopback and explicit egress; unused native `tree-sitter-bash` is explicitly denied by OpenClaw policy |
 | 4 | Start the real Gateway and pass readiness/health | Public pass | unmodified official entrypoint, readiness marker, authenticated official health RPC |
-| 5 | Authenticate a real client and complete a real model-backed agent turn | Public pass; revocation rerun pending | a distinct official OpenClaw CLI guest authenticates with the Gateway token, submits `agent`, and receives the strict Qwen assistant result through the unmodified Gateway |
-| 6 | Preserve relevant state across Worker, reload, and fresh browser session | Public pass; workspace extension rerun pending | generation-addressed OPFS state is reopened after browser-process restart; the new tool proof commits an OpenClaw-written workspace and restores it into a fresh guest Directory |
-| 7 | Keep credentials/ambient authority outside the guest and use least-privilege revocable capabilities | Implemented; public rerun pending | exact-destination relay; exact-endpoint/model broker; body, concurrency, request-count and TTL limits; distinct host-only revocation followed by HTTP 403 for the old guest token |
-| 8 | Publish independently reproducible, version-bound evidence | Pending this branch's public run | the source-build workflow rebuilds every mandatory runtime component and binds all browser, workspace, model, capability and revocation evidence into one artifact |
+| 5 | Authenticate a real client and complete a real model-backed agent turn | Public pass | a distinct official OpenClaw CLI guest authenticates with the Gateway token, submits `agent`, and receives the strict Qwen assistant result through the unmodified Gateway |
+| 6 | Preserve relevant state across Worker, reload, and fresh browser session | Public pass | generation-addressed OPFS state is reopened after browser-process restart; the tool proof commits an OpenClaw-written workspace and restores it into a fresh guest Directory |
+| 7 | Keep credentials/ambient authority outside the guest and use least-privilege revocable capabilities | Public pass | exact-destination relay; exact-endpoint/model broker; body, concurrency, request-count and TTL limits; distinct host-only revocation followed by HTTP 403 for the old guest token |
+| 8 | Publish independently reproducible, version-bound evidence | Public pass | the source-build workflow rebuilds every mandatory runtime component and binds all browser, workspace, model, capability and revocation evidence into one artifact |
 
-The North Star remains incomplete until the new public source-build run passes
-criteria 5–8 and its immutable run URL is recorded here.
+The North Star is complete for the pinned `openclaw@2026.7.1-2` release and the
+demonstrated workload. The immutable public proof is
+[GitHub Actions run 30407132572](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30407132572),
+built from source commit
+[`cf53914a668ac3fb2755a66943853a70c062738f`](https://github.com/haya-inc/clawsembly-kernel/commit/cf53914a668ac3fb2755a66943853a70c062738f).
+Its schema-v7 evidence records `agent-turn-pass`,
+`workspace-tool-turn-pass`, `self-hosted-agent-turn-pass`, fresh-browser OPFS
+recovery, host-only capability revocation, and the required post-revocation
+HTTP 403 `capability_revoked` response.
+
+This is deliberately a workload-scoped completion claim. It is not blanket
+Node.js conformance, compatibility with every OpenClaw plugin, tool, or
+channel, or a hostile multi-tenant security certification.
 
 ## “Pair a real client” means authenticated client establishment
 

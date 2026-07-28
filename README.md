@@ -202,17 +202,20 @@ Experimental. Current execution milestones:
   npm's latest tag and opens or refreshes a compatibility-evaluation issue.
   It never bumps the release without regenerating the version-bound proofs.
 
-This does not yet claim the North Star is complete. The source-built runtime now
-has an explicit, workload-scoped Node compatibility profile: it transparently
-separates the Edge.js `v24.13.2-pre` implementation baseline from the `24.15.0`
-version exposed to OpenClaw, and proves why that floor is safe for this workload
-instead of claiming general Node conformance. SQLite WAL-reset safety is pinned
-to 3.53.4 and its compiled browser binding is proven. Nested JavaScript
-WebAssembly, the deterministic Gateway-backed agent path, durable state, and a
-real self-hosted OSS model turn are also proven. This closes the model-service
-credential boundary for the demonstrated path. It does not yet claim complete
-compatibility for every OpenClaw plugin, tool, channel, or hostile multi-tenant
-deployment.
+The North Star is complete for the pinned `openclaw@2026.7.1-2` release and
+the demonstrated workload. The immutable
+[public source-build proof](https://github.com/haya-inc/clawsembly-kernel/actions/runs/30407132572)
+rebuilds the runtime and records Gateway health, deterministic and self-hosted
+agent turns, workspace tools, fresh-browser OPFS recovery, least-privilege
+capability revocation, and the required post-revocation HTTP 403. The
+source-built runtime has an explicit, workload-scoped Node compatibility
+profile: it transparently separates the Edge.js `v24.13.2-pre` implementation
+baseline from the `24.15.0` version exposed to OpenClaw, and proves why that
+floor is safe for this workload instead of claiming general Node conformance.
+SQLite WAL-reset safety is pinned to 3.53.4 and its compiled browser binding is
+proven. This closes the model-service credential boundary for the demonstrated
+path. It does not claim complete compatibility for every OpenClaw plugin, tool,
+channel, general Node.js workload, or hostile multi-tenant deployment.
 See
 [the artifact-derived SQLite contract](docs/openclaw-sqlite-contract.md) and
 [the Node compatibility profile](docs/node-compatibility-profile.md). The
@@ -223,8 +226,8 @@ integrity, recovery, and browser-restart contract. The
 [model capability broker](docs/model-capability-broker.md) records the
 self-hosted inference and credential boundary. The
 [North Star completion audit](docs/north-star-audit.md) maps every completion
-criterion to its executable evidence and records what still awaits a public
-rerun.
+criterion to its executable public evidence and defines the scope of the
+completion claim.
 
 ## License
 
