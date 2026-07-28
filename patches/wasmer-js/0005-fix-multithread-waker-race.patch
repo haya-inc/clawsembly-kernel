@@ -1,0 +1,193 @@
+diff --git i/Cargo.lock w/Cargo.lock
+index 3f5d6c6..288adb3 100644
+--- i/Cargo.lock
++++ w/Cargo.lock
+@@ -1566,9 +1566,9 @@ checksum = "b1a46d1a171d865aa5f83f92695765caa047a9b4cbae2cbf37dbd613a793fd4c"
+ 
+ [[package]]
+ name = "js-sys"
+-version = "0.3.78"
++version = "0.3.83"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "0c0b063578492ceec17683ef2f8c5e89121fbd0b172cbc280635ab7567db2738"
++checksum = "464a3709c7f55f1f721e5389aa6ea4e3bc6aba669353300af094b29ffbdde1d8"
+ dependencies = [
+  "once_cell",
+  "wasm-bindgen",
+@@ -2642,6 +2642,12 @@ dependencies = [
+  "syn 2.0.100",
+ ]
+ 
++[[package]]
++name = "scoped-tls"
++version = "1.0.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
++
+ [[package]]
+ name = "scopeguard"
+ version = "1.2.0"
+@@ -3648,9 +3654,9 @@ checksum = "9c8d87e72b64a3b4db28d11ce29237c246188f4f51057d65a7eab63b7987e423"
+ 
+ [[package]]
+ name = "wasm-bindgen"
+-version = "0.2.101"
++version = "0.2.106"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "7e14915cadd45b529bb8d1f343c4ed0ac1de926144b746e2710f9cd05df6603b"
++checksum = "0d759f433fa64a2d763d1340820e46e111a7a5ab75f993d1852d70b03dbb80fd"
+ dependencies = [
+  "cfg-if",
+  "once_cell",
+@@ -3659,20 +3665,6 @@ dependencies = [
+  "wasm-bindgen-shared",
+ ]
+ 
+-[[package]]
+-name = "wasm-bindgen-backend"
+-version = "0.2.101"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e28d1ba982ca7923fd01448d5c30c6864d0a14109560296a162f80f305fb93bb"
+-dependencies = [
+- "bumpalo",
+- "log",
+- "proc-macro2",
+- "quote",
+- "syn 2.0.100",
+- "wasm-bindgen-shared",
+-]
+-
+ [[package]]
+ name = "wasm-bindgen-derive"
+ version = "0.2.1"
+@@ -3697,9 +3689,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "wasm-bindgen-futures"
+-version = "0.4.51"
++version = "0.4.56"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "0ca85039a9b469b38336411d6d6ced91f3fc87109a2a27b0c197663f5144dffe"
++checksum = "836d9622d604feee9e5de25ac10e3ea5f2d65b41eac0d9ce72eb5deae707ce7c"
+ dependencies = [
+  "cfg-if",
+  "js-sys",
+@@ -3710,9 +3702,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "wasm-bindgen-macro"
+-version = "0.2.101"
++version = "0.2.106"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "7c3d463ae3eff775b0c45df9da45d68837702ac35af998361e2c84e7c5ec1b0d"
++checksum = "48cb0d2638f8baedbc542ed444afc0644a29166f1595371af4fecf8ce1e7eeb3"
+ dependencies = [
+  "quote",
+  "wasm-bindgen-macro-support",
+@@ -3720,34 +3712,36 @@ dependencies = [
+ 
+ [[package]]
+ name = "wasm-bindgen-macro-support"
+-version = "0.2.101"
++version = "0.2.106"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "7bb4ce89b08211f923caf51d527662b75bdc9c9c7aab40f86dcb9fb85ac552aa"
++checksum = "cefb59d5cd5f92d9dcf80e4683949f15ca4b511f4ac0a6e14d4e1ac60c6ecd40"
+ dependencies = [
++ "bumpalo",
+  "proc-macro2",
+  "quote",
+  "syn 2.0.100",
+- "wasm-bindgen-backend",
+  "wasm-bindgen-shared",
+ ]
+ 
+ [[package]]
+ name = "wasm-bindgen-shared"
+-version = "0.2.101"
++version = "0.2.106"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "f143854a3b13752c6950862c906306adb27c7e839f7414cec8fea35beab624c1"
++checksum = "cbc538057e648b67f72a982e708d485b2efa771e1ac05fec311f9f63e5800db4"
+ dependencies = [
+  "unicode-ident",
+ ]
+ 
+ [[package]]
+ name = "wasm-bindgen-test"
+-version = "0.3.51"
++version = "0.3.45"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "80cc7f8a4114fdaa0c58383caf973fc126cf004eba25c9dc639bccd3880d55ad"
++checksum = "d381749acb0943d357dcbd8f0b100640679883fcdeeef04def49daf8d33a5426"
+ dependencies = [
++ "console_error_panic_hook",
+  "js-sys",
+  "minicov",
++ "scoped-tls",
+  "wasm-bindgen",
+  "wasm-bindgen-futures",
+  "wasm-bindgen-test-macro",
+@@ -3755,9 +3749,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "wasm-bindgen-test-macro"
+-version = "0.3.51"
++version = "0.3.45"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "c5ada2ab788d46d4bda04c9d567702a79c8ced14f51f221646a16ed39d0e6a5d"
++checksum = "c97b2ef2c8d627381e51c071c2ab328eac606d3f69dd82bcbca20a9e389d95f0"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+@@ -4224,9 +4218,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "web-sys"
+-version = "0.3.78"
++version = "0.3.83"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "77e4b637749ff0d92b8fad63aa1f7cff3cbe125fd49c175cd6345e7272638b12"
++checksum = "9b32828d774c412041098d182a8b38b16ea816958e07cf40eec2bc080ae137ac"
+ dependencies = [
+  "js-sys",
+  "wasm-bindgen",
+diff --git i/Cargo.toml w/Cargo.toml
+index b21b6eb..ac7a523 100644
+--- i/Cargo.toml
++++ w/Cargo.toml
+@@ -30,7 +30,7 @@ toml = "0.8.14"
+ tracing = { version = "0.1", features = ["log", "release_max_level_debug"] }
+ tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
+ url = "2.4.0"
+-wasm-bindgen = { version = "=0.2.101" }
++wasm-bindgen = { version = "=0.2.106" }
+ wasm-bindgen-derive = "0.2.1"
+ wasm-bindgen-futures = "0.4.40"
+ wasm-bindgen-test = "0.3.40"
+diff --git i/src/registry/mod.rs w/src/registry/mod.rs
+index 28d7b45..7a8ae49 100644
+--- i/src/registry/mod.rs
++++ w/src/registry/mod.rs
+@@ -15,9 +15,7 @@ pub struct RegistryConfig {
+ }
+ 
+ impl TryFromJsValue for RegistryConfig {
+-    type Error = JsValue;
+-
+-    fn try_from_js_value(value: wasm_bindgen::prelude::JsValue) -> Result<Self, Self::Error> {
++    fn try_from_js_value(value: wasm_bindgen::prelude::JsValue) -> Result<Self, JsValue> {
+         let token_key = JsValue::from_str("token");
+         let registry_url_key = JsValue::from_str("registryUrl");
+         let token = if has(&value, &token_key)? {
+@@ -53,6 +51,10 @@ impl TryFromJsValue for RegistryConfig {
+             token,
+         })
+     }
++
++    fn try_from_js_value_ref(value: &JsValue) -> Option<Self> {
++        Self::try_from_js_value(value.clone()).ok()
++    }
+ }
+ 
+ impl Wasmer {

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 18,
+  "schemaVersion": 19,
   "runtimeProvider": "quickjs",
   "upstream": {
     "repository": "https://github.com/wasmerio/edgejs",
@@ -107,6 +107,10 @@
       {
         "path": "patches/wasmer-js/0004-release-workers-after-handler-completion.patch",
         "sha256": "7bcf105684fa3d24f78b25cd123f7d466eeaf550e757dadbf520f8a009376af7"
+      },
+      {
+        "path": "patches/wasmer-js/0005-fix-multithread-waker-race.patch",
+        "sha256": "bcef3e329b683ddc35ebdc8c2f5eadd4aa3ebe5a3a316779c99f6c6f72b42083"
       }
     ],
     "dependencyPatches": [
@@ -155,6 +159,12 @@
       "successfulSpawnedThreadExit": "thread-local",
       "successfulSpawnedThreadCleanup": "skip-process-wide-instance-group-shutdown",
       "nonzeroSpawnedThreadExit": "process-terminating"
+    },
+    "multithreadWaker": {
+      "wasmBindgen": "0.2.106",
+      "wasmBindgenFutures": "0.4.56",
+      "waitAsyncPromiseCallback": "wake-before-run",
+      "upstreamFix": "wasm-bindgen#4821"
     },
     "schedulerStress": {
       "asyncWorkerLifetime": "scheduler-lifetime",

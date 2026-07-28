@@ -214,6 +214,18 @@ agent request on slower hosts. Eight acknowledgement-backpressured lanes bound
 Worker creation, cap each lane at one unacknowledged message, and let independent
 event loops keep network and client progress moving.
 
+The pinned Wasmer JS baseline originally resolved multithreaded
+`wasm-bindgen-futures` tasks with `wasm-bindgen@0.2.101`. Its
+`Atomics.waitAsync` Promise callback could run the task without first marking
+the `AtomicWaker` awake, losing a cross-thread wake or sporadically reaching an
+invalid wait state. In the self-hosted agent proof, the host model completed
+and the Gateway received initial assistant chunks, but the browser task then
+stalled before SSE completion. The audited patch upgrades the exact dependency
+family to `wasm-bindgen@0.2.106` and `wasm-bindgen-futures@0.4.56`, which contain
+the upstream `wasm-bindgen#4821` wake-before-run fix, and adapts Wasmer JS to the
+new `TryFromJsValue` interface. This restores the wakeup contract instead of
+buffering the response or widening the client watchdog.
+
 `sleep_now` uses a separate timer-only Worker. Timer Futures may wait
 concurrently on that Worker's JavaScript event loop, and buffered timers are
 started concurrently after Worker initialization. The timer Worker never

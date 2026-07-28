@@ -9,6 +9,12 @@ import path from "node:path";
 
 type BrowserBuildContract = {
   browserExecutor: {
+    multithreadWaker: {
+      upstreamFix: "wasm-bindgen#4821";
+      waitAsyncPromiseCallback: "wake-before-run";
+      wasmBindgen: "0.2.106";
+      wasmBindgenFutures: "0.4.56";
+    };
     package: string;
     schedulerStress: {
       asyncConcurrency:
@@ -179,6 +185,12 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
   });
   const cpuThrottlingRate =
     contract.browserExecutor.schedulerStress.browserCpuThrottlingRate;
+  expect(contract.browserExecutor.multithreadWaker).toEqual({
+    wasmBindgen: "0.2.106",
+    wasmBindgenFutures: "0.4.56",
+    waitAsyncPromiseCallback: "wake-before-run",
+    upstreamFix: "wasm-bindgen#4821"
+  });
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Emulation.setCPUThrottlingRate", {
     rate: cpuThrottlingRate
