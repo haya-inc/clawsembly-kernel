@@ -291,7 +291,7 @@ jobs:
             --strip-components=1
           test "$(
             tools/binaryen/bin/wasm-opt --version
-          )" = "wasm-opt version 117"
+          )" = "wasm-opt version 117 (${BINARYEN_VERSION})"
 
       - name: Build patched Wasmer JS browser runtime
         shell: bash
