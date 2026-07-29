@@ -187,14 +187,24 @@ async function verifyBrowser(baseUrl, manifest) {
       900_000
     );
     if (
-      runtimeEvidence.status !== "pass"
+      runtimeEvidence.status !== "diagnostic-pass"
       || runtimeEvidence.crossOriginIsolated !== true
+      || runtimeEvidence.executionMode
+        !== "direct-unmodified-entry-diagnostic"
       || runtimeEvidence.openclaw?.version !== manifest.openclaw.version
-      || runtimeEvidence.runtime?.node
-        !== manifest.nodeCompatibility.version
+      || runtimeEvidence.image?.bytes
+        !== manifest.artifacts.openclaw.bytes
+      || runtimeEvidence.invocation?.entry
+        !== "/openclaw/dist/entry.js"
+      || runtimeEvidence.result?.code !== 0
+      || runtimeEvidence.result?.ok !== true
+      || !runtimeEvidence.result?.stdout?.startsWith(
+        `OpenClaw ${manifest.openclaw.version} `
+      )
     ) {
       throw new Error(
-        "Deployed browser runtime evidence did not match the manifest"
+        "Deployed browser runtime evidence did not match the manifest:\n"
+        + JSON.stringify(runtimeEvidence, null, 2)
       );
     }
     if (errors.length > 0) {
