@@ -87,6 +87,19 @@ test("rejects requests without the ephemeral deployment capability", async () =>
   assert.equal(response.status, 403);
 });
 
+test("reports readiness only with the ephemeral deployment capability", async () => {
+  const { env } = createEnvironment();
+  const response = await uploader.fetch(
+    authorizedRequest("https://uploader.example/healthz"),
+    env
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    status: "ok",
+    service: "clawsembly-r2-uploader"
+  });
+});
+
 test("rejects mutable or unexpected R2 object keys", async () => {
   const { env } = createEnvironment();
   const response = await uploader.fetch(

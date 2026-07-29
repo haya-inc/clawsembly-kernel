@@ -145,6 +145,32 @@ async function fetchUploader(url, token, init) {
   return response.json();
 }
 
+async function waitForUploader(uploaderUrl, token) {
+  const healthUrl = new URL("/healthz", uploaderUrl);
+  let lastError;
+  for (let attempt = 1; attempt <= 60; attempt += 1) {
+    try {
+      const result = await fetchUploader(healthUrl, token, {
+        method: "GET"
+      });
+      if (
+        result.status === "ok"
+        && result.service === "clawsembly-r2-uploader"
+      ) {
+        return;
+      }
+      lastError = new Error("Unexpected multipart uploader health response");
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  throw new Error(
+    "Temporary R2 multipart uploader did not become ready",
+    { cause: lastError }
+  );
+}
+
 async function uploadMultipartArtifact(
   artifact,
   uploaderUrl,
@@ -282,6 +308,7 @@ async function uploadLargeArtifacts(artifacts) {
         + "CLAWSEMBLY_R2_UPLOADER_URL explicitly"
       );
     }
+    await waitForUploader(uploaderUrl, token);
     for (const artifact of artifacts) {
       await uploadMultipartArtifact(artifact, uploaderUrl, token);
     }

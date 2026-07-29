@@ -66,6 +66,13 @@ async function handleRequest(request, env) {
   }
   const url = new URL(request.url);
 
+  if (url.pathname === "/healthz" && request.method === "GET") {
+    return json({
+      status: "ok",
+      service: "clawsembly-r2-uploader"
+    });
+  }
+
   if (url.pathname === "/create" && request.method === "POST") {
     const body = await request.json();
     const key = requireKey(body.key);
