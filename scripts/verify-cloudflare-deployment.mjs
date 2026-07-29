@@ -162,7 +162,7 @@ async function verifyBrowser(baseUrl, manifest) {
   const browser = await chromium.launch({ headless: true });
   try {
     const context = await browser.newContext({
-      baseURL: baseUrl
+      baseURL: baseUrl.toString()
     });
     const page = await context.newPage();
     const errors = [];
