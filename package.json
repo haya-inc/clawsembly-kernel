@@ -19,7 +19,7 @@
     "typecheck": "tsc -p tsconfig.app.json && tsc -p tsconfig.worker.json && tsc -p tsconfig.node.json",
     "build": "npm run typecheck && vite build",
     "cloudflare:prepare": "node scripts/prepare-cloudflare-deploy.mjs",
-    "cloudflare:check": "node --check worker/index.mjs && node --test tests/cloudflare-worker.test.mjs && npm exec wrangler -- deploy --dry-run",
+    "cloudflare:check": "node --check worker/index.mjs && node --check worker/r2-uploader.mjs && node --test tests/cloudflare-*.test.mjs && npm exec wrangler -- deploy --dry-run && npm exec wrangler -- deploy --config wrangler.r2-uploader.jsonc --dry-run",
     "cloudflare:deploy": "node scripts/deploy-cloudflare.mjs",
     "cloudflare:verify": "node scripts/verify-cloudflare-deployment.mjs",
     "preview": "vite preview",

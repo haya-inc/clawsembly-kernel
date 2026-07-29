@@ -84,6 +84,12 @@ Upload the content-addressed objects and deploy the Worker:
 npm run cloudflare:deploy
 ```
 
+Wrangler's single-object command stops at 300 MiB. The deploy script uploads
+larger proof artifacts in equal 64 MiB parts through a capability-protected,
+temporary Worker with a direct R2 binding. It generates a fresh upload
+capability, removes its local secret file, and deletes that temporary Worker
+before deploying the public service. No persistent S3 access key is required.
+
 `wrangler.jsonc` declares `clawsembly.yhay81.com` as a custom domain. Wrangler
 creates or updates the required DNS record in the Cloudflare-managed
 `yhay81.com` zone.
