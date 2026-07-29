@@ -93,6 +93,13 @@ see the [self-host guide](docs/self-host.md) or run:
 npm run self-host:prove -- --help
 ```
 
+For the proof-bound Cloudflare Worker + R2 production distribution at
+`clawsembly.yhay81.com`, see the
+[Cloudflare deployment guide](docs/cloudflare-deployment.md). Its preparation
+step refuses unproven runtime inputs, builds against the exact patched Wasmer
+SDK from the public proof, and keeps the 68 MB Edge.js and 317 MB OpenClaw
+objects outside the 25 MiB Static Assets boundary.
+
 To run only the Edge.js/OpenClaw artifact proof:
 
 ```bash
