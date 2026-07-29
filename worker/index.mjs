@@ -1,3 +1,5 @@
+import { ByokCapabilityBroker } from "./byok-broker.mjs";
+
 const SECURITY_HEADERS = Object.freeze({
   "Cross-Origin-Embedder-Policy": "require-corp",
   "Cross-Origin-Opener-Policy": "same-origin",
@@ -11,6 +13,10 @@ const IMMUTABLE_CACHE_CONTROL =
   "public, max-age=31536000, s-maxage=31536000, immutable, no-transform";
 const MANIFEST_PATH = "/runtime-manifest.json";
 let manifestPromise;
+
+const BYOK_ISSUE_PATH = "/api/byok/capabilities";
+const BYOK_COMPLETION_PATH = "/api/byok/v1/chat/completions";
+const BYOK_REVOKE_PATH = "/api/byok/capabilities/revoke";
 
 function applySecurityHeaders(headers) {
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
@@ -35,6 +41,120 @@ function withSecurityHeaders(response, pathname) {
     statusText: response.statusText,
     headers
   });
+}
+
+function noStoreResponse(response) {
+  const headers = new Headers(response.headers);
+  applySecurityHeaders(headers);
+  headers.set("Cache-Control", "no-store");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+}
+
+function byokError(code, status) {
+  return noStoreResponse(Response.json({
+    schemaVersion: 1,
+    status: "error",
+    error: { code }
+  }, { status }));
+}
+
+function isSameOriginBrowserRequest(request) {
+  const origin = request.headers.get("Origin");
+  return !origin || origin === new URL(request.url).origin;
+}
+
+function parseRoutedCapability(request) {
+  const authorization = request.headers.get("Authorization");
+  const value = authorization?.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length)
+    : "";
+  const separator = value.indexOf(".");
+  if (separator <= 0 || separator === value.length - 1) return undefined;
+  const id = value.slice(0, separator);
+  const secret = value.slice(separator + 1);
+  if (
+    !/^[a-f0-9]{64}$/u.test(id)
+    || !/^[A-Za-z0-9_-]{32,128}$/u.test(secret)
+  ) {
+    return undefined;
+  }
+  return { id, secret };
+}
+
+async function issueByokCapability(request, env) {
+  if (request.method !== "POST") {
+    return byokError("method_not_allowed", 405);
+  }
+  if (!isSameOriginBrowserRequest(request)) {
+    return byokError("cross_origin_denied", 403);
+  }
+  if (!env.BYOK_BROKERS) {
+    return byokError("byok_broker_unavailable", 503);
+  }
+  const id = env.BYOK_BROKERS.newUniqueId();
+  const response = await env.BYOK_BROKERS.get(id).fetch(
+    new Request("https://byok.internal/issue", {
+      method: "POST",
+      headers: {
+        "Content-Type": request.headers.get("Content-Type")
+          ?? "application/octet-stream"
+      },
+      body: await request.arrayBuffer()
+    })
+  );
+  if (!response.ok) return noStoreResponse(response);
+  const body = await response.json();
+  const sessionId = id.toString();
+  return noStoreResponse(Response.json({
+    ...body,
+    capability: {
+      ...body.capability,
+      token: `${sessionId}.${body.capability.token}`,
+      adminToken: `${sessionId}.${body.capability.adminToken}`,
+      baseUrl: `${new URL(request.url).origin}/api/byok/v1`,
+      providerId: "clawsembly-byok"
+    }
+  }, { status: response.status }));
+}
+
+async function routeByokCapability(request, env, pathname) {
+  if (request.method !== "POST") {
+    return byokError("method_not_allowed", 405);
+  }
+  if (!env.BYOK_BROKERS) {
+    return byokError("byok_broker_unavailable", 503);
+  }
+  const capability = parseRoutedCapability(request);
+  if (!capability) return byokError("unauthorized", 401);
+  let id;
+  try {
+    id = env.BYOK_BROKERS.idFromString(capability.id);
+  } catch {
+    return byokError("unauthorized", 401);
+  }
+  const body = pathname === "/v1/chat/completions"
+    ? await request.arrayBuffer()
+    : undefined;
+  const response = await env.BYOK_BROKERS.get(id).fetch(
+    new Request(`https://byok.internal${pathname}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${capability.secret}`,
+        ...(body
+          ? {
+              "Content-Type": request.headers.get("Content-Type")
+                ?? "application/octet-stream"
+            }
+          : {})
+      },
+      ...(body ? { body } : {})
+    })
+  );
+  return noStoreResponse(response);
 }
 
 function isHexSha256(value) {
@@ -270,6 +390,19 @@ async function handleRequest(request, env, context) {
       { headers }
     );
   }
+  if (url.pathname === BYOK_ISSUE_PATH) {
+    return issueByokCapability(request, env);
+  }
+  if (url.pathname === BYOK_COMPLETION_PATH) {
+    return routeByokCapability(
+      request,
+      env,
+      "/v1/chat/completions"
+    );
+  }
+  if (url.pathname === BYOK_REVOKE_PATH) {
+    return routeByokCapability(request, env, "/revoke");
+  }
 
   const manifest = await loadRuntimeManifest(env, request);
   const artifact = resolveRuntimeArtifact(manifest, url.pathname);
@@ -316,3 +449,5 @@ export default {
     }
   }
 };
+
+export { ByokCapabilityBroker };

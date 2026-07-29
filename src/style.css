@@ -122,6 +122,11 @@ footer {
   transition: color 160ms ease, background 160ms ease;
 }
 
+.topbar-actions {
+  align-self: stretch;
+  display: flex;
+}
+
 .source-link:hover {
   color: var(--ink);
   background: var(--acid);

@@ -65,6 +65,8 @@ export default defineConfig({
     rollupOptions: {
       input: [
         "index.html",
+        "onboard.html",
+        "byok-runtime.html",
         "install-lifecycle-probe.html",
         "openclaw-agent-turn-probe.html",
         "openclaw-opfs-persistence-probe.html",

@@ -26,6 +26,7 @@ on:
       - scripts/build-openclaw-package-image.mjs
       - scripts/generate-openclaw-package-contract.mjs
       - src/clawsemblyfs.ts
+      - src/byok-*.ts
       - src/edgejs-wasix-probe.ts
       - src/network-egress-probe.ts
       - src/openclaw-agent-turn-response.ts
@@ -35,6 +36,8 @@ on:
       - src/package-image-probe.ts
       - nested-wasm/**
       - tests/clawsemblyfs.test.ts
+      - tests/byok-*.test.ts
+      - tests/byok-*.spec.ts
       - tests/edgejs-wasix-browser.spec.ts
       - tests/network-egress-browser.spec.ts
       - tests/openclaw-agent-turn-browser.spec.ts
@@ -47,6 +50,8 @@ on:
       - tsconfig.app.json
       - vite.config.ts
       - openclaw-probe.html
+      - byok-runtime.html
+      - onboard.html
       - openclaw-agent-turn-probe.html
       - openclaw-gateway-health-probe.html
       - network-egress-probe.html
@@ -914,6 +919,32 @@ jobs:
               workspaceEvidence: null,
               errorContexts: $errorContexts
             }' > "${destination}/manifest.json"
+
+      - name: Prove a browser-local OpenClaw BYOK agent turn
+        env:
+          CLAWSEMBLY_EDGE_WASIX: ${{ github.workspace }}/edgejs/build-quickjs-wasix/edgejs.wasm
+          CLAWSEMBLY_OPENCLAW_IMAGE: ${{ steps.package_image.outputs.path }}
+          CLAWSEMBLY_WASMER_SDK_DIR: ${{ github.workspace }}/wasmer-js/dist
+        run: |
+          npx playwright test \
+            --retries=1 \
+            tests/byok-openclaw-browser.spec.ts
+
+      - name: Preserve OpenClaw BYOK evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          evidence="$(
+            find test-results \
+              -name byok-openclaw-browser-evidence.json \
+              -type f \
+              -print \
+              | head -n 1
+          )"
+          test -n "${evidence}"
+          cp "${evidence}" artifacts/byok-openclaw-browser-evidence.json
 
       - name: Prove OpenClaw workspace tools and OPFS recovery
         if: ${{ always() }}
