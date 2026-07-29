@@ -220,10 +220,13 @@ The pinned Wasmer JS baseline originally resolved multithreaded
 the `AtomicWaker` awake, losing a cross-thread wake or sporadically reaching an
 invalid wait state. In the self-hosted agent proof, the host model completed
 and the Gateway received initial assistant chunks, but the browser task then
-stalled before SSE completion. The audited patch upgrades the exact dependency
+stalled before SSE completion. The first audited patch upgrades the dependency
 family to `wasm-bindgen@0.2.106` and `wasm-bindgen-futures@0.4.56`, which contain
 the upstream `wasm-bindgen#4821` wake-before-run fix, and adapts Wasmer JS to the
-new `TryFromJsValue` interface. A subsequent public Ubuntu proof showed that a
+new `TryFromJsValue` interface. The family is now pinned at
+`wasm-bindgen@0.2.107` and `wasm-bindgen-futures@0.4.57`; the former also
+contains the upstream `wasm-bindgen#4892` deterministic adapter-order fix.
+A subsequent public Ubuntu proof showed that a
 different Future boundary could still remain parked after a lost browser
 notification: the model and broker completed, but the final SSE chunks did not
 reach the official client. The dependency patch therefore also bounds native
