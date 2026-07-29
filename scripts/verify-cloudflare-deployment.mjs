@@ -143,7 +143,7 @@ async function waitForProbe(page, pathname, timeoutMs) {
     { timeout: timeoutMs }
   );
   const state = await page.locator("#status").getAttribute("data-state");
-  const resultText = await page.locator("#result").innerText();
+  const resultText = await page.locator("#result").textContent() ?? "";
   if (state !== "pass") {
     throw new Error(
       `Browser probe ${pathname} failed:\n${resultText}`
