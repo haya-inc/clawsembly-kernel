@@ -12,6 +12,16 @@ import {
   commitDirectoryTreeToOpfs,
   restoreDirectoryTreeFromOpfs
 } from "./opfs-directory-store";
+import { consumeByokCapabilityHandoff } from "./byok-capability-handoff";
+import {
+  startByokHttpBridge,
+  type ByokHttpBridge
+} from "./byok-http-bridge";
+import {
+  byokLoopbackPort,
+  byokLoopbackReadyMarker,
+  createByokLoopbackBrokerHarness
+} from "./byok-loopback-broker";
 
 type OpenClawPackage = {
   engines?: {
@@ -291,14 +301,19 @@ const imageUrl = searchParams.get("image") ?? "/openclaw.clawfs";
 const requestedProofKind = searchParams.get("proof");
 const proofKind = requestedProofKind === "agent-turn"
   || requestedProofKind === "self-hosted-agent-turn"
+  || requestedProofKind === "byok-agent-turn"
   || requestedProofKind === "workspace-tool-turn"
   ? requestedProofKind
   : "health";
 const agentTurnProof = proofKind !== "health";
 const selfHostedModelProof = proofKind === "self-hosted-agent-turn";
+const byokModelProof = proofKind === "byok-agent-turn";
 const workspaceToolProof = proofKind === "workspace-tool-turn";
 const selfHostedModelCapability = selfHostedModelProof
   ? consumeSelfHostedModelCapability()
+  : undefined;
+const byokModelCapability = byokModelProof
+  ? consumeByokCapabilityHandoff()
   : undefined;
 const relayUrl =
   searchParams.get("relay") ?? "ws://127.0.0.1:18792/v1/network";
@@ -318,19 +333,27 @@ const gatewayPort = 18_789;
 const gatewayUrl = `ws://127.0.0.1:${gatewayPort}`;
 const gatewayToken = "clawsembly-diagnostic-non-secret-token";
 const providerHost = "localhost";
-const providerPort = 18_794;
+const providerPort = byokLoopbackPort;
 const providerModel = selfHostedModelProof
   ? "qwen2.5-0.5b-instruct"
+  : byokModelProof
+    ? byokModelCapability?.model ?? ""
   : "clawsembly-proof";
 const providerName = selfHostedModelProof
   ? "clawsembly-broker"
+  : byokModelProof
+    ? "clawsembly-byok"
   : "clawsembly";
 const providerBaseUrl = `http://localhost:${providerPort}/v1`;
 const providerApiKey = selfHostedModelProof
   ? selfHostedModelCapability?.brokerToken
+  : byokModelProof
+    ? byokModelCapability?.apiKey
   : "clawsembly-fixture-key";
 const providerDisplayName = selfHostedModelProof
   ? "Clawsembly self-hosted OSS model proof"
+  : byokModelProof
+    ? "Clawsembly user-authorized BYOK model"
   : "Clawsembly deterministic proof fixture";
 const selfHostedModelTemperature = 0;
 const selfHostedModelToolDeny = ["*"];
@@ -342,10 +365,11 @@ const workspaceMountedFile =
   `${workspaceMountedRoot}/${workspaceRelativeFile}`;
 const workspacePersistedContent = "CLAWSEMBLY_WORKSPACE_PERSISTED";
 const workspaceOutsideFile = "/.clawsembly-outside.txt";
-const sensitiveValues = selfHostedModelProof
+const sensitiveValues = selfHostedModelProof || byokModelProof
   ? [
       relayToken,
-      selfHostedModelCapability?.brokerToken
+      selfHostedModelCapability?.brokerToken,
+      byokModelCapability?.apiKey
     ].filter(
       (value): value is string => typeof value === "string" && value.length > 0
     )
@@ -383,7 +407,7 @@ async function runProbe(): Promise<void> {
     if (runtimeLogLevel === "debug" || runtimeLogLevel === "trace") {
       initializeLogger(runtimeLogLevel);
     }
-    if (agentTurnProof && !relayToken) {
+    if (agentTurnProof && !byokModelProof && !relayToken) {
       throw new Error("The agent-turn relay capability token is required");
     }
     if (selfHostedModelProof && !providerApiKey) {
@@ -391,7 +415,10 @@ async function runProbe(): Promise<void> {
         "The opaque self-hosted model capability is required"
       );
     }
-    const runtimeOptions = agentTurnProof
+    if (byokModelProof && !byokModelCapability) {
+      throw new Error("The opaque BYOK model capability is required");
+    }
+    const runtimeOptions = agentTurnProof && !byokModelProof
       ? {
           registry: null,
           networkEgress: {
@@ -507,13 +534,25 @@ async function runProbe(): Promise<void> {
     }
     const networkEvidence = {
       namespace: agentTurnProof
-        ? selfHostedModelProof
-          ? "browser-local-loopback+self-hosted-model-capability-egress"
-          : "browser-local-loopback+capability-egress"
+        ? byokModelProof
+          ? "browser-local-loopback+host-http-capability-bridge"
+          : selfHostedModelProof
+            ? "browser-local-loopback+self-hosted-model-capability-egress"
+            : "browser-local-loopback+capability-egress"
         : "browser-local-loopback",
       url: gatewayUrl,
       externalEgress: agentTurnProof
-        ? {
+        ? byokModelProof
+          ? {
+              guest: "denied-by-default",
+              hostBridge: {
+                endpoint: byokModelCapability?.baseUrl,
+                providerCredentialVisibleToGuest: false,
+                transport:
+                  "browser fetch + capability-directory mailbox"
+              }
+            }
+          : {
             allow: [{
               host: providerHost,
               port: providerPort,
@@ -533,8 +572,13 @@ async function runProbe(): Promise<void> {
       gatewayStateRoot: "/openclaw/.clawsembly-gateway-state",
       clientStateRootPattern: "/openclaw/.clawsembly-client-state-{attempt}"
     };
-    const notNorthStarCompletion = selfHostedModelProof
-      ? "This proves a real model turn with a pinned OSS inference runtime "
+    const notNorthStarCompletion = byokModelProof
+      ? "This proves a user-authorized hosted model turn while the provider "
+        + "credential remains outside Edge.js, WASIX, and OpenClaw. "
+        + "Cloudflare participates in the short-lived secret boundary, so "
+        + "this does not claim end-to-end browser-to-provider custody."
+      : selfHostedModelProof
+        ? "This proves a real model turn with a pinned OSS inference runtime "
         + "and model while the model-service credential, GGUF weights, and "
         + "inference process remain outside the browser and both WASIX "
         + "guests. Durable fresh-browser OPFS recovery is proven separately "
@@ -584,6 +628,55 @@ async function runProbe(): Promise<void> {
       module,
       bytes: edgeBytes
     } as unknown as WebAssembly.Module;
+    let byokHttpBridge: ByokHttpBridge | undefined;
+    let byokBridgeGuest:
+      | {
+          stderr: StreamCapture;
+          stdout: StreamCapture;
+        }
+      | undefined;
+    if (byokModelProof) {
+      status.textContent =
+        "Starting the browser-local BYOK model bridge…";
+      const bridgeDirectory = new Directory();
+      await bridgeDirectory.createDir("/requests");
+      await bridgeDirectory.createDir("/responses");
+      byokHttpBridge = startByokHttpBridge({
+        capability: byokModelCapability!,
+        directory: bridgeDirectory
+      });
+      const bridgeInstance = await runWasix(moduleWithBytes, {
+        program: "edgejs",
+        args: ["-e", createByokLoopbackBrokerHarness()],
+        cwd: "/",
+        env: {
+          FORCE_COLOR: "0",
+          NO_COLOR: "1",
+          PATH: "/bin"
+        },
+        mount: {
+          "/bridge": bridgeDirectory
+        },
+        runtime: wasixRuntime
+      });
+      const bridgeStdout = captureStream(bridgeInstance.stdout);
+      const bridgeStderr = captureStream(bridgeInstance.stderr);
+      byokBridgeGuest = {
+        stdout: bridgeStdout,
+        stderr: bridgeStderr
+      };
+      const bridgeReady = Promise.any([
+        bridgeStdout.waitFor(byokLoopbackReadyMarker, 30_000),
+        bridgeStderr.waitFor(byokLoopbackReadyMarker, 30_000)
+      ]);
+      const bridgeExit = bridgeInstance.wait().then((output) => {
+        throw new Error(
+          "BYOK loopback broker exited before readiness: "
+          + JSON.stringify(serializableOutput(output as WasixOutput))
+        );
+      });
+      await Promise.race([bridgeReady, bridgeExit]);
+    }
     let persistentStateRestore:
       | Awaited<ReturnType<typeof restoreDirectoryTreeFromOpfs>>
       | undefined;
@@ -664,7 +757,7 @@ async function runProbe(): Promise<void> {
               : {})
           }
         },
-        ...(selfHostedModelProof
+        ...(selfHostedModelProof || byokModelProof
           ? {
               tools: {
                 deny: selfHostedModelToolDeny
@@ -867,11 +960,13 @@ async function runProbe(): Promise<void> {
       performance.now() - startedAt
     );
     status.textContent = agentTurnProof
-      ? selfHostedModelProof
-        ? "Gateway ready; starting a self-hosted OSS model turn…"
-        : workspaceToolProof
-          ? "Gateway ready; starting an OpenClaw workspace tool turn…"
-        : "Gateway ready; starting an official OpenClaw agent turn…"
+      ? byokModelProof
+        ? "Gateway ready; starting the user-authorized BYOK model turn…"
+        : selfHostedModelProof
+          ? "Gateway ready; starting a self-hosted OSS model turn…"
+          : workspaceToolProof
+            ? "Gateway ready; starting an OpenClaw workspace tool turn…"
+            : "Gateway ready; starting an official OpenClaw agent turn…"
       : "Gateway ready; starting the official OpenClaw health client…";
     const clientArgs = agentTurnProof
       ? [
@@ -1176,11 +1271,13 @@ async function runProbe(): Promise<void> {
       schemaVersion: 1,
       status: proofPassed
         ? agentTurnProof
-          ? selfHostedModelProof
-            ? "self-hosted-agent-turn-pass"
-            : workspaceToolProof
-              ? "workspace-tool-turn-pass"
-            : "agent-turn-pass"
+          ? byokModelProof
+            ? "byok-agent-turn-pass"
+            : selfHostedModelProof
+              ? "self-hosted-agent-turn-pass"
+              : workspaceToolProof
+                ? "workspace-tool-turn-pass"
+                : "agent-turn-pass"
           : "gateway-health-pass"
         : "blocked",
       ...(proofPassed
@@ -1192,8 +1289,14 @@ async function runProbe(): Promise<void> {
           }),
       claim: proofPassed
         ? agentTurnProof
-          ? selfHostedModelProof
+          ? byokModelProof
             ? "A second browser guest executed the exact official OpenClaw "
+              + "CLI and completed a real user-authorized model turn through "
+              + "a browser-local fixed HTTP bridge. Only an opaque, bounded "
+              + "capability entered OpenClaw; the provider credential stayed "
+              + "in the expiring Cloudflare broker session."
+            : selfHostedModelProof
+              ? "A second browser guest executed the exact official OpenClaw "
               + "CLI, submitted a real agent turn through the unmodified "
               + "Gateway, and received an actual Qwen response from a pinned "
               + "self-hosted llama.cpp process while only an opaque operation "
@@ -1376,6 +1479,51 @@ async function runProbe(): Promise<void> {
             }
           }
         : {}),
+      ...(byokModelProof
+        ? {
+            byokModel: {
+              api: "openai-completions",
+              expectedMarker: agentTurnMarker,
+              guestEndpoint: providerBaseUrl,
+              guestReceivesProviderCredential: false,
+              model: `${providerName}/${providerModel}`,
+              operationCapability: {
+                authority:
+                  `POST ${byokModelCapability?.baseUrl}/chat/completions`,
+                expiresAt: byokModelCapability?.expiresAt,
+                model: providerModel,
+                recorded: false,
+                revocable: true
+              },
+              proofAgentPolicy: {
+                allowedTools: [],
+                deny: selfHostedModelToolDeny
+              },
+              hostBridge: {
+                implementation:
+                  "browser fetch + capability-directory mailbox + "
+                  + "browser-local Edge.js HTTP loopback",
+                loopbackEndpoint: providerBaseUrl,
+                stats: byokHttpBridge?.snapshot(),
+                guest: byokBridgeGuest
+                  ? {
+                      stdout: byokBridgeGuest.stdout.snapshot(),
+                      stderr: byokBridgeGuest.stderr.snapshot()
+                    }
+                  : undefined
+              },
+              broker: {
+                implementation:
+                  "Cloudflare Worker + unique Durable Object session",
+                exactProviderAndModel: true,
+                maxRequestBytes: 2_097_152,
+                providerCredentialRecorded: false,
+                providerCredentialVisibleToGuest: false,
+                revocable: true
+              }
+            }
+          }
+        : {}),
       client: {
         args: clientArgs.slice(1),
         distinctGuestProcess: true,
@@ -1403,11 +1551,13 @@ async function runProbe(): Promise<void> {
     status.dataset.state = "pass";
     status.textContent = proofPassed
       ? agentTurnProof
-        ? selfHostedModelProof
-          ? "PASS · Unmodified OpenClaw completed a self-hosted model turn"
-          : workspaceToolProof
-            ? "PASS · OpenClaw workspace tools persisted and restored"
-          : "PASS · Unmodified OpenClaw completed a real agent turn"
+        ? byokModelProof
+          ? "PASS · OpenClaw completed a user-authorized BYOK turn"
+          : selfHostedModelProof
+            ? "PASS · Unmodified OpenClaw completed a self-hosted model turn"
+            : workspaceToolProof
+              ? "PASS · OpenClaw workspace tools persisted and restored"
+              : "PASS · Unmodified OpenClaw completed a real agent turn"
         : "PASS · Official OpenClaw client completed Gateway health RPC"
       : "MILESTONE · Gateway client blocker captured";
     result.textContent = JSON.stringify(

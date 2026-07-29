@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Clawsembly · Browser-local OpenClaw</title>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Clawsembly · Browser-local OpenClaw</p>
+      <h1>OpenClawをブラウザ内で起動しています</h1>
+      <p>
+        公式パッケージを検証し、Gatewayとモデル接続をローカルに準備します。
+      </p>
+      <output id="status" data-state="running">BYOK接続を待っています…</output>
+      <pre id="result" aria-live="polite"></pre>
+    </main>
+    <script type="module" src="/src/byok-runtime.ts"></script>
+  </body>
+</html>

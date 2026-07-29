@@ -22,6 +22,22 @@
       "bucket_name": "clawsembly-kernel-artifacts"
     }
   ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "BYOK_BROKERS",
+        "class_name": "ByokCapabilityBroker"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "ByokCapabilityBroker"
+      ]
+    }
+  ],
   "observability": {
     "enabled": true
   }

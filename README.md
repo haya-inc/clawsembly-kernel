@@ -115,6 +115,11 @@ own shrinkwrap, and runs two fresh Edge.js processes. Set
 
 Experimental. Current execution milestones:
 
+- A BYOK onboarding surface now exchanges an OpenAI or OpenRouter credential
+  for a model- and provider-bound opaque capability. The provider key stays
+  outside the OpenClaw guest, browser storage, URLs, and evidence; a separate
+  browser-held capability revokes it immediately. See
+  [the BYOK boundary and browser-local HTTP handoff](docs/byok-onboarding.md).
 - Chromium executes the artifact-derived SQLite contract against official
   SQLite Wasm with OPFS persistence.
 - Native Edge.js executes the exact unmodified OpenClaw state artifact through

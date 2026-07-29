@@ -6,7 +6,9 @@ The production distribution uses one Cloudflare Worker custom domain:
 - an R2 binding streams the content-addressed Edge.js WASIX and OpenClaw
   package-image objects; and
 - every response preserves the cross-origin isolation required by
-  `SharedArrayBuffer`.
+  `SharedArrayBuffer`; and
+- one Durable Object per BYOK session holds the provider credential behind an
+  opaque, revocable, model-bound capability until expiry.
 
 The default production hostname is `clawsembly.yhay81.com`. The runtime
 objects remain same-origin through the Worker at `/edgejs.wasm` and
@@ -98,6 +100,12 @@ before deploying the public service. No persistent S3 access key is required.
 creates or updates the required DNS record in the Cloudflare-managed
 `yhay81.com` zone.
 
+The first deployment after adding BYOK also applies the `v1` Durable Object
+migration for `ByokCapabilityBroker`. No shared provider API key is configured
+as a Worker secret; each user supplies their own credential through
+`/onboard.html`. See [BYOK onboarding](byok-onboarding.md) for its exact
+authority and persistence boundary.
+
 Re-running the deploy is safe: the runtime paths are content-addressed and the
 application manifest remains bound to one public proof.
 
@@ -122,12 +130,16 @@ Use `--skip-browser` only for a quick transport check.
 
 ## Model and network boundary
 
-Cloudflare distribution hosts the browser kernel and its immutable package
-inputs. It does not turn the Linux relay, capability broker, `llama.cpp`, or
-Qwen GGUF into Worker processes.
+Cloudflare distribution hosts the browser kernel, its immutable package
+inputs, and the short-lived BYOK capability broker. It does not turn the Linux
+relay, native self-hosted capability broker, `llama.cpp`, or Qwen GGUF into
+Worker processes.
 
-For an actual remote agent turn, deploy the relay and broker on a controlled
-host and expose only their capability-scoped WebSocket/HTTP endpoints, or
-implement equivalent Worker/Durable Object services. The provider credential
-and model service must remain outside the browser. Static deployment alone
-must not be described as a hosted self-model service.
+For the public BYOK path, OpenClaw reaches only a browser-local fixed HTTP
+bridge. The browser host forwards its bounded mailbox request to the
+same-origin Worker broker with `fetch`; no virtual-net WebSocket relay is
+required. The provider credential remains in the expiring Durable Object
+session and never enters Edge.js, WASIX, OpenClaw, OPFS, or evidence.
+
+This is a hosted-provider BYOK path, not a hosted self-model service. The
+self-hosted llama.cpp/Qwen proof retains its native relay and broker.
