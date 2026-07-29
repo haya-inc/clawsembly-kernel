@@ -220,10 +220,13 @@ The pinned Wasmer JS baseline originally resolved multithreaded
 the `AtomicWaker` awake, losing a cross-thread wake or sporadically reaching an
 invalid wait state. In the self-hosted agent proof, the host model completed
 and the Gateway received initial assistant chunks, but the browser task then
-stalled before SSE completion. The audited patch upgrades the exact dependency
+stalled before SSE completion. The first audited patch upgrades the dependency
 family to `wasm-bindgen@0.2.106` and `wasm-bindgen-futures@0.4.56`, which contain
 the upstream `wasm-bindgen#4821` wake-before-run fix, and adapts Wasmer JS to the
-new `TryFromJsValue` interface. A subsequent public Ubuntu proof showed that a
+new `TryFromJsValue` interface. The family is now pinned at
+`wasm-bindgen@0.2.107` and `wasm-bindgen-futures@0.4.57`; the former also
+contains the upstream `wasm-bindgen#4892` deterministic adapter-order fix.
+A subsequent public Ubuntu proof showed that a
 different Future boundary could still remain parked after a lost browser
 notification: the model and broker completed, but the final SSE chunks did not
 reach the official client. The dependency patch therefore also bounds native
@@ -435,11 +438,14 @@ the source-built compatibility profile without modifying the launcher.
 Additional guests prove synchronous SQLite persistence and the browser-local
 loopback exchange described above. The evidence pins:
 
+- the Clawsembly source commit and public workflow-run URL
 - Edge `0.0.0-554eb9b`
 - Edge.js source baseline `v24.13.2-pre`
 - OpenClaw-scoped Node compatibility version `24.15.0`
 - V8 `0.0.0-node.0`
 - the Edge.js WASIX and source-built Wasmer JS SHA-256 digests
+- the source-commit `SOURCE_DATE_EPOCH`, repeat-packaged Edge distribution
+  digest, and repeated every-file Wasmer SDK digest manifest
 - OpenClaw `2026.7.1-2` npm integrity
   `sha512-ycF3yPcbjN6bUPeaUx6Mh6vze1hQWoD3CT/wWcmD7a8xaHHHRUaAlaq+lFxMHf1ssEgODVAwjlzYqp2twkYZ7g==`
 

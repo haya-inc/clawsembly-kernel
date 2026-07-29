@@ -1,10 +1,22 @@
 {
-  "schemaVersion": 20,
+  "schemaVersion": 21,
   "runtimeProvider": "quickjs",
   "upstream": {
     "repository": "https://github.com/wasmerio/edgejs",
     "commit": "554eb9b697ae7378290bd5f2dee1cea49a747cd7",
     "license": "MIT"
+  },
+  "reproducibleBuild": {
+    "sourceDateEpoch": 1784765943,
+    "sourceDateEpochBasis": "edge-source-commit-time",
+    "wasmBindgenDeterminismFix": "wasm-bindgen#4892",
+    "browserExecutorVerification": "repeat-build-and-every-file-sha256",
+    "distributionArchive": {
+      "directoryEntries": "omitted",
+      "entryOrder": "bytewise-path-sort",
+      "extraFields": "stripped",
+      "timestamps": "source-date-epoch"
+    }
   },
   "patches": [
     {
@@ -38,6 +50,10 @@
     {
       "path": "patches/edgejs/0008-declare-openclaw-node-24-compatibility.patch",
       "sha256": "3e522e86d03246ef2cdb4d15b778efa49f8d2a6dda1274ed7b7b9d893fb76da6"
+    },
+    {
+      "path": "patches/edgejs/0009-make-wasix-distribution-reproducible.patch",
+      "sha256": "57e0ae8699d61d024c67899568f35b92af36a47e67096da390077961879d68e9"
     }
   ],
   "sqlite": {
@@ -111,6 +127,10 @@
       {
         "path": "patches/wasmer-js/0005-fix-multithread-waker-race.patch",
         "sha256": "bcef3e329b683ddc35ebdc8c2f5eadd4aa3ebe5a3a316779c99f6c6f72b42083"
+      },
+      {
+        "path": "patches/wasmer-js/0006-use-deterministic-wasm-bindgen.patch",
+        "sha256": "c47fdc29711f66eca9d5b648f8332653f08746bc5dd27af16ee5db5c5d20b3f4"
       }
     ],
     "dependencyPatches": [
@@ -134,13 +154,13 @@
       },
       {
         "package": "wasm-bindgen-futures",
-        "version": "0.4.56",
+        "version": "0.4.57",
         "path": "patches/wasm-bindgen-futures/0001-bound-multithread-task-sleep.patch",
         "sha256": "e78a38213b658328eb836ef3eaceba7626a78495554690d132318f8644b09c30"
       },
       {
         "package": "wasm-bindgen-futures",
-        "version": "0.4.56",
+        "version": "0.4.57",
         "path": "patches/wasm-bindgen-futures/0002-require-native-wait-async.patch",
         "sha256": "cf228b001de0b4a868a0a17f03728aa304a99a730523275bc75c3be3ee27d9f4"
       }
@@ -182,8 +202,8 @@
       "nonzeroSpawnedThreadExit": "process-terminating"
     },
     "multithreadWaker": {
-      "wasmBindgen": "0.2.106",
-      "wasmBindgenFutures": "0.4.56",
+      "wasmBindgen": "0.2.107",
+      "wasmBindgenFutures": "0.4.57",
       "waitAsyncPromiseCallback": "wake-before-run",
       "upstreamFix": "wasm-bindgen#4821",
       "maxSleepMs": 1000,
@@ -209,9 +229,16 @@
     },
     "build": {
       "rustToolchain": "nightly-2025-07-05",
-      "wasmPackVersion": "0.15.0",
-      "wasmPackLinuxAsset": "wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz",
-      "wasmPackLinuxSha256": "c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a"
+      "wasmBindgenVersion": "0.2.107",
+      "wasmBindgenLinuxAsset": "wasm-bindgen-0.2.107-x86_64-unknown-linux-musl.tar.gz",
+      "wasmBindgenLinuxSha256": "ca225ef4f1c6b64b8c6aee460d21b1087342edb71a715e83f05949598c237685",
+      "binaryenVersion": "version_117",
+      "binaryenLinuxAsset": "binaryen-version_117-x86_64-linux.tar.gz",
+      "binaryenLinuxSha256": "3dc677006555b355ea2da5e82602065a161d5e83eaefd3f759afa00b96e83212",
+      "binaryenOptimizationPasses": [
+        "--enable-threads --enable-bulk-memory -Oz",
+        "-O2"
+      ]
     }
   },
   "nodeCompatibility": {

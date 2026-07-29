@@ -16,8 +16,8 @@ type BrowserBuildContract = {
       upstreamFix: "wasm-bindgen#4821";
       waitAsyncPromiseCallback: "wake-before-run";
       waitImplementation: "native-atomics-wait-async-only";
-      wasmBindgen: "0.2.106";
-      wasmBindgenFutures: "0.4.56";
+      wasmBindgen: "0.2.107";
+      wasmBindgenFutures: "0.4.57";
     };
     package: string;
     schedulerStress: {
@@ -190,8 +190,8 @@ test("self-built Edge.js WASIX starts inside Chromium", async ({ page }, testInf
   const cpuThrottlingRate =
     contract.browserExecutor.schedulerStress.browserCpuThrottlingRate;
   expect(contract.browserExecutor.multithreadWaker).toEqual({
-    wasmBindgen: "0.2.106",
-    wasmBindgenFutures: "0.4.56",
+    wasmBindgen: "0.2.107",
+    wasmBindgenFutures: "0.4.57",
     waitAsyncPromiseCallback: "wake-before-run",
     upstreamFix: "wasm-bindgen#4821",
     maxSleepMs: 1000,

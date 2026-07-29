@@ -27,10 +27,22 @@ const nestedWasmLock = readFileSync(
   "utf8"
 );
 
-assert.equal(contract.schemaVersion, 20);
+assert.equal(contract.schemaVersion, 21);
 assert.equal(contract.runtimeProvider, "quickjs");
 assert.equal(contract.upstream.commit, edgeArtifact.source.commit);
 assert.equal(contract.upstream.repository, edgeArtifact.source.repository);
+assert.deepEqual(contract.reproducibleBuild, {
+  sourceDateEpoch: 1_784_765_943,
+  sourceDateEpochBasis: "edge-source-commit-time",
+  wasmBindgenDeterminismFix: "wasm-bindgen#4892",
+  browserExecutorVerification: "repeat-build-and-every-file-sha256",
+  distributionArchive: {
+    directoryEntries: "omitted",
+    entryOrder: "bytewise-path-sort",
+    extraFields: "stripped",
+    timestamps: "source-date-epoch"
+  }
+});
 assert.equal(contract.toolchain.emitExceptionReferences, false);
 assert.equal(contract.toolchain.wasixccWasmExceptions, "legacy");
 assert.equal(contract.toolchain.wasixccRunWasmOpt, false);
@@ -141,8 +153,8 @@ assert.deepEqual(
     { package: "wasmer-wasix", version: "0.601.0" },
     { package: "virtual-net", version: "0.601.0" },
     { package: "virtual-net", version: "0.601.0" },
-    { package: "wasm-bindgen-futures", version: "0.4.56" },
-    { package: "wasm-bindgen-futures", version: "0.4.56" }
+    { package: "wasm-bindgen-futures", version: "0.4.57" },
+    { package: "wasm-bindgen-futures", version: "0.4.57" }
   ]
 );
 for (const patch of contract.browserExecutor.dependencyPatches) {
@@ -162,14 +174,30 @@ assert.deepEqual(contract.browserExecutor.threadExitPolicy, {
   nonzeroSpawnedThreadExit: "process-terminating"
 });
 assert.deepEqual(contract.browserExecutor.multithreadWaker, {
-  wasmBindgen: "0.2.106",
-  wasmBindgenFutures: "0.4.56",
+  wasmBindgen: "0.2.107",
+  wasmBindgenFutures: "0.4.57",
   waitAsyncPromiseCallback: "wake-before-run",
   upstreamFix: "wasm-bindgen#4821",
   maxSleepMs: 1000,
   lostWakeRecovery: "bounded-wait-async-repoll",
   waitImplementation: "native-atomics-wait-async-only",
   synchronousWaitFallback: "excluded"
+});
+assert.deepEqual(contract.browserExecutor.build, {
+  rustToolchain: "nightly-2025-07-05",
+  wasmBindgenVersion: "0.2.107",
+  wasmBindgenLinuxAsset:
+    "wasm-bindgen-0.2.107-x86_64-unknown-linux-musl.tar.gz",
+  wasmBindgenLinuxSha256:
+    "ca225ef4f1c6b64b8c6aee460d21b1087342edb71a715e83f05949598c237685",
+  binaryenVersion: "version_117",
+  binaryenLinuxAsset: "binaryen-version_117-x86_64-linux.tar.gz",
+  binaryenLinuxSha256:
+    "3dc677006555b355ea2da5e82602065a161d5e83eaefd3f759afa00b96e83212",
+  binaryenOptimizationPasses: [
+    "--enable-threads --enable-bulk-memory -Oz",
+    "-O2"
+  ]
 });
 assert.deepEqual(contract.browserExecutor.networkCapability, {
   default: "deny",
@@ -275,6 +303,7 @@ const outputs = {
   nested_wasm_version: contract.nestedWebAssembly.version,
   quickjs_webassembly: contract.toolchain.quickjsWebAssembly ? "yes" : "no",
   runtime_provider: contract.runtimeProvider,
+  source_date_epoch: String(contract.reproducibleBuild.sourceDateEpoch),
   rust_version: contract.toolchain.rustVersion,
   sysroot_asset: contract.toolchain.sysrootAsset,
   sysroot_asset_sha256: contract.toolchain.sysrootAssetSha256,
@@ -282,9 +311,15 @@ const outputs = {
   wasmer_rust_toolchain: contract.browserExecutor.build.rustToolchain,
   wasmer_source_commit: contract.browserExecutor.upstream.commit,
   wasmer_source_repository: contract.browserExecutor.upstream.repository,
-  wasm_pack_linux_asset: contract.browserExecutor.build.wasmPackLinuxAsset,
-  wasm_pack_linux_sha256: contract.browserExecutor.build.wasmPackLinuxSha256,
-  wasm_pack_version: contract.browserExecutor.build.wasmPackVersion,
+  wasm_bindgen_linux_asset:
+    contract.browserExecutor.build.wasmBindgenLinuxAsset,
+  wasm_bindgen_linux_sha256:
+    contract.browserExecutor.build.wasmBindgenLinuxSha256,
+  wasm_bindgen_version: contract.browserExecutor.build.wasmBindgenVersion,
+  binaryen_linux_asset: contract.browserExecutor.build.binaryenLinuxAsset,
+  binaryen_linux_sha256:
+    contract.browserExecutor.build.binaryenLinuxSha256,
+  binaryen_version: contract.browserExecutor.build.binaryenVersion,
   wasm_tools_version: contract.toolchain.wasmToolsVersion,
   sqlite_archive: contract.sqlite.archive,
   sqlite_bytes: String(contract.sqlite.bytes),

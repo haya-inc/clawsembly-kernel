@@ -1,0 +1,20 @@
+diff --git i/Makefile w/Makefile
+index 116053bb..3aa424f3 100644
+--- i/Makefile
++++ w/Makefile
+@@ -462,10 +462,13 @@ dist-only:
+ 			fi; \
+ 		done; \
+ 	fi
++	if [ -n "$(SOURCE_DATE_EPOCH)" ]; then \
++		find "$(DIST_DIR)" -exec touch -h -d "@$(SOURCE_DATE_EPOCH)" {} +; \
++	fi; \
+ 	if [ "$(BUILD_DIR)" = "build-wasix" ] || [ "$(BUILD_DIR)" = "$(BUILD_QUICKJS_WASIX_DIR)" ]; then \
+-		cd $(DIST_DIR) && zip -r ../$(ZIP_NAME) bin bin-compat README.md wasmer.toml ssl-certs; \
++		cd $(DIST_DIR) && find bin bin-compat README.md wasmer.toml ssl-certs -type f -print | LC_ALL=C sort | TZ=UTC zip -X -D ../$(ZIP_NAME) -@; \
+ 	else \
+-		cd $(DIST_DIR) && zip -r ../$(ZIP_NAME) bin bin-compat README.md; \
++		cd $(DIST_DIR) && find bin bin-compat README.md -type f -print | LC_ALL=C sort | TZ=UTC zip -X -D ../$(ZIP_NAME) -@; \
+ 	fi
+ 
+ framework-test-run:

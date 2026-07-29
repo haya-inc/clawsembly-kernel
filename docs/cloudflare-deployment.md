@@ -34,7 +34,7 @@ responses are placed in Cloudflare's Cache API.
 - Wrangler authentication for the intended Cloudflare account
 - the `edgejs-wasix-self-hosted-proof-inputs` artifact from a successful
   public source-build run
-- the final schema-v7 `edgejs-wasix-build-evidence.json` from the same run
+- the final schema-v8 `edgejs-wasix-build-evidence.json` from the same run
 
 The proof-input artifact contains `edgejs.wasm`, `openclaw.clawfs`, and the
 exact patched Wasmer SDK proven by that run. Never substitute the registry
@@ -48,13 +48,16 @@ npm run cloudflare:prepare -- \
   --proof-inputs /path/to/proof-inputs \
   --evidence /path/to/edgejs-wasix-build-evidence.json \
   --release v0.1.0-alpha.1 \
-  --source-commit 15b549f72812bc328074e6ddba531d51e5be515f \
+  --source-commit "$CLAWSEMBLY_SOURCE_COMMIT" \
   --proof-run-url \
-  https://github.com/haya-inc/clawsembly-kernel/actions/runs/30411577407
+  "https://github.com/haya-inc/clawsembly-kernel/actions/runs/$CLAWSEMBLY_PROOF_RUN_ID"
 ```
 
 Preparation fails unless all browser, Gateway, deterministic agent,
 workspace, fresh-browser OPFS, self-hosted Qwen, and revocation gates pass.
+It also requires the supplied source commit and public proof-run URL to match
+the values embedded by GitHub Actions in the evidence, and requires the
+repeat-build Wasmer SDK and repeat-package Edge.js reproducibility gates.
 It then:
 
 1. verifies both large files against the final evidence;

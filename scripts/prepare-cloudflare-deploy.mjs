@@ -53,9 +53,13 @@ async function sha256File(filename) {
   return hash.digest("hex");
 }
 
-function requireEvidence(evidence) {
+export function requireEvidence(evidence, sourceCommit, proofRunUrl) {
   const expected = {
-    schemaVersion: 7,
+    schemaVersion: 8,
+    sourceCommit,
+    proofRunUrl,
+    edgeReproducibility: "repeat-package-byte-for-byte-pass",
+    browserExecutorReproducibility: "repeat-build-byte-for-byte-pass",
     browser: "pass",
     persistentState: "fresh-browser-opfs-recovery-pass",
     healthRpc: "gateway-health-pass",
@@ -68,6 +72,12 @@ function requireEvidence(evidence) {
   };
   const actual = {
     schemaVersion: evidence.schemaVersion,
+    sourceCommit: evidence.clawsemblySource?.commit,
+    proofRunUrl: evidence.clawsemblySource?.proofRunUrl,
+    edgeReproducibility:
+      evidence.reproducibleBuild?.edgeDistribution?.status,
+    browserExecutorReproducibility:
+      evidence.reproducibleBuild?.browserExecutor?.status,
     browser: evidence.browser?.status,
     persistentState: evidence.persistentState?.status,
     healthRpc: evidence.openclawRuntimeProof?.healthRpc?.status,
@@ -188,7 +198,7 @@ async function main() {
     "wasmer-sdk"
   );
   const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
-  requireEvidence(evidence);
+  requireEvidence(evidence, sourceCommit, proofRunUrl);
 
   const [
     edgeSha256,
@@ -371,4 +381,9 @@ async function main() {
   }, null, 2));
 }
 
-await main();
+if (
+  process.argv[1]
+  && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  await main();
+}
