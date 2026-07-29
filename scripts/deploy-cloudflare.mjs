@@ -376,7 +376,7 @@ async function main() {
         "--content-type",
         artifact.contentType,
         "--cache-control",
-        "public, max-age=31536000, immutable"
+        "public, max-age=31536000, immutable, no-transform"
       ]);
     }
     if (largeArtifacts.length > 0) {

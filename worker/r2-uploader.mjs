@@ -82,7 +82,7 @@ async function handleRequest(request, env) {
     const upload = await env.RUNTIME_BUCKET.createMultipartUpload(key, {
       httpMetadata: {
         contentType: body.contentType,
-        cacheControl: "public, max-age=31536000, immutable"
+        cacheControl: "public, max-age=31536000, immutable, no-transform"
       }
     });
     return json({

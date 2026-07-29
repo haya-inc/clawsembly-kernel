@@ -8,7 +8,7 @@ const SECURITY_HEADERS = Object.freeze({
 });
 
 const IMMUTABLE_CACHE_CONTROL =
-  "public, max-age=31536000, s-maxage=31536000, immutable";
+  "public, max-age=31536000, s-maxage=31536000, immutable, no-transform";
 const MANIFEST_PATH = "/runtime-manifest.json";
 let manifestPromise;
 

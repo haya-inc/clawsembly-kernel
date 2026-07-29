@@ -141,7 +141,7 @@ test("creates, uploads, and completes an authenticated multipart object", async 
   });
   assert.equal(
     state.created.options.httpMetadata.cacheControl,
-    "public, max-age=31536000, immutable"
+    "public, max-age=31536000, immutable, no-transform"
   );
 
   const partUrl = new URL("https://uploader.example/part");

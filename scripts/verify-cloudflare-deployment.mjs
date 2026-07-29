@@ -85,7 +85,12 @@ async function verifyHttp(baseUrl) {
     ]) {
       const response = await fetchRequired(
         new URL(artifactPath, baseUrl),
-        { method: "HEAD" }
+        {
+          method: "HEAD",
+          headers: {
+            "Accept-Encoding": "identity"
+          }
+        }
       );
       requireHeader(response, "content-type", artifact.contentType);
       requireHeader(response, "content-length", String(artifact.bytes));
@@ -102,6 +107,7 @@ async function verifyHttp(baseUrl) {
       new URL(artifact.publicPath, baseUrl),
       {
         headers: {
+          "Accept-Encoding": "identity",
           Range: "bytes=0-15"
         }
       }

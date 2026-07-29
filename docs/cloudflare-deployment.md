@@ -24,8 +24,9 @@ stored in R2 under keys containing their SHA-256 digests.
 The Worker validates each R2 object's byte length against
 `runtime-manifest.json`, exposes its proof-bound SHA-256 through `ETag`,
 `Content-Digest`, and `X-Clawsembly-SHA256`, and supports `HEAD`, conditional
-GET, and byte ranges. Full immutable responses are placed in Cloudflare's
-Cache API.
+GET, and byte ranges. `no-transform` keeps those identity bytes and strong
+ETags from being rewritten by intermediary compression. Full immutable
+responses are placed in Cloudflare's Cache API.
 
 ## Requirements
 
