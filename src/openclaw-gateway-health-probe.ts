@@ -902,7 +902,11 @@ async function runProbe(): Promise<void> {
         ];
     const clientProofTimeoutMs = agentTurnProof
       ? Math.min(150_000, proofTimeoutMs)
-      : Math.min(105_000, proofTimeoutMs);
+      // A restored Gateway proof starts a second WASIX VM after package
+      // verification, OPFS restore, and Gateway bootstrap. GitHub-hosted
+      // runners can leave that client unscheduled for longer than the
+      // standalone health proof even though the Gateway remains healthy.
+      : Math.min(180_000, proofTimeoutMs);
     const runClientAttempt = async (attempt: number) => {
       const clientStateRoot =
         `/openclaw/.clawsembly-client-state-${attempt}`;
