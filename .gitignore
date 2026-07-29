@@ -3,6 +3,8 @@ dist/
 test-results/
 playwright-report/
 .cache/
+.cloudflare/
+.wrangler/
 relay/target/
 provider-broker/target/
 .DS_Store
