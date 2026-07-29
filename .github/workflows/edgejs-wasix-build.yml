@@ -85,6 +85,7 @@ jobs:
         env:
           EDGE_SOURCE_COMMIT: ${{ steps.contract.outputs.edge_source_commit }}
           EDGE_SOURCE_REPOSITORY: ${{ steps.contract.outputs.edge_source_repository }}
+          SOURCE_DATE_EPOCH: ${{ steps.contract.outputs.source_date_epoch }}
         run: |
           set -euo pipefail
           git config --global url."https://github.com/".insteadOf git@github.com:
@@ -95,6 +96,7 @@ jobs:
           git -C edgejs submodule sync --recursive
           git -C edgejs -c protocol.version=2 submodule update --init --recursive --depth=1
           test "$(git -C edgejs rev-parse HEAD)" = "${EDGE_SOURCE_COMMIT}"
+          test "$(git -C edgejs show -s --format=%ct HEAD)" = "${SOURCE_DATE_EPOCH}"
 
       - name: Apply audited browser-build patches
         shell: bash
@@ -254,30 +256,48 @@ jobs:
       - name: Install pinned Wasmer JS build toolchain
         shell: bash
         env:
+          BINARYEN_ASSET: ${{ steps.contract.outputs.binaryen_linux_asset }}
+          BINARYEN_SHA256: ${{ steps.contract.outputs.binaryen_linux_sha256 }}
+          BINARYEN_VERSION: ${{ steps.contract.outputs.binaryen_version }}
           WASMER_RUST_TOOLCHAIN: ${{ steps.contract.outputs.wasmer_rust_toolchain }}
-          WASM_PACK_ASSET: ${{ steps.contract.outputs.wasm_pack_linux_asset }}
-          WASM_PACK_SHA256: ${{ steps.contract.outputs.wasm_pack_linux_sha256 }}
-          WASM_PACK_VERSION: ${{ steps.contract.outputs.wasm_pack_version }}
+          WASM_BINDGEN_ASSET: ${{ steps.contract.outputs.wasm_bindgen_linux_asset }}
+          WASM_BINDGEN_SHA256: ${{ steps.contract.outputs.wasm_bindgen_linux_sha256 }}
+          WASM_BINDGEN_VERSION: ${{ steps.contract.outputs.wasm_bindgen_version }}
         run: |
           set -euo pipefail
           rustup toolchain install "${WASMER_RUST_TOOLCHAIN}" \
             --profile minimal \
             --component rust-src \
             --target wasm32-unknown-unknown
-          mkdir -p tools/wasm-pack
+          mkdir -p tools/wasm-bindgen tools/binaryen
           curl -fsSL \
-            -o "tools/${WASM_PACK_ASSET}" \
-            "https://github.com/wasm-bindgen/wasm-pack/releases/download/v${WASM_PACK_VERSION}/${WASM_PACK_ASSET}"
-          echo "${WASM_PACK_SHA256}  tools/${WASM_PACK_ASSET}" | sha256sum -c -
-          tar -xzf "tools/${WASM_PACK_ASSET}" \
-            -C tools/wasm-pack \
+            -o "tools/${WASM_BINDGEN_ASSET}" \
+            "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/${WASM_BINDGEN_ASSET}"
+          echo "${WASM_BINDGEN_SHA256}  tools/${WASM_BINDGEN_ASSET}" \
+            | sha256sum -c -
+          tar -xzf "tools/${WASM_BINDGEN_ASSET}" \
+            -C tools/wasm-bindgen \
             --strip-components=1
-          test "$(tools/wasm-pack/wasm-pack --version)" = "wasm-pack ${WASM_PACK_VERSION}"
+          test "$(
+            tools/wasm-bindgen/wasm-bindgen --version
+          )" = "wasm-bindgen ${WASM_BINDGEN_VERSION}"
+          curl -fsSL \
+            -o "tools/${BINARYEN_ASSET}" \
+            "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_VERSION}/${BINARYEN_ASSET}"
+          echo "${BINARYEN_SHA256}  tools/${BINARYEN_ASSET}" \
+            | sha256sum -c -
+          tar -xzf "tools/${BINARYEN_ASSET}" \
+            -C tools/binaryen \
+            --strip-components=1
+          test "$(
+            tools/binaryen/bin/wasm-opt --version
+          )" = "wasm-opt version 117"
 
       - name: Build patched Wasmer JS browser runtime
         shell: bash
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/clawsembly-wasmer-js-target
+          SOURCE_DATE_EPOCH: ${{ steps.contract.outputs.source_date_epoch }}
           WASMER_RUST_TOOLCHAIN: ${{ steps.contract.outputs.wasmer_rust_toolchain }}
         run: |
           set -euo pipefail
@@ -291,15 +311,104 @@ jobs:
                 --manifest Cargo.toml \
                 --target wasm32-unknown-unknown
             RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
-              ../tools/wasm-pack/wasm-pack build \
+              cargo build \
+                --locked \
+                --lib \
                 --release \
-                --target=web \
+                --target wasm32-unknown-unknown
+            rm -rf pkg
+            ../tools/wasm-bindgen/wasm-bindgen \
+                "${CARGO_TARGET_DIR}/wasm32-unknown-unknown/release/wasmer_js.wasm" \
+                --out-dir pkg \
+                --typescript \
                 --weak-refs \
-                --no-pack
+                --target web \
+                --no-demangle
+            ../tools/binaryen/bin/wasm-opt \
+              pkg/wasmer_js_bg.wasm \
+              --output pkg/wasmer_js_bg.wasm-opt \
+              --enable-threads \
+              --enable-bulk-memory \
+              -Oz
+            mv pkg/wasmer_js_bg.wasm-opt pkg/wasmer_js_bg.wasm
+            ../tools/binaryen/bin/wasm-opt \
+              pkg/wasmer_js_bg.wasm \
+              --output pkg/wasmer_js_bg.wasm-opt \
+              -O2
+            mv pkg/wasmer_js_bg.wasm-opt pkg/wasmer_js_bg.wasm
             npm run build:rollup
           )
           test -s wasmer-js/dist/index.mjs
           test -s wasmer-js/dist/wasmer_js_bg.wasm
+
+      - name: Prove reproducible Wasmer JS browser runtime
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/clawsembly-wasmer-js-target
+          SOURCE_DATE_EPOCH: ${{ steps.contract.outputs.source_date_epoch }}
+          WASMER_RUST_TOOLCHAIN: ${{ steps.contract.outputs.wasmer_rust_toolchain }}
+        run: |
+          set -euo pipefail
+          first_manifest="${RUNNER_TEMP}/wasmer-js-dist-first.sha256"
+          second_manifest="${RUNNER_TEMP}/wasmer-js-dist-second.sha256"
+          (
+            cd wasmer-js/dist
+            find . -type f -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum
+          ) > "${first_manifest}"
+          rm -rf wasmer-js/pkg wasmer-js/dist
+          (
+            cd wasmer-js
+            RUSTUP_TOOLCHAIN="${WASMER_RUST_TOOLCHAIN}" \
+              cargo build \
+                --locked \
+                --lib \
+                --release \
+                --target wasm32-unknown-unknown
+            ../tools/wasm-bindgen/wasm-bindgen \
+                "${CARGO_TARGET_DIR}/wasm32-unknown-unknown/release/wasmer_js.wasm" \
+                --out-dir pkg \
+                --typescript \
+                --weak-refs \
+                --target web \
+                --no-demangle
+            ../tools/binaryen/bin/wasm-opt \
+              pkg/wasmer_js_bg.wasm \
+              --output pkg/wasmer_js_bg.wasm-opt \
+              --enable-threads \
+              --enable-bulk-memory \
+              -Oz
+            mv pkg/wasmer_js_bg.wasm-opt pkg/wasmer_js_bg.wasm
+            ../tools/binaryen/bin/wasm-opt \
+              pkg/wasmer_js_bg.wasm \
+              --output pkg/wasmer_js_bg.wasm-opt \
+              -O2
+            mv pkg/wasmer_js_bg.wasm-opt pkg/wasmer_js_bg.wasm
+            npm run build:rollup
+          )
+          (
+            cd wasmer-js/dist
+            find . -type f -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum
+          ) > "${second_manifest}"
+          diff -u "${first_manifest}" "${second_manifest}"
+          mkdir -p artifacts
+          manifest_sha256="$(
+            sha256sum "${second_manifest}" | awk '{print $1}'
+          )"
+          file_count="$(wc -l < "${second_manifest}")"
+          jq -n \
+            --arg manifestSha256 "${manifest_sha256}" \
+            --argjson fileCount "${file_count}" \
+            '{
+              status: "repeat-build-byte-for-byte-pass",
+              comparison: "every-generated-file-sha256",
+              cleanOutputsBeforeSecondBuild: ["pkg", "dist"],
+              fileCount: $fileCount,
+              manifestSha256: $manifestSha256
+            }' > artifacts/wasmer-js-reproducibility-evidence.json
 
       - name: Build browser-local nested WebAssembly interpreter
         shell: bash
@@ -411,6 +520,7 @@ jobs:
           EDGE_QUICKJS_WEBASSEMBLY: ${{ steps.contract.outputs.quickjs_webassembly }}
           EDGE_QUICKJS_WASMER_DIST_ROOT: ${{ github.workspace }}/nested-wasm/dist
           EDGE_SQLITE_AMALGAMATION_DIR: ${{ steps.sqlite.outputs.path }}
+          SOURCE_DATE_EPOCH: ${{ steps.contract.outputs.source_date_epoch }}
           WASIXCC_SYSROOT: ${{ steps.legacy_sysroot.outputs.path }}
           WASIXCC_RUN_WASM_OPT: ${{ steps.contract.outputs.wasixcc_run_wasm_opt }}
           WASIXCC_WASM_EXCEPTIONS: ${{ steps.contract.outputs.wasixcc_wasm_exceptions }}
@@ -428,9 +538,20 @@ jobs:
           wasm-tools validate \
             --features legacy-exceptions \
             edgejs/build-quickjs-wasix/edgejs.wasm
+          expected_build_date="$(
+            date --utc \
+              --date="@${SOURCE_DATE_EPOCH}" \
+              '+built on: %a %b %e %H:%M:%S %Y UTC'
+          )"
+          test "$(
+            strings edgejs/build-quickjs-wasix/edgejs.wasm \
+              | grep -Fxc "${expected_build_date}"
+          )" = 1
 
       - name: Package Edge.js WASIX
         shell: bash
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.contract.outputs.source_date_epoch }}
         run: |
           set -euo pipefail
           make -C edgejs dist-only \
@@ -438,6 +559,42 @@ jobs:
             JOBS=4 \
             ZIP_NAME=edge-quickjs-wasix-browser-compatible.zip
           test -s edgejs/edge-quickjs-wasix-browser-compatible.zip
+          first_archive_sha256="$(
+            sha256sum edgejs/edge-quickjs-wasix-browser-compatible.zip \
+              | awk '{print $1}'
+          )"
+          make -C edgejs dist-only \
+            BUILD_DIR=build-quickjs-wasix \
+            JOBS=4 \
+            ZIP_NAME=edge-quickjs-wasix-browser-compatible.zip
+          second_archive_sha256="$(
+            sha256sum edgejs/edge-quickjs-wasix-browser-compatible.zip \
+              | awk '{print $1}'
+          )"
+          test "${first_archive_sha256}" = "${second_archive_sha256}"
+          unzip -Z1 edgejs/edge-quickjs-wasix-browser-compatible.zip \
+            > "${RUNNER_TEMP}/edge-archive-paths"
+          LC_ALL=C sort "${RUNNER_TEMP}/edge-archive-paths" \
+            > "${RUNNER_TEMP}/edge-archive-paths.sorted"
+          cmp \
+            "${RUNNER_TEMP}/edge-archive-paths" \
+            "${RUNNER_TEMP}/edge-archive-paths.sorted"
+          if grep -q '/$' "${RUNNER_TEMP}/edge-archive-paths"; then
+            echo "error: Edge.js archive contains directory entries" >&2
+            exit 1
+          fi
+          mkdir -p artifacts
+          jq -n \
+            --arg archiveSha256 "${second_archive_sha256}" \
+            --argjson sourceDateEpoch "${SOURCE_DATE_EPOCH}" \
+            '{
+              status: "repeat-package-byte-for-byte-pass",
+              sourceDateEpoch: $sourceDateEpoch,
+              directoryEntries: "omitted",
+              entryOrder: "bytewise-path-sort",
+              extraFields: "stripped",
+              archiveSha256: $archiveSha256
+            }' > artifacts/edgejs-reproducibility-evidence.json
 
       - name: Upload inspectable build candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -844,6 +1001,9 @@ jobs:
       - name: Assemble build evidence
         shell: bash
         env:
+          CLAWSEMBLY_SOURCE_COMMIT: ${{ github.sha }}
+          CLAWSEMBLY_SOURCE_REPOSITORY: https://github.com/${{ github.repository }}
+          CLAWSEMBLY_PROOF_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EDGE_SOURCE_COMMIT: ${{ steps.contract.outputs.edge_source_commit }}
           EMIT_EXNREF: ${{ steps.contract.outputs.emit_exnref }}
           NESTED_WASM_CRATE_CHECKSUM: ${{ steps.contract.outputs.nested_wasm_crate_checksum }}
@@ -856,6 +1016,7 @@ jobs:
           SYSROOT_TAG: ${{ steps.contract.outputs.sysroot_tag }}
           SQLITE_SHA256: ${{ steps.contract.outputs.sqlite_sha256 }}
           SQLITE_VERSION: ${{ steps.contract.outputs.sqlite_version }}
+          SOURCE_DATE_EPOCH: ${{ steps.contract.outputs.source_date_epoch }}
           WASMER_SOURCE_COMMIT: ${{ steps.contract.outputs.wasmer_source_commit }}
           WASIXCC_VERSION: ${{ steps.contract.outputs.wasixcc_version }}
         run: |
@@ -877,6 +1038,8 @@ jobs:
           agent_turn_evidence="artifacts/openclaw-agent-turn-browser-evidence.json"
           workspace_tool_evidence="artifacts/openclaw-workspace-tool-turn-browser-evidence.json"
           nested_wasm_smoke_evidence="nested-wasm/dist/link-smoke-evidence.json"
+          edge_reproducibility_evidence="artifacts/edgejs-reproducibility-evidence.json"
+          wasmer_reproducibility_evidence="artifacts/wasmer-js-reproducibility-evidence.json"
           gateway_health_evidence=""
           # Playwright resets test-results before the following agent test;
           # consume the durable copy made by the preservation step.
@@ -903,6 +1066,8 @@ jobs:
           test -s "${workspace_tool_evidence}"
           test -n "${gateway_health_evidence}"
           test -s "${nested_wasm_smoke_evidence}"
+          test -s "${edge_reproducibility_evidence}"
+          test -s "${wasmer_reproducibility_evidence}"
           cp "${gateway_health_evidence}" \
             artifacts/openclaw-gateway-health-browser-evidence.json
           wasm_sha256="$(sha256sum edgejs/build-quickjs-wasix/edgejs.wasm | awk '{print $1}')"
@@ -918,6 +1083,9 @@ jobs:
           )"
           jq -n \
             --arg archiveSha256 "${archive_sha256}" \
+            --arg clawsemblySourceCommit "${CLAWSEMBLY_SOURCE_COMMIT}" \
+            --arg clawsemblySourceRepository "${CLAWSEMBLY_SOURCE_REPOSITORY}" \
+            --arg clawsemblyProofRunUrl "${CLAWSEMBLY_PROOF_RUN_URL}" \
             --arg edgeSourceCommit "${EDGE_SOURCE_COMMIT}" \
             --arg emitExnref "${EMIT_EXNREF}" \
             --arg nestedWasmCrateChecksum "${NESTED_WASM_CRATE_CHECKSUM}" \
@@ -932,6 +1100,7 @@ jobs:
             --arg sysrootTag "${SYSROOT_TAG}" \
             --arg sqliteSha256 "${SQLITE_SHA256}" \
             --arg sqliteVersion "${SQLITE_VERSION}" \
+            --argjson sourceDateEpoch "${SOURCE_DATE_EPOCH}" \
             --arg wasmerJsSha256 "${wasmer_js_sha256}" \
             --arg wasmerSourceCommit "${WASMER_SOURCE_COMMIT}" \
             --arg wasmerWasmSha256 "${wasmer_wasm_sha256}" \
@@ -951,6 +1120,11 @@ jobs:
             --slurpfile agentTurn "${agent_turn_evidence}" \
             --slurpfile workspaceTool "${workspace_tool_evidence}" \
             --slurpfile nestedWasmSmoke "${nested_wasm_smoke_evidence}" \
+            --slurpfile edgeReproducibility "${edge_reproducibility_evidence}" \
+            --slurpfile wasmerReproducibility "${wasmer_reproducibility_evidence}" \
+            --argjson reproducibleBuildContract "$(
+              jq '.reproducibleBuild' contracts/edgejs-browser-build.json
+            )" \
             --argjson nodeCompatibilityContract "$(
               jq '.nodeCompatibility' contracts/edgejs-browser-build.json
             )" \
@@ -975,7 +1149,12 @@ jobs:
                 contracts/edgejs-browser-build.json
             )" \
             '{
-              schemaVersion: 5,
+              schemaVersion: 6,
+              clawsemblySource: {
+                repository: $clawsemblySourceRepository,
+                commit: $clawsemblySourceCommit,
+                proofRunUrl: $clawsemblyProofRunUrl
+              },
               edgeSourceCommit: $edgeSourceCommit,
               runtimeProvider: $runtimeProvider,
               patches: $edgePatches,
@@ -1016,6 +1195,12 @@ jobs:
               artifact: {
                 wasmSha256: $wasmSha256,
                 archiveSha256: $archiveSha256
+              },
+              reproducibleBuild: {
+                contract: $reproducibleBuildContract,
+                sourceDateEpoch: $sourceDateEpoch,
+                edgeDistribution: $edgeReproducibility[0],
+                browserExecutor: $wasmerReproducibility[0]
               },
               browser: $browser[0],
               nodeCompatibility: {
@@ -1295,7 +1480,14 @@ jobs:
           test -s "${self_hosted}"
           test -s "${broker_binary}"
           jq -e '
-            .schemaVersion == 5
+            .schemaVersion == 6
+            and (.clawsemblySource.commit | test("^[0-9a-f]{40}$"))
+            and (.clawsemblySource.proofRunUrl
+              | test("^https://github.com/[^/]+/[^/]+/actions/runs/[0-9]+$"))
+            and .reproducibleBuild.edgeDistribution.status
+              == "repeat-package-byte-for-byte-pass"
+            and .reproducibleBuild.browserExecutor.status
+              == "repeat-build-byte-for-byte-pass"
             and .openclawRuntimeProof.workspaceToolTurn.status
               == "workspace-tool-turn-pass"
             and .openclawRuntimeProof.workspaceToolTurn.workspaceTool
@@ -1407,7 +1599,7 @@ jobs:
             --arg brokerBinarySha256 "${broker_binary_sha256}" \
             --arg brokerSourceSha256 "${broker_source_sha256}" \
             --slurpfile selfHosted "${self_hosted}" '
-            .schemaVersion = 7
+            .schemaVersion = 8
             | .openclawRuntimeProof.selfHostedAgentTurn = $selfHosted[0]
             | .selfHostedInference = {
                 runtime: $selfHosted[0].selfHostedModel.runtime,
@@ -1428,7 +1620,12 @@ jobs:
           ' "${base}" > "${base}.next"
           mv "${base}.next" "${base}"
           jq -e '
-            .schemaVersion == 7
+            .schemaVersion == 8
+            and (.clawsemblySource.commit | test("^[0-9a-f]{40}$"))
+            and .reproducibleBuild.edgeDistribution.status
+              == "repeat-package-byte-for-byte-pass"
+            and .reproducibleBuild.browserExecutor.status
+              == "repeat-build-byte-for-byte-pass"
             and .openclawRuntimeProof.selfHostedAgentTurn.status
               == "self-hosted-agent-turn-pass"
             and .openclawRuntimeProof.selfHostedAgentTurn

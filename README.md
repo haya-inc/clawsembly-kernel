@@ -129,6 +129,12 @@ Experimental. Current execution milestones:
   official `openclaw@2026.7.1-2` launcher from its integrity-pinned npm
   archive in the
   [public browser build workflow](https://github.com/haya-inc/clawsembly-kernel/actions/workflows/edgejs-wasix-build.yml).
+- The browser runtime build is byte-reproducible at its nondeterministic
+  boundaries. The Edge.js build fixes OpenSSL's embedded build date to the
+  pinned source commit time; its ZIP uses fixed timestamps, sorted paths, and
+  stripped extra fields. The Wasmer SDK uses the upstream deterministic
+  `wasm-bindgen` ordering fix and is generated twice from clean output
+  directories, with every file digest compared before proof execution.
 - The exact OpenClaw shrinkwrap is materialized as a deterministic
   browser-mountable image: 308 integrity-pinned runtime archives, 32,027 files,
   and exact hashes for `openclaw.mjs`, `dist/entry.js`, `package.json`, and
@@ -215,6 +221,9 @@ the demonstrated workload. The immutable
 rebuilds the runtime and records Gateway health, deterministic and self-hosted
 agent turns, workspace tools, fresh-browser OPFS recovery, least-privilege
 capability revocation, and the required post-revocation HTTP 403. The
+evidence also binds the exact Clawsembly source commit and public workflow run,
+and production preparation rejects a caller-supplied commit or run URL that
+does not match that evidence. The
 source-built runtime has an explicit, workload-scoped Node compatibility
 profile: it transparently separates the Edge.js `v24.13.2-pre` implementation
 baseline from the `24.15.0` version exposed to OpenClaw, and proves why that

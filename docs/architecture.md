@@ -435,11 +435,14 @@ the source-built compatibility profile without modifying the launcher.
 Additional guests prove synchronous SQLite persistence and the browser-local
 loopback exchange described above. The evidence pins:
 
+- the Clawsembly source commit and public workflow-run URL
 - Edge `0.0.0-554eb9b`
 - Edge.js source baseline `v24.13.2-pre`
 - OpenClaw-scoped Node compatibility version `24.15.0`
 - V8 `0.0.0-node.0`
 - the Edge.js WASIX and source-built Wasmer JS SHA-256 digests
+- the source-commit `SOURCE_DATE_EPOCH`, repeat-packaged Edge distribution
+  digest, and repeated every-file Wasmer SDK digest manifest
 - OpenClaw `2026.7.1-2` npm integrity
   `sha512-ycF3yPcbjN6bUPeaUx6Mh6vze1hQWoD3CT/wWcmD7a8xaHHHRUaAlaq+lFxMHf1ssEgODVAwjlzYqp2twkYZ7g==`
 
