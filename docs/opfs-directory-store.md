@@ -58,6 +58,20 @@ The resulting guest still sees only its `/openclaw` mount. It receives no
 `FileSystemDirectoryHandle`, OPFS path, browser storage API, or authority over
 another store.
 
+## Onboarding boot cache
+
+The onboarding runtime uses the same commit and recovery contract for a
+pre-authentication boot snapshot. Its store identity includes shortened
+SHA-256 identities for both immutable runtime artifacts. The snapshot is
+written only after the package lifecycle and installed-plugin database checks
+pass, and before the Gateway or model capability starts.
+
+Automatic warm recovery verifies the committed manifest and every file hash.
+It then starts the Gateway without re-running lifecycle hooks. The explicit
+OPFS proof additionally opens the restored SQLite database in a new Edge.js
+guest. Cache absence or any verification failure creates a clean Wasmer
+Directory; a partially restored Directory is never reused.
+
 ## Browser-restart proof
 
 `tests/openclaw-opfs-persistence-browser.spec.ts` uses two real Chromium

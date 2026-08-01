@@ -33,6 +33,7 @@ addEventListener("message",(event)=>{
     },location.origin),60);
     setTimeout(()=>parent.postMessage({
       type:"clawsembly:wizard-gateway-ready",
+      bootMode:"cold",
       openclawVersion:"2026.7.1-2"
     },location.origin),90);
     return;
@@ -197,6 +198,10 @@ test("runs the official Wizard and adapts only its credential step", async ({
   );
   await expect(page.locator("#boot-title")).toHaveText(
     "OpenClawを起動しました"
+  );
+  await expect(page.locator("#boot-progress")).toHaveAttribute(
+    "data-boot-mode",
+    "cold"
   );
   await expect(page.getByRole("heading", {
     name: "OpenClaw onboarding"
@@ -423,6 +428,21 @@ test("explains a slow first boot and offers recovery on failure", async ({
     () => window.parent.postMessage({
       type: "clawsembly:byok-runtime-status",
       state: "running",
+      label:
+        "Waiting for another Clawsembly tab to finish starting OpenClaw…"
+    }, location.origin)
+  );
+  await expect(page.locator("#boot-title")).toHaveText(
+    "別のタブの起動を待っています"
+  );
+  await expect(page.locator("#byok-status")).toContainText(
+    "別タブの起動を待機中"
+  );
+
+  await page.frameLocator("#byok-runtime-frame").locator("body").evaluate(
+    () => window.parent.postMessage({
+      type: "clawsembly:byok-runtime-status",
+      state: "running",
       label: "Verifying the complete package graph…"
     }, location.origin)
   );
@@ -448,4 +468,45 @@ test("explains a slow first boot and offers recovery on failure", async ({
   await expect(page.getByRole("button", {
     name: "もう一度起動する"
   })).toBeVisible();
+});
+
+test("shows when OpenClaw was restored from its boot snapshot", async ({
+  page
+}) => {
+  await page.route("**/byok-runtime.html*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      headers: {
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Resource-Policy": "same-origin"
+      },
+      body: `<!doctype html><html><body><script>
+        parent.postMessage({
+          type:"clawsembly:byok-runtime-ready"
+        },location.origin);
+        addEventListener("message",(event)=>{
+          if(event.data.type!=="clawsembly:onboarding-runtime-start")return;
+          parent.postMessage({
+            type:"clawsembly:wizard-gateway-ready",
+            bootMode:"warm",
+            openclawVersion:"2026.7.1-2"
+          },location.origin);
+        });
+      </script></body></html>`
+    });
+  });
+
+  await page.goto("/onboard.html");
+  await expect(page.locator("#boot-progress")).toHaveAttribute(
+    "data-boot-mode",
+    "warm"
+  );
+  await expect(page.locator("#boot-title")).toHaveText(
+    "OpenClawを復元しました"
+  );
+  await expect(page.locator("#boot-detail")).toContainText(
+    "保存済みの起動状態から復元"
+  );
 });

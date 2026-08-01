@@ -1,8 +1,82 @@
-import { expect, test } from "@playwright/test";
+import { chromium, expect, test } from "@playwright/test";
 import { existsSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 const edgeArtifactPath = process.env.CLAWSEMBLY_EDGE_WASIX;
 const imagePath = process.env.CLAWSEMBLY_OPENCLAW_IMAGE;
+
+async function runPersistentOnboardingBoot(options: {
+  artifactPath: string;
+  baseURL: string;
+  profileDirectory: string;
+}): Promise<{ elapsedMs: number; mode: "cold" | "warm" }> {
+  const context = await chromium.launchPersistentContext(
+    options.profileDirectory,
+    { headless: true }
+  );
+  try {
+    const page = context.pages()[0] ?? await context.newPage();
+    await page.route("**/edgejs.wasm", async (route) => {
+      await route.fulfill({
+        contentType: "application/wasm",
+        headers: {
+          "Cross-Origin-Resource-Policy": "same-origin"
+        },
+        path: options.artifactPath
+      });
+    });
+    const startedAt = Date.now();
+    const pageError = page.waitForEvent("pageerror").then(async (error) => ({
+      error,
+      kind: "pageerror" as const,
+      runtimeResult: await page.frameLocator("#byok-runtime-frame")
+        .locator("#result")
+        .innerText()
+        .catch(() => ""),
+      runtimeStatus: await page.frameLocator("#byok-runtime-frame")
+        .locator("#status")
+        .innerText()
+        .catch(() => "")
+    }));
+    await page.goto(`${options.baseURL}/onboard.html`);
+    const bootProgress = page.locator("#boot-progress");
+    const outcome = await Promise.race([
+      expect.poll(
+        () => bootProgress.getAttribute("data-state"),
+        { timeout: 460_000 }
+      ).toMatch(/^(?:ready|fail)$/u).then(() => ({
+        kind: "terminal" as const
+      })),
+      pageError
+    ]);
+    if (outcome.kind === "pageerror") {
+      throw new Error(
+        `OpenClaw page error: ${outcome.error.message}\n`
+        + `runtime status: ${outcome.runtimeStatus}\n`
+        + `runtime result: ${outcome.runtimeResult}`
+      );
+    }
+    if (await bootProgress.getAttribute("data-state") === "fail") {
+      throw new Error(
+        await page.frameLocator("#byok-runtime-frame")
+          .locator("#result")
+          .innerText()
+      );
+    }
+    const mode = await bootProgress.getAttribute("data-boot-mode");
+    if (mode !== "cold" && mode !== "warm") {
+      throw new Error(`Unexpected OpenClaw boot mode: ${String(mode)}`);
+    }
+    return {
+      elapsedMs: Date.now() - startedAt,
+      mode
+    };
+  } finally {
+    await context.close();
+  }
+}
 
 async function runtimeRequest(
   page: import("@playwright/test").Page,
@@ -153,4 +227,46 @@ test("renders the first real step from the unmodified OpenClaw Wizard", async ({
     path: testInfo.outputPath("real-openclaw-wizard-first-step.png"),
     fullPage: true
   });
+});
+
+test("restores the verified OpenClaw boot state after a browser restart", async ({
+  baseURL
+}, testInfo) => {
+  test.skip(
+    !edgeArtifactPath
+      || !imagePath
+      || !existsSync(edgeArtifactPath)
+      || !existsSync(imagePath),
+    "Set CLAWSEMBLY_EDGE_WASIX and CLAWSEMBLY_OPENCLAW_IMAGE"
+  );
+  test.setTimeout(960_000);
+  if (!baseURL) throw new Error("Playwright baseURL is required");
+
+  const profileDirectory = await mkdtemp(
+    path.join(tmpdir(), "clawsembly-warm-boot-profile-")
+  );
+  try {
+    const cold = await runPersistentOnboardingBoot({
+      artifactPath: edgeArtifactPath!,
+      baseURL,
+      profileDirectory
+    });
+    const warm = await runPersistentOnboardingBoot({
+      artifactPath: edgeArtifactPath!,
+      baseURL,
+      profileDirectory
+    });
+
+    expect(cold.mode).toBe("cold");
+    expect(warm.mode).toBe("warm");
+    console.log(
+      `OpenClaw boot timing: cold=${cold.elapsedMs}ms warm=${warm.elapsedMs}ms`
+    );
+    await testInfo.attach("openclaw-boot-timing.json", {
+      body: Buffer.from(JSON.stringify({ cold, warm }, null, 2)),
+      contentType: "application/json"
+    });
+  } finally {
+    await rm(profileDirectory, { recursive: true, force: true });
+  }
 });

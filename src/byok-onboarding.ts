@@ -258,18 +258,22 @@ function phaseForRuntimeLabel(label: string): number {
   return 0;
 }
 
-function finishBoot(): void {
+function finishBoot(mode: "cold" | "warm"): void {
   if (bootTimer !== undefined) {
     window.clearInterval(bootTimer);
     bootTimer = undefined;
   }
   const completedIn = elapsedLabel();
   bootProgress.dataset.state = "ready";
+  bootProgress.dataset.bootMode = mode;
   bootProgress.style.setProperty("--boot-progress", "100%");
   bootBar.setAttribute("aria-valuenow", "100");
-  bootTitle.textContent = "OpenClawを起動しました";
-  bootDetail.textContent =
-    `${completedIn}で準備が完了しました。公式Wizardを開いています。`;
+  bootTitle.textContent = mode === "warm"
+    ? "OpenClawを復元しました"
+    : "OpenClawを起動しました";
+  bootDetail.textContent = mode === "warm"
+    ? `${completedIn}で保存済みの起動状態から復元しました。公式Wizardを開いています。`
+    : `${completedIn}で準備が完了しました。公式Wizardを開いています。`;
   bootElapsed.textContent = `完了 ${completedIn}`;
   bootPatience.hidden = true;
   bootRetry.hidden = true;
@@ -864,6 +868,7 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
     return;
   }
   const message = event.data as {
+    bootMode?: unknown;
     label?: unknown;
     openclawVersion?: unknown;
     state?: unknown;
@@ -893,7 +898,7 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
       window.clearInterval(runtimeHandshakeTimer);
       runtimeHandshakeTimer = undefined;
     }
-    finishBoot();
+    finishBoot(message.bootMode === "warm" ? "warm" : "cold");
     wizardOrigin.textContent =
       `OpenClaw 公式Wizard · ${
         typeof message.openclawVersion === "string"
@@ -915,6 +920,15 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
       setStatus("fail", "起動に失敗しました");
       wizardMessage.textContent =
         "OpenClawを起動できませんでした。上の再試行ボタンからやり直せます。";
+      return;
+    }
+    if (label.toLowerCase().includes("waiting for another clawsembly tab")) {
+      setBootPhase(0);
+      bootTitle.textContent = "別のタブの起動を待っています";
+      bootDetail.textContent =
+        "同じ実行環境を二重に展開しないよう、先に開いたタブの完了後に続けます。";
+      setStatus("running", "別タブの起動を待機中");
+      wizardMessage.textContent = bootDetail.textContent;
       return;
     }
     setBootPhase(phaseForRuntimeLabel(label));

@@ -70,6 +70,22 @@ export type OpfsDirectoryRestoreEvidence = {
   verification: "manifest-and-every-file-sha256";
 };
 
+export async function hasDirectoryTreeSnapshot(
+  storeId: string
+): Promise<boolean> {
+  validateStoreId(storeId);
+  try {
+    const root = await storeRoot(storeId, false);
+    await root.getFileHandle(HEAD_FILENAME);
+    return true;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "NotFoundError") {
+      return false;
+    }
+    throw error;
+  }
+}
+
 function validateSegment(value: string, label: string): void {
   if (
     value.length === 0

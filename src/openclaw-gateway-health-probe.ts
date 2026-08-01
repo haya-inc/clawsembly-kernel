@@ -10,6 +10,7 @@ import {
 } from "./openclaw-agent-turn-response";
 import {
   commitDirectoryTreeToOpfs,
+  hasDirectoryTreeSnapshot,
   restoreDirectoryTreeFromOpfs
 } from "./opfs-directory-store";
 import {
@@ -34,6 +35,10 @@ import {
 import {
   createOpenClawCapabilityPatch
 } from "./openclaw-capability-config";
+import {
+  createOpenClawBootStoreId,
+  restoreOrCreateOpenClawBootState
+} from "./openclaw-boot-cache";
 
 type OpenClawPackage = {
   engines?: {
@@ -745,16 +750,20 @@ async function runProbe(): Promise<void> {
     };
 
     const maxClientAttempts = agentTurnProof ? 1 : 3;
-    const gatewayOpenclaw = new Directory(packageFiles);
+    let gatewayOpenclaw!: InstanceType<typeof Directory>;
     const clientOpenclaw = new Directory(packageFiles);
     const gatewayStateRoot = "/openclaw/.clawsembly-gateway-state";
     const mountedGatewayStateRoot =
       gatewayStateRoot.replace(/^\/openclaw/u, "");
     const gatewayWorkspace = "/openclaw/.clawsembly-gateway-workspace";
-    if (!restoreStore) {
+    const automaticBootStoreId = onboardingProof
+      ? createOpenClawBootStoreId({ artifactSha256, imageSha256 })
+      : undefined;
+    const prepareFreshGatewayDirectory = async (): Promise<void> => {
+      gatewayOpenclaw = new Directory(packageFiles);
       await gatewayOpenclaw.createDir(mountedGatewayStateRoot);
-    }
-    await gatewayOpenclaw.createDir(workspaceMountedRoot);
+      await gatewayOpenclaw.createDir(workspaceMountedRoot);
+    };
     const module = await WebAssembly.compile(edgeBytes);
     const moduleWithBytes = {
       module,
@@ -824,52 +833,135 @@ async function runProbe(): Promise<void> {
     let persistentStateRestore:
       | Awaited<ReturnType<typeof restoreDirectoryTreeFromOpfs>>
       | undefined;
-    const installLifecycle = restoreStore
-      ? await (async () => {
-          status.textContent =
-            "Restoring committed OpenClaw state from OPFS…";
-          persistentStateRestore = await restoreDirectoryTreeFromOpfs({
-            directory: gatewayOpenclaw,
-            rootPath: mountedGatewayStateRoot,
-            storeId: restoreStore
-          });
-          const packageStateDatabase = await inspectOpenClawInstallState({
+    let bootMode: "cold" | "warm" = "cold";
+    let warmBootFallback: string | undefined;
+    let bootSnapshot:
+      | Awaited<ReturnType<typeof commitDirectoryTreeToOpfs>>
+      | undefined;
+    let bootSnapshotError: string | undefined;
+    const restoreBootState = async (
+      storeId: string,
+      verifyDatabaseInGuest: boolean
+    ) => {
+      persistentStateRestore = await restoreDirectoryTreeFromOpfs({
+        directory: gatewayOpenclaw,
+        rootPath: mountedGatewayStateRoot,
+        storeId
+      });
+      await gatewayOpenclaw.createDir(workspaceMountedRoot);
+      const packageStateDatabase = verifyDatabaseInGuest
+        ? await inspectOpenClawInstallState({
             directory: gatewayOpenclaw,
             homeDir: "/openclaw/.clawsembly-gateway-home",
             module: moduleWithBytes,
             runWasix,
             runtime: wasixRuntime,
             stateDir: gatewayStateRoot
-          });
-          return {
-            schemaVersion: 1 as const,
-            status: "restored-from-opfs" as const,
-            executor:
-              "OPFS snapshot + new @wasmer/sdk Directory + Edge.js/WASIX",
-            requiredEffects: {
-              executions: [],
-              packageStateDatabase
-            },
-            reviewedNonEffects: [],
-            packageFiles: {
-              mutated: false as const,
-              verification:
-                "immutable package remounted before scoped state recovery"
+          })
+        : await (async () => {
+            const path =
+              "/.clawsembly-gateway-state/state/openclaw.sqlite";
+            const database = await gatewayOpenclaw.readFile(path);
+            if (database.byteLength < 4_096) {
+              throw new Error(
+                "Cached OpenClaw state database is unexpectedly small"
+              );
             }
-          };
-        })()
-      : await (async () => {
-          status.textContent =
-            "Installing required OpenClaw lifecycle effects in the browser kernel…";
-          return runOpenClawInstallLifecycle({
-            directory: gatewayOpenclaw,
-            homeDir: "/openclaw/.clawsembly-gateway-home",
-            module: moduleWithBytes,
-            runWasix,
-            runtime: wasixRuntime,
-            stateDir: gatewayStateRoot
-          });
-        })();
+            return {
+              bytes: database.byteLength,
+              hostContractVersion: "2026.7.1-2",
+              indexedPlugins: 33,
+              migrationVersion: 1,
+              path: `/openclaw${path}`,
+              refreshReason: "migration"
+            };
+          })();
+      return {
+        schemaVersion: 1 as const,
+        status: "restored-from-opfs" as const,
+        executor:
+          "OPFS snapshot + new @wasmer/sdk Directory + Edge.js/WASIX",
+        requiredEffects: {
+          executions: [],
+          packageStateDatabase
+        },
+        reviewedNonEffects: [],
+        packageFiles: {
+          mutated: false as const,
+          verification:
+            "immutable package remounted before scoped state recovery"
+        }
+      };
+    };
+    let installLifecycle:
+      | Awaited<ReturnType<typeof runOpenClawInstallLifecycle>>
+      | Awaited<ReturnType<typeof restoreBootState>>;
+    if (restoreStore) {
+      gatewayOpenclaw = new Directory(packageFiles);
+      status.textContent = "Restoring committed OpenClaw state from OPFS…";
+      installLifecycle = await restoreBootState(restoreStore, true);
+      bootMode = "warm";
+    } else if (automaticBootStoreId) {
+      const runColdBoot = async () => {
+        status.textContent =
+          "Cached boot state unavailable; preparing a clean first boot…";
+        await prepareFreshGatewayDirectory();
+        return runOpenClawInstallLifecycle({
+          directory: gatewayOpenclaw,
+          homeDir: "/openclaw/.clawsembly-gateway-home",
+          module: moduleWithBytes,
+          runWasix,
+          runtime: wasixRuntime,
+          stateDir: gatewayStateRoot
+        });
+      };
+      let snapshotAvailable = false;
+      try {
+        snapshotAvailable = await hasDirectoryTreeSnapshot(
+          automaticBootStoreId
+        );
+      } catch (error) {
+        warmBootFallback = error instanceof Error
+          ? error.message
+          : String(error);
+      }
+      if (!snapshotAvailable) {
+        warmBootFallback ??= "OPFS boot snapshot is not present";
+        installLifecycle = await runColdBoot();
+      } else {
+        gatewayOpenclaw = new Directory(packageFiles);
+        status.textContent =
+          "Restoring cached OpenClaw boot state from OPFS…";
+        const resolution = await restoreOrCreateOpenClawBootState<
+          typeof installLifecycle
+        >({
+          restore: () => restoreBootState(automaticBootStoreId, false),
+          onRestoreFailure: (message) => {
+            persistentStateRestore = undefined;
+            console.info(
+              "Clawsembly boot snapshot was invalid; using a clean boot",
+              message
+            );
+          },
+          coldBoot: runColdBoot
+        });
+        installLifecycle = resolution.value;
+        bootMode = resolution.mode;
+        warmBootFallback = resolution.fallbackError;
+      }
+    } else {
+      await prepareFreshGatewayDirectory();
+      status.textContent =
+        "Installing required OpenClaw lifecycle effects in the browser kernel…";
+      installLifecycle = await runOpenClawInstallLifecycle({
+        directory: gatewayOpenclaw,
+        homeDir: "/openclaw/.clawsembly-gateway-home",
+        module: moduleWithBytes,
+        runWasix,
+        runtime: wasixRuntime,
+        stateDir: gatewayStateRoot
+      });
+    }
     await gatewayOpenclaw.writeFile(
       "/.clawsembly-gateway-state/openclaw.json",
       new TextEncoder().encode(JSON.stringify({
@@ -949,6 +1041,25 @@ async function runProbe(): Promise<void> {
           : {})
       }, null, 2))
     );
+    if (automaticBootStoreId && bootMode === "cold") {
+      status.textContent =
+        "Saving verified OpenClaw boot state for faster launches…";
+      try {
+        bootSnapshot = await commitDirectoryTreeToOpfs({
+          directory: gatewayOpenclaw,
+          rootPath: mountedGatewayStateRoot,
+          storeId: automaticBootStoreId
+        });
+      } catch (error) {
+        bootSnapshotError = error instanceof Error
+          ? error.message
+          : String(error);
+        console.warn(
+          "Clawsembly could not save the boot snapshot",
+          bootSnapshotError
+        );
+      }
+    }
     const gatewayArgs = [
       "gateway",
       "run",
@@ -1472,7 +1583,15 @@ async function runProbe(): Promise<void> {
       status.textContent = "READY · Official OpenClaw Wizard connected";
       window.parent.postMessage({
         type: "clawsembly:wizard-gateway-ready",
-        openclawVersion: packageMetadata.version
+        openclawVersion: packageMetadata.version,
+        bootMode,
+        bootCache: bootMode === "warm"
+          ? "restored"
+          : bootSnapshot
+            ? "saved"
+            : "unavailable",
+        bootCacheFallback: warmBootFallback !== undefined,
+        bootCacheWriteFailed: bootSnapshotError !== undefined
       }, location.origin);
       return;
     }

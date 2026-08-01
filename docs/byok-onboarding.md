@@ -37,6 +37,24 @@ The browser never writes provider keys, OAuth tokens, device authorization
 identifiers, guest capabilities, or revocation capabilities to a URL,
 `localStorage`, `sessionStorage`, OPFS, logs, or downloadable evidence.
 
+## First and later launches
+
+Before the Gateway starts or any model capability is attached, Clawsembly
+commits the verified OpenClaw install-state subtree to a generation-addressed
+OPFS snapshot. The store ID is derived from both the Edge.js and OpenClaw image
+SHA-256 identities, so a runtime upgrade automatically selects a new cache.
+
+A later browser process restores the snapshot, verifies the manifest and every
+file hash, and skips the package lifecycle scripts. A missing, corrupt, or
+incompatible snapshot falls back to a new Directory and a normal cold boot.
+Provider credentials and Wizard session state are outside this snapshot.
+
+An origin-wide Web Lock serializes expensive bootstrap work across tabs. A
+second tab shows an explicit wait state until the first tab reaches a terminal
+boot state, then begins from the saved snapshot. This prevents concurrent cold
+boots; sharing one already-running Gateway between tabs remains separate
+SharedWorker work.
+
 The Durable Object stores the provider credential until revocation or alarm
 expiry. Cloudflare therefore participates in the secret boundary; this is not
 an end-to-end browser-to-provider custody design. The provider credential

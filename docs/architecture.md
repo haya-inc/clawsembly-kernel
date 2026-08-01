@@ -472,10 +472,13 @@ documentation.
 
 ## Ownership
 
-One runtime Worker owns an OPFS database at a time. Later browser tabs will
-connect to that owner rather than opening competing SQLite handles. This
-matches OPFS synchronous access-handle exclusivity and gives the kernel one
-place to enforce capabilities, snapshots, and resource limits.
+An origin-wide Web Lock currently serializes the expensive OpenClaw bootstrap
+across browser tabs. A later tab waits for the first boot to finish and then
+restores the versioned OPFS snapshot instead of running a concurrent cold
+boot. After the lock is released, each tab still owns its own runtime. Moving
+the live Gateway behind a SharedWorker so later tabs connect to one existing
+owner is the next ownership step; it will also provide one place to enforce
+SQLite handles, capabilities, snapshots, and resource limits.
 
 The Edge.js personality independently requires one or more
 `allowedPathRoots`. `:memory:` is always available, while any file path escaping
