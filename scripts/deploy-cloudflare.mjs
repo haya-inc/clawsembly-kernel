@@ -324,15 +324,50 @@ async function uploadLargeArtifacts(artifacts) {
   }
 }
 
-async function validatePlan(plan) {
+export async function validatePlan(plan) {
   if (
     plan.schemaVersion !== 1
     || typeof plan.bucket !== "string"
+    || typeof plan.distDirectory !== "string"
+    || typeof plan.manifestPath !== "string"
+    || typeof plan.verifiedWasmerRuntime?.path !== "string"
+    || typeof plan.verifiedWasmerRuntime?.sha256 !== "string"
     || !Array.isArray(plan.artifacts)
     || plan.artifacts.length !== 2
   ) {
     throw new Error("Invalid Cloudflare upload plan");
   }
+
+  const distDirectory = path.resolve(plan.distDirectory);
+  const deployedManifestPath = path.join(
+    distDirectory,
+    "runtime-manifest.json"
+  );
+  const [preparedManifestSha256, deployedManifestSha256] = await Promise.all([
+    sha256File(plan.manifestPath),
+    sha256File(deployedManifestPath)
+  ]);
+  if (preparedManifestSha256 !== deployedManifestSha256) {
+    throw new Error(
+      "Cloudflare static bundle no longer contains its prepared runtime "
+      + "manifest; run npm run cloudflare:prepare again"
+    );
+  }
+
+  const wasmerRuntimePath = path.resolve(plan.verifiedWasmerRuntime.path);
+  const relativeWasmerPath = path.relative(distDirectory, wasmerRuntimePath);
+  if (
+    relativeWasmerPath.startsWith(`..${path.sep}`)
+    || path.isAbsolute(relativeWasmerPath)
+    || await sha256File(wasmerRuntimePath)
+      !== plan.verifiedWasmerRuntime.sha256
+  ) {
+    throw new Error(
+      "Cloudflare static bundle no longer contains its publicly proven "
+      + "Wasmer runtime; run npm run cloudflare:prepare again"
+    );
+  }
+
   for (const artifact of plan.artifacts) {
     const artifactStat = await stat(artifact.localPath);
     if (
@@ -408,4 +443,9 @@ async function main() {
   }, null, 2));
 }
 
-await main();
+if (
+  process.argv[1]
+  && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  await main();
+}
