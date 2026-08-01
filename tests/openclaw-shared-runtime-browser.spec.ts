@@ -30,8 +30,25 @@ test("shares one OpenClaw owner and routes RPC responses to each tab", async ({
 }) => {
   await context.addInitScript(() => {
     const messages: unknown[] = [];
+    const sharedRuntimeNames: string[] = [];
     Object.defineProperty(window, "__clawsemblyTestMessages", {
       value: messages
+    });
+    Object.defineProperty(window, "__clawsemblySharedRuntimeNames", {
+      value: sharedRuntimeNames
+    });
+    const NativeSharedWorker = window.SharedWorker;
+    Object.defineProperty(window, "SharedWorker", {
+      configurable: true,
+      value: new Proxy(NativeSharedWorker, {
+        construct(target, argumentsList) {
+          const options = argumentsList[1] as string | WorkerOptions | undefined;
+          sharedRuntimeNames.push(
+            typeof options === "string" ? options : options?.name ?? ""
+          );
+          return Reflect.construct(target, argumentsList);
+        }
+      })
     });
     window.addEventListener("message", (event) => {
       messages.push(event.data);
@@ -72,6 +89,21 @@ test("shares one OpenClaw owner and routes RPC responses to each tab", async ({
     "data-state",
     "pass"
   );
+  const sharedRuntimeNames = await page.evaluate(() => (
+    window as typeof window & {
+      __clawsemblySharedRuntimeNames: string[];
+    }
+  ).__clawsemblySharedRuntimeNames);
+  const secondSharedRuntimeNames = await secondPage.evaluate(() => (
+    window as typeof window & {
+      __clawsemblySharedRuntimeNames: string[];
+    }
+  ).__clawsemblySharedRuntimeNames);
+  expect(sharedRuntimeNames).toHaveLength(1);
+  expect(sharedRuntimeNames[0]).toMatch(
+    /^clawsembly-openclaw-runtime-v2:https?:\/\//u
+  );
+  expect(secondSharedRuntimeNames).toEqual(sharedRuntimeNames);
   expect(moduleLoads).toBe(1);
   const secondReady = await secondPage.evaluate(() => (
     window as typeof window & {

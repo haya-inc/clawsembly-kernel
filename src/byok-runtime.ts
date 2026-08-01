@@ -76,6 +76,11 @@ let started = false;
 const runtimeStatus = document.querySelector<HTMLOutputElement>("#status");
 const runtimeResult = document.querySelector<HTMLPreElement>("#result");
 const bootstrapLockName = "clawsembly-openclaw-bootstrap-v1";
+// A SharedWorker can outlive the page that created it. Include both an explicit
+// compatibility generation and this runtime chunk's content-hashed URL so a
+// newly deployed bridge never reconnects to an older in-memory owner.
+const sharedRuntimeName =
+  `clawsembly-openclaw-runtime-v2:${import.meta.url}`;
 const onboardingSharedRuntime =
   new URLSearchParams(location.search).get("proof") === "onboarding"
   && typeof SharedWorker === "function";
@@ -158,7 +163,7 @@ if (onboardingSharedRuntime) {
     const sharedRuntime = new SharedWorker(
       new URL("./openclaw-shared-worker.ts", import.meta.url),
       {
-        name: "clawsembly-openclaw-runtime-v1",
+        name: sharedRuntimeName,
         type: "module"
       }
     );

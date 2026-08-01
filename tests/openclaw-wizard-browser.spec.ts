@@ -354,5 +354,16 @@ test("connects a later tab to the already-running OpenClaw Gateway", async ({
   );
   await expect(follower.locator("#wizard-controls button").first())
     .toBeVisible();
+  const followerStepId = await follower.locator(".wizard-stage").getAttribute(
+    "data-step-id"
+  );
+  expect(followerStepId).toBeTruthy();
+  await follower.locator("#wizard-controls button").first().click();
+  await expect.poll(async () => {
+    if (await follower.locator("#wizard-error").isVisible()) {
+      throw new Error(await follower.locator("#wizard-error").innerText());
+    }
+    return follower.locator(".wizard-stage").getAttribute("data-step-id");
+  }, { timeout: 150_000 }).not.toBe(followerStepId);
   console.log(`Shared OpenClaw follower timing: ${followerElapsedMs}ms`);
 });
