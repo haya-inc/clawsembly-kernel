@@ -84,7 +84,7 @@ Content-Type: application/json
 
 {
   "provider": "openai",
-  "model": "gpt-5.6",
+  "model": "gpt-5.6-sol",
   "apiKey": "..."
 }
 ```

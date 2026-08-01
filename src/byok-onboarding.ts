@@ -89,6 +89,7 @@ const wizardTitle = requiredElement<HTMLElement>("#wizard-title");
 const wizardMessage = requiredElement<HTMLElement>("#wizard-message");
 const wizardError = requiredElement<HTMLElement>("#wizard-error");
 const wizardControls = requiredElement<HTMLElement>("#wizard-controls");
+const wizardStage = requiredElement<HTMLElement>(".wizard-stage");
 const credentialAdapter =
   requiredElement<HTMLElement>("#credential-adapter");
 const credentialMethods =
@@ -144,6 +145,7 @@ let runtimeHandshakeTimer: number | undefined;
 let bootTimer: number | undefined;
 let bootPhase = 0;
 const bootStartedAt = performance.now();
+const gatewayReconnectWindowMs = 30_000;
 
 function setStatus(
   state: "fail" | "idle" | "ready" | "running",
@@ -312,9 +314,15 @@ function showError(message?: string): void {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error && error.message
-    ? error.message
-    : "OpenClawのセットアップを続行できませんでした";
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (/gateway (?:not connected|closed)|reconnect timed out/iu.test(message)) {
+    return "OpenClawとの接続が一時的に途切れました。もう一度お試しください。";
+  }
+  if (/timed out|応答がありません/iu.test(message)) {
+    return "OpenClawからの応答に時間がかかっています。もう一度お試しください。";
+  }
+  return message.trim().split("\n", 1)[0]
+    || "OpenClawのセットアップを続行できませんでした";
 }
 
 function postRuntimeRequest(
@@ -329,7 +337,7 @@ function postRuntimeRequest(
     const timeout = window.setTimeout(() => {
       pendingRequests.delete(requestId);
       reject(new Error("ブラウザ内OpenClawから応答がありません"));
-    }, 75_000);
+    }, 135_000);
     pendingRequests.set(requestId, { reject, resolve, timeout });
     runtimeFrame.contentWindow?.postMessage({
       type,
@@ -340,10 +348,121 @@ function postRuntimeRequest(
 }
 
 async function rpc(method: string, params: unknown): Promise<unknown> {
-  return postRuntimeRequest("clawsembly:wizard-rpc-request", {
-    method,
-    params
-  });
+  const reconnectDeadline = Date.now() + gatewayReconnectWindowMs;
+  let retryDelayMs = 150;
+  for (;;) {
+    try {
+      const result = await postRuntimeRequest(
+        "clawsembly:wizard-rpc-request",
+        { method, params }
+      );
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        !/gateway not connected/iu.test(message)
+        || Date.now() >= reconnectDeadline
+      ) {
+        throw error;
+      }
+      setStatus("running", "OpenClawへ再接続中");
+      setWizardBusy("接続を回復しています…");
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, retryDelayMs);
+      });
+      retryDelayMs = Math.min(2_000, retryDelayMs * 2);
+    }
+  }
+}
+
+function normalizeWizardCopy(value: string): string {
+  return value
+    .replace(
+      /\u001B\]8;;([^\u0007\u001B]*)(?:\u0007|\u001B\\)(.*?)\u001B\]8;;(?:\u0007|\u001B\\)/gsu,
+      (_match, url: string, label: string) => (
+        url && label !== url ? `${label} (${url})` : label || url
+      )
+    )
+    .replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/gu, "")
+    .replace(/\u001B\[[0-?]*[ -/]*[@-~]/gu, "")
+    .replace(/\r\n?/gu, "\n")
+    .trim();
+}
+
+function appendLinkifiedText(target: HTMLElement, value: string): void {
+  const urlPattern = /https?:\/\/[^\s)]+/gu;
+  let offset = 0;
+  for (const match of value.matchAll(urlPattern)) {
+    const index = match.index ?? 0;
+    target.append(document.createTextNode(value.slice(offset, index)));
+    const link = document.createElement("a");
+    link.href = match[0];
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent = match[0];
+    target.append(link);
+    offset = index + match[0].length;
+  }
+  target.append(document.createTextNode(value.slice(offset)));
+}
+
+function copyLine(value: string, className?: string): HTMLParagraphElement {
+  const paragraph = document.createElement("p");
+  if (className) paragraph.className = className;
+  appendLinkifiedText(paragraph, value);
+  return paragraph;
+}
+
+function renderWizardMessage(step: WizardStep): void {
+  wizardMessage.replaceChildren();
+  wizardMessage.classList.toggle("wizard-message-note", step.type === "note");
+  const source = step.title && step.message
+    ? step.message
+    : "OpenClaw公式Wizardの案内をそのまま表示しています。";
+  const normalized = normalizeWizardCopy(source);
+  const blocks = normalized.split(/\n\s*\n/gu).filter(Boolean);
+  const channelLines = blocks.slice(1).join("\n").split("\n").filter(Boolean);
+  if (step.type === "note" && channelLines.length >= 6) {
+    const channelPrimer = step.title?.trim() === "How channels work";
+    const intro = document.createElement("div");
+    intro.className = "wizard-note-intro";
+    for (const line of blocks[0].split("\n").filter(Boolean)) {
+      intro.append(copyLine(line));
+    }
+    const details = document.createElement("details");
+    details.className = "wizard-note-details";
+    const summary = document.createElement("summary");
+    summary.textContent = channelPrimer
+      ? `対応チャンネル ${channelLines.length}件を見る`
+      : step.title?.trim() === "Security disclaimer"
+        ? `安全上の注意を詳しく見る（${channelLines.length}項目）`
+        : `詳しい案内を見る（${channelLines.length}項目）`;
+    const list = document.createElement("ul");
+    list.className = channelPrimer
+      ? "wizard-channel-list"
+      : "wizard-note-line-list";
+    for (const line of channelLines) {
+      const item = document.createElement("li");
+      const separator = line.indexOf(":");
+      if (channelPrimer && separator > 0 && separator < 42) {
+        const label = document.createElement("strong");
+        label.textContent = line.slice(0, separator).trim();
+        const detail = document.createElement("span");
+        appendLinkifiedText(detail, line.slice(separator + 1).trim());
+        item.append(label, detail);
+      } else {
+        appendLinkifiedText(item, line);
+      }
+      list.append(item);
+    }
+    details.append(summary, list);
+    wizardMessage.append(intro, details);
+    return;
+  }
+  const lines = normalized.split("\n").filter(Boolean);
+  for (const line of lines.length > 0 ? lines : [source]) {
+    wizardMessage.append(copyLine(line));
+  }
 }
 
 function createButton(
@@ -540,15 +659,25 @@ function showCredentialAdapter(step: WizardStep): void {
 function renderWizardStep(step: WizardStep): void {
   currentStep = step;
   setStep(1);
-  wizardOrigin.textContent = `OpenClaw 公式Wizard · ${step.type}`;
+  const typeLabel = {
+    action: "操作",
+    confirm: "確認",
+    multiselect: "複数選択",
+    note: "案内",
+    progress: "進行状況",
+    select: "選択",
+    text: "入力"
+  }[step.type];
+  wizardOrigin.textContent = `OpenClaw 公式Wizard · ${typeLabel}`;
   wizardTitle.textContent = step.title?.trim()
     || step.message?.trim()
     || "OpenClaw setup";
-  wizardMessage.textContent = step.title && step.message
-    ? step.message
-    : "OpenClaw公式Wizardの案内をそのまま表示しています。";
+  wizardStage.dataset.stepId = step.id;
+  wizardStage.dataset.stepType = step.type;
+  renderWizardMessage(step);
   wizardControls.replaceChildren();
   showError();
+  setStatus("ready", "OpenClaw 接続済み");
 
   if (isCredentialMethodStep(step)) {
     showCredentialAdapter(step);
@@ -772,6 +901,7 @@ async function finishWizard(result: WizardResult): Promise<void> {
       throw new Error(result.error ?? "Official Wizard failed");
     }
     await applyCapabilityConfig();
+    credentialAdapter.hidden = true;
     setStep(3);
     wizardOrigin.textContent = "OpenClaw 公式Wizard · 完了";
     wizardTitle.textContent = "OpenClawの準備が完了しました";
@@ -973,7 +1103,7 @@ apiKeyShow.addEventListener("click", () => {
   provider.disabled = selectedProvider === "openrouter";
   model.value = selectedProvider === "openrouter"
     ? "openai/gpt-5.6"
-    : "gpt-5.6";
+    : "gpt-5.6-sol";
   apiKey.focus();
 });
 oauthStart.addEventListener("click", () => {

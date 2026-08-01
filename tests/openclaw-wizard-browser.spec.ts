@@ -198,13 +198,17 @@ test("renders the first real step from the unmodified OpenClaw Wizard", async ({
       }
       return {
         origin: await wizardOrigin.innerText(),
+        stepType: await page.locator(".wizard-stage").getAttribute(
+          "data-step-type"
+        ),
         state
       };
     },
     { timeout: 460_000 }
   ).toMatchObject({
-    origin: expect.stringMatching(
-      /^OpenClaw 公式Wizard · (?:action|confirm|multiselect|note|progress|select|text)$/u
+    origin: expect.stringMatching(/^OpenClaw 公式Wizard · /u),
+    stepType: expect.stringMatching(
+      /^(?:action|confirm|multiselect|note|progress|select|text)$/u
     )
   });
 
@@ -219,6 +223,19 @@ test("renders the first real step from the unmodified OpenClaw Wizard", async ({
   await expect(page.locator("#wizard-title")).not.toHaveText(
     "公式Wizardを準備しています"
   );
+  const firstStepId = await page.locator(".wizard-stage").getAttribute(
+    "data-step-id"
+  );
+  expect(firstStepId).toBeTruthy();
+  await page.waitForTimeout(2_000);
+  await page.locator("#wizard-controls button").first().click();
+  await expect.poll(async () => {
+    if (await page.locator("#wizard-error").isVisible()) {
+      throw new Error(await page.locator("#wizard-error").innerText());
+    }
+    return page.locator(".wizard-stage").getAttribute("data-step-id");
+  }, { timeout: 130_000 }).not.toBe(firstStepId);
+  await expect(page.getByText(/^安全上の注意を詳しく見る/u)).toBeVisible();
   await runtimeRequest(
     page,
     "clawsembly:wizard-capability-attach",
@@ -250,7 +267,7 @@ test("renders the first real step from the unmodified OpenClaw Wizard", async ({
     providerId: "openai"
   }));
   await page.screenshot({
-    path: testInfo.outputPath("real-openclaw-wizard-first-step.png"),
+    path: testInfo.outputPath("real-openclaw-wizard-next-step.png"),
     fullPage: true
   });
 });

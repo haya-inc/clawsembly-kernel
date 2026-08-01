@@ -9,6 +9,7 @@ const reply=(request,type,result,ok=true)=>parent.postMessage({
   ...(ok?{result}:{error:String(result)})
 },location.origin);
 let credentialAttempts=0;
+let introAttempts=0;
 let runtimeStarted=false;
 parent.postMessage({type:"clawsembly:byok-runtime-ready"},location.origin);
 addEventListener("message",(event)=>{
@@ -45,7 +46,7 @@ addEventListener("message",(event)=>{
   if(message.type==="clawsembly:wizard-capability-configure"){
     document.body.dataset.capabilityConfigured="true";
     reply(message,"clawsembly:wizard-capability-config-response",{
-      primaryModel:"clawsembly-byok/gpt-5.6",
+      primaryModel:"clawsembly-byok/gpt-5.6-sol",
       providerId:"clawsembly-byok"
     });
     return;
@@ -59,8 +60,8 @@ addEventListener("message",(event)=>{
       step:{
         id:"intro",
         type:"note",
-        title:"OpenClaw onboarding",
-        message:"Welcome to OpenClaw"
+        title:"How channels work",
+        message:"Inbound DM safety defaults to pairing.\\nApprove unknown senders before continuing.\\nDocs: \\u001b]8;;https://docs.openclaw.ai/channels/pairing\\u0007channels/pairing\\u001b]8;;\\u0007\\n\\nTelegram: easiest bot setup.\\nDiscord: community chat.\\nSlack: workspace messaging.\\nSignal: linked device.\\nMatrix: open protocol.\\nLINE: Messaging API bot."
       }
     });
     return;
@@ -68,6 +69,15 @@ addEventListener("message",(event)=>{
   if(message.method==="wizard.next"){
     const stepId=message.params.answer.stepId;
     if(stepId==="intro"){
+      if(++introAttempts===1){
+        reply(
+          message,
+          "clawsembly:wizard-rpc-response",
+          "gateway not connected",
+          false
+        );
+        return;
+      }
       reply(message,"clawsembly:wizard-rpc-response",{
         done:false,
         status:"running",
@@ -161,7 +171,7 @@ test("runs the official Wizard and adapts only its credential step", async ({
           adminToken,
           provider: "openai",
           providerLabel: "OpenAI",
-          model: "gpt-5.6",
+          model: "gpt-5.6-sol",
           modelApi: "openai-completions",
           apiPath: "/v1/chat/completions",
           openClawProvider: "clawsembly-byok",
@@ -204,8 +214,14 @@ test("runs the official Wizard and adapts only its credential step", async ({
     "cold"
   );
   await expect(page.getByRole("heading", {
-    name: "OpenClaw onboarding"
+    name: "How channels work"
   })).toBeVisible();
+  await expect(page.getByText("対応チャンネル 6件を見る")).toBeVisible();
+  await expect(page.locator("#wizard-message")).not.toContainText("]8;;");
+  await page.screenshot({
+    path: testInfo.outputPath("official-wizard-long-note.png"),
+    fullPage: true
+  });
   await page.getByRole("button", { name: "続ける →" }).click();
   await expect(page.getByRole("heading", {
     name: "Model/auth provider"
@@ -218,6 +234,7 @@ test("runs the official Wizard and adapts only its credential step", async ({
   })).toBeVisible();
   await page.getByRole("button", { name: "API key OpenAI / OpenRouter" })
     .click();
+  await expect(page.locator("#byok-model")).toHaveValue("gpt-5.6-sol");
   const keyInput = page.locator("#byok-key");
   await expect(keyInput).toHaveAttribute("type", "password");
   await expect(keyInput).toHaveAttribute("autocomplete", "off");
@@ -247,7 +264,7 @@ test("runs the official Wizard and adapts only its credential step", async ({
   expect(requests[0]).toEqual({
     apiKey,
     provider: "openai",
-    model: "gpt-5.6"
+    model: "gpt-5.6-sol"
   });
 
   const browserStorage = await page.evaluate(() => ({
