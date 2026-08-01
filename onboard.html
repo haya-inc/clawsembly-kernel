@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="自分のモデルAPIキーで、ブラウザ内のOpenClawを準備します。"
+      content="公式OpenClaw Wizardをブラウザ内で実行し、安全なモデル接続を準備します。"
     />
     <title>Clawsembly · OpenClawを準備</title>
   </head>
@@ -15,95 +15,145 @@
         <span aria-hidden="true">C/</span>
         Clawsembly
       </a>
-      <p>BYOK onboarding</p>
+      <p>Official Wizard · Browser runtime</p>
       <a href="https://github.com/haya-inc/clawsembly-kernel">Source ↗</a>
     </header>
 
     <main class="byok-shell">
       <aside aria-label="設定手順">
-        <p class="byok-kicker">OpenClaw setup</p>
+        <p class="byok-kicker">OpenClaw setup flow</p>
         <ol>
           <li data-step-state="active">
             <span>01</span>
-            モデル接続
+            Browser kernel
           </li>
           <li>
             <span>02</span>
-            接続確認
+            Official Wizard
           </li>
           <li>
             <span>03</span>
-            OpenClaw準備完了
+            Credential boundary
+          </li>
+          <li>
+            <span>04</span>
+            OpenClaw ready
           </li>
         </ol>
         <p class="byok-boundary">
-          APIキーはWasmゲストやブラウザストレージへ保存されません。
+          OAuthトークンとAPIキーはWasmゲストやブラウザストレージへ保存されません。
         </p>
       </aside>
 
       <section class="byok-workspace" aria-labelledby="byok-title">
         <div class="byok-heading">
           <div>
-            <p class="byok-kicker">01 / Model provider</p>
-            <h1 id="byok-title">自分のキーで<br />OpenClawを動かす。</h1>
+            <p class="byok-kicker">OpenClaw · exact package · 2026.7.1-2</p>
+            <h1 id="byok-title">OpenClawそのものを、<br />ブラウザでセットアップ。</h1>
           </div>
           <output id="byok-status" data-state="idle" aria-live="polite">
             <span aria-hidden="true"></span>
-            未接続
+            Kernel待機中
           </output>
         </div>
 
-        <form id="byok-form">
-          <label>
-            <span>プロバイダー</span>
-            <select id="byok-provider" name="provider">
-              <option value="openai">OpenAI</option>
-              <option value="openrouter">OpenRouter</option>
-            </select>
-          </label>
-          <label>
-            <span>モデル</span>
-            <input
-              id="byok-model"
-              name="model"
-              value="gpt-5.6"
-              autocomplete="off"
-              spellcheck="false"
-              required
-            />
-          </label>
-          <label class="byok-key-field">
-            <span>APIキー</span>
-            <input
-              id="byok-key"
-              name="apiKey"
-              type="password"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="この画面を離れると消去されます"
-              minlength="8"
-              required
-            />
-          </label>
-          <div class="byok-actions">
-            <button id="byok-connect" type="submit">
-              <span>安全な接続を作る</span>
-              <span aria-hidden="true">→</span>
-            </button>
-            <button id="byok-test" type="button" disabled>接続を確認</button>
-            <button id="byok-launch" type="button" disabled>
-              OpenClawを起動
-            </button>
-            <button id="byok-revoke" type="button" disabled>接続を破棄</button>
+        <section class="wizard-stage" aria-labelledby="wizard-title">
+          <div class="wizard-stage-head">
+            <div>
+              <p class="byok-kicker" id="wizard-origin">
+                Booting browser-local Gateway
+              </p>
+              <h2 id="wizard-title">公式Wizardを準備しています</h2>
+            </div>
+            <span class="wizard-official">Official RPC</span>
           </div>
-        </form>
+          <p id="wizard-message" class="wizard-message">
+            Edge.jsと完全なOpenClawパッケージを検証しています。
+          </p>
+          <p id="wizard-error" class="wizard-error" role="alert" hidden></p>
+          <div id="wizard-controls" class="wizard-controls" aria-live="polite">
+            <span class="wizard-loader" aria-hidden="true"></span>
+            ブラウザカーネルを起動中…
+          </div>
+        </section>
 
-        <section class="byok-session" aria-labelledby="session-title" hidden>
-          <p class="byok-kicker">02 / Capability</p>
+        <section
+          id="credential-adapter"
+          class="byok-session credential-adapter"
+          aria-labelledby="credential-title"
+          hidden
+        >
+          <p class="byok-kicker">Clawsembly credential boundary</p>
           <div class="byok-session-heading">
-            <h2 id="session-title">OpenClawへ渡せる状態です</h2>
-            <strong id="byok-expiry">—</strong>
+            <h2 id="credential-title">秘密をOpenClawへ渡さず接続</h2>
+            <strong id="byok-expiry">未接続</strong>
           </div>
+          <p class="credential-intro">
+            ここだけがClawsemblyの安全アダプターです。完了後は公式Wizardへ戻ります。
+          </p>
+          <div id="credential-methods" class="credential-methods">
+            <button id="oauth-start" class="credential-choice" type="button">
+              <span>OpenAI Device Code</span>
+              <small>ChatGPTで認証 · 推奨</small>
+            </button>
+            <button id="api-key-show" class="credential-choice" type="button">
+              <span>API key</span>
+              <small>OpenAI / OpenRouter</small>
+            </button>
+          </div>
+          <section id="oauth-panel" class="credential-panel" hidden>
+            <p class="credential-label">OpenAI Device Code</p>
+            <a
+              id="oauth-verify-link"
+              class="oauth-code-link"
+              href="https://auth.openai.com/codex/device"
+              target="_blank"
+              rel="noreferrer"
+            >
+              <code id="oauth-code">—</code>
+              <span>OpenAIを開く ↗</span>
+            </a>
+            <p id="oauth-status">認証コードを発行しています…</p>
+          </section>
+          <form id="api-key-panel" class="credential-panel" hidden>
+            <label>
+              <span>Provider</span>
+              <select id="byok-provider" name="provider">
+                <option value="openai">OpenAI</option>
+                <option value="openrouter">OpenRouter</option>
+              </select>
+            </label>
+            <label>
+              <span>Model</span>
+              <input
+                id="byok-model"
+                name="model"
+                value="gpt-5.6"
+                autocomplete="off"
+                spellcheck="false"
+                required
+              />
+            </label>
+            <label class="byok-key-field">
+              <span>API key</span>
+              <input
+                id="byok-key"
+                name="apiKey"
+                type="password"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="送信後、この入力欄から消去されます"
+                minlength="8"
+                required
+              />
+            </label>
+            <div class="byok-actions">
+              <button id="byok-connect" type="submit">
+                <span>能力トークンへ変換</span>
+                <span aria-hidden="true">→</span>
+              </button>
+            </div>
+          </form>
           <dl>
             <div>
               <dt>OpenClawが受け取るもの</dt>
@@ -118,26 +168,39 @@
               <dd id="byok-budget">—</dd>
             </div>
           </dl>
-          <p id="byok-test-result" class="byok-test-result"></p>
+          <p id="credential-result" class="byok-test-result"></p>
         </section>
 
         <section class="byok-runtime" aria-labelledby="runtime-title" hidden>
-          <p class="byok-kicker">03 / Browser runtime</p>
-          <h2 id="runtime-title">ブラウザ内のOpenClaw</h2>
-          <iframe
-            id="byok-runtime-frame"
-            title="ブラウザ内で実行中のOpenClaw"
-          ></iframe>
+          <p class="byok-kicker">04 / Browser-local OpenClaw</p>
+          <div class="runtime-heading">
+            <h2 id="runtime-title">OpenClaw準備完了</h2>
+            <button id="byok-revoke" type="button" disabled>
+              接続を破棄
+            </button>
+          </div>
+          <p id="runtime-summary">
+            公式Wizardの設定と短命のモデル能力をブラウザ内Gatewayへ適用しました。
+          </p>
         </section>
 
         <details class="byok-privacy">
           <summary>秘密情報の扱い</summary>
           <p>
-            APIキーはHTTPSでClawsemblyの期限付きブローカーへ渡され、
-            OpenClawにはAPIキーの代わりに失効可能な権限トークンだけが渡ります。
-            キーをlocalStorage、sessionStorage、URL、ログ、証跡へ書きません。
+            OAuthアクセストークン・更新トークン・APIキーはHTTPSで
+            Clawsemblyの期限付きブローカーだけが保持します。OpenClawには
+            固定モデル・固定API経路に限定した失効可能な権限トークンだけを渡します。
+            秘密をlocalStorage、sessionStorage、URL、ログ、証跡へ書きません。
           </p>
         </details>
+        <iframe
+          id="byok-runtime-frame"
+          class="runtime-kernel-frame"
+          title="ブラウザ内で実行中のOpenClawカーネル"
+          src="/byok-runtime.html?proof=onboarding"
+          tabindex="-1"
+          aria-hidden="true"
+        ></iframe>
       </section>
     </main>
 

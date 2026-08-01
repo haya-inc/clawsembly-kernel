@@ -79,6 +79,9 @@ test("unmodified OpenClaw completes a BYOK turn through the host HTTP bridge", a
           provider: "openai",
           providerLabel: "OpenAI",
           model,
+          modelApi: "openai-completions",
+          apiPath: "/v1/chat/completions",
+          openClawProvider: "clawsembly-byok",
           providerId: "clawsembly-byok",
           baseUrl: "http://127.0.0.1:4173/api/byok/v1",
           expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
@@ -125,26 +128,33 @@ test("unmodified OpenClaw completes a BYOK turn through the host HTTP bridge", a
     });
   });
 
-  await page.goto("/onboard.html");
-  await page.locator("#byok-model").fill(model);
-  await page.locator("#byok-key").fill(apiKey);
-  await page.getByRole("button", { name: "安全な接続を作る" }).click();
-  await page.getByRole("button", { name: "接続を確認" }).click();
-  await expect(page.locator("#byok-test-result"))
-    .toContainText("接続確認済み · READY");
-  await page.getByRole("button", { name: "OpenClawを起動" }).click();
+  await page.goto("/byok-runtime.html?proof=byok-agent-turn");
+  await page.evaluate((capability) => {
+    window.postMessage({
+      type: "clawsembly:byok-runtime-start",
+      capability
+    }, location.origin);
+  }, {
+    apiKey: guestToken,
+    apiPath: "/v1/chat/completions",
+    baseUrl: "http://127.0.0.1:4173/api/byok/v1",
+    expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+    modelApi: "openai-completions",
+    model,
+    openClawProvider: "clawsembly-byok",
+    providerId: "clawsembly-byok"
+  });
 
-  const runtime = page.frameLocator("#byok-runtime-frame");
-  const status = runtime.locator("#status");
+  const status = page.locator("#status");
   await expect.poll(
     () => status.getAttribute("data-state"),
     { timeout: 280_000 }
   ).toMatch(/^(?:pass|fail)$/u);
   if (await status.getAttribute("data-state") === "fail") {
-    throw new Error(await runtime.locator("#result").innerText());
+    throw new Error(await page.locator("#result").innerText());
   }
 
-  const evidenceText = await runtime.locator("#result").innerText();
+  const evidenceText = await page.locator("#result").innerText();
   const evidence = JSON.parse(evidenceText) as {
     byokModel: {
       guestReceivesProviderCredential: boolean;
@@ -179,8 +189,8 @@ test("unmodified OpenClaw completes a BYOK turn through the host HTTP bridge", a
   });
   expect(evidenceText).not.toContain(apiKey);
   expect(evidenceText).not.toContain(guestToken);
-  expect(providerRequests).toHaveLength(2);
-  expect(providerRequests[1]).toMatchObject({
+  expect(providerRequests).toHaveLength(1);
+  expect(providerRequests[0]).toMatchObject({
     model,
     stream: true
   });

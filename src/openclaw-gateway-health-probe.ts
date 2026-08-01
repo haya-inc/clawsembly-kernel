@@ -12,7 +12,11 @@ import {
   commitDirectoryTreeToOpfs,
   restoreDirectoryTreeFromOpfs
 } from "./opfs-directory-store";
-import { consumeByokCapabilityHandoff } from "./byok-capability-handoff";
+import {
+  consumeByokCapabilityHandoff,
+  stageByokCapabilityHandoff,
+  type ByokCapabilityHandoff
+} from "./byok-capability-handoff";
 import {
   startByokHttpBridge,
   type ByokHttpBridge
@@ -22,6 +26,14 @@ import {
   byokLoopbackReadyMarker,
   createByokLoopbackBrokerHarness
 } from "./byok-loopback-broker";
+import {
+  createOpenClawWizardRpcBridgeHarness,
+  resolveGatewayClientModulePath,
+  wizardRpcBridgeReadyMarker
+} from "./openclaw-wizard-rpc-bridge";
+import {
+  createOpenClawCapabilityPatch
+} from "./openclaw-capability-config";
 
 type OpenClawPackage = {
   engines?: {
@@ -62,6 +74,86 @@ type StreamCapture = {
     timeoutMs: number
   ) => Promise<void>;
 };
+
+const onboardingRpcMethods = new Set([
+  "wizard.cancel",
+  "wizard.next",
+  "wizard.start",
+  "wizard.status"
+]);
+
+type OnboardingRpcRequest = {
+  method: string;
+  params: unknown;
+  requestId: string;
+  type: "clawsembly:wizard-rpc-request";
+};
+
+type OnboardingCapabilityRequest = {
+  capability: ByokCapabilityHandoff;
+  requestId: string;
+  type: "clawsembly:wizard-capability-attach";
+};
+
+type OnboardingCapabilityConfigRequest = {
+  requestId: string;
+  type: "clawsembly:wizard-capability-configure";
+};
+
+function isOnboardingRpcRequest(
+  value: unknown
+): value is OnboardingRpcRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const candidate = value as Partial<OnboardingRpcRequest>;
+  return candidate.type === "clawsembly:wizard-rpc-request"
+    && typeof candidate.requestId === "string"
+    && /^[A-Za-z0-9_-]{1,128}$/u.test(candidate.requestId)
+    && typeof candidate.method === "string"
+    && onboardingRpcMethods.has(candidate.method)
+    && Boolean(candidate.params)
+    && typeof candidate.params === "object"
+    && !Array.isArray(candidate.params);
+}
+
+function consumeCapabilityRequest(
+  value: unknown
+): OnboardingCapabilityRequest | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const candidate = value as Partial<OnboardingCapabilityRequest>;
+  if (
+    candidate.type !== "clawsembly:wizard-capability-attach"
+    || typeof candidate.requestId !== "string"
+    || !/^[A-Za-z0-9_-]{1,128}$/u.test(candidate.requestId)
+    || !candidate.capability
+  ) {
+    return undefined;
+  }
+  stageByokCapabilityHandoff(candidate.capability);
+  const capability = consumeByokCapabilityHandoff();
+  return capability
+    ? {
+        capability,
+        requestId: candidate.requestId,
+        type: candidate.type
+      }
+    : undefined;
+}
+
+function isCapabilityConfigRequest(
+  value: unknown
+): value is OnboardingCapabilityConfigRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const candidate = value as Partial<OnboardingCapabilityConfigRequest>;
+  return candidate.type === "clawsembly:wizard-capability-configure"
+    && typeof candidate.requestId === "string"
+    && /^[A-Za-z0-9_-]{1,128}$/u.test(candidate.requestId);
+}
 
 function requiredElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -302,17 +394,19 @@ const requestedProofKind = searchParams.get("proof");
 const proofKind = requestedProofKind === "agent-turn"
   || requestedProofKind === "self-hosted-agent-turn"
   || requestedProofKind === "byok-agent-turn"
+  || requestedProofKind === "onboarding"
   || requestedProofKind === "workspace-tool-turn"
   ? requestedProofKind
   : "health";
-const agentTurnProof = proofKind !== "health";
+const onboardingProof = proofKind === "onboarding";
+const agentTurnProof = proofKind !== "health" && !onboardingProof;
 const selfHostedModelProof = proofKind === "self-hosted-agent-turn";
 const byokModelProof = proofKind === "byok-agent-turn";
 const workspaceToolProof = proofKind === "workspace-tool-turn";
 const selfHostedModelCapability = selfHostedModelProof
   ? consumeSelfHostedModelCapability()
   : undefined;
-const byokModelCapability = byokModelProof
+let byokModelCapability = byokModelProof
   ? consumeByokCapabilityHandoff()
   : undefined;
 const relayUrl =
@@ -342,7 +436,7 @@ const providerModel = selfHostedModelProof
 const providerName = selfHostedModelProof
   ? "clawsembly-broker"
   : byokModelProof
-    ? "clawsembly-byok"
+    ? byokModelCapability?.openClawProvider ?? "clawsembly-byok"
   : "clawsembly";
 const providerBaseUrl = `http://localhost:${providerPort}/v1`;
 const providerApiKey = selfHostedModelProof
@@ -635,14 +729,20 @@ async function runProbe(): Promise<void> {
           stdout: StreamCapture;
         }
       | undefined;
-    if (byokModelProof) {
+    const attachByokCapability = async (
+      capability: ByokCapabilityHandoff
+    ): Promise<void> => {
+      if (byokHttpBridge) {
+        throw new Error("A model capability is already attached");
+      }
+      byokModelCapability = capability;
       status.textContent =
         "Starting the browser-local BYOK model bridge…";
       const bridgeDirectory = new Directory();
       await bridgeDirectory.createDir("/requests");
       await bridgeDirectory.createDir("/responses");
       byokHttpBridge = startByokHttpBridge({
-        capability: byokModelCapability!,
+        capability,
         directory: bridgeDirectory
       });
       const bridgeInstance = await runWasix(moduleWithBytes, {
@@ -676,6 +776,9 @@ async function runProbe(): Promise<void> {
         );
       });
       await Promise.race([bridgeReady, bridgeExit]);
+    };
+    if (byokModelProof) {
+      await attachByokCapability(byokModelCapability!);
     }
     let persistentStateRestore:
       | Awaited<ReturnType<typeof restoreDirectoryTreeFromOpfs>>
@@ -778,7 +881,10 @@ async function runProbe(): Promise<void> {
               models: {
                 providers: {
                   [providerName]: {
-                    api: "openai-completions",
+                    api: byokModelProof
+                      ? byokModelCapability?.modelApi
+                        ?? "openai-completions"
+                      : "openai-completions",
                     apiKey: providerApiKey,
                     baseUrl: providerBaseUrl,
                     models: [{
@@ -828,10 +934,14 @@ async function runProbe(): Promise<void> {
     const gatewayHarness = [
       `process.argv=${JSON.stringify(gatewayArgv)};`,
       "console.error('CLAWSEMBLY_DIAGNOSTIC_NODE='+process.versions.node);",
-      "const gatewayWatchdog=setTimeout(()=>{",
-      `console.error(${JSON.stringify(gatewayTimeoutMarker)});`,
-      "process.exit(124)",
-      `},${proofTimeoutMs});`,
+      ...(onboardingProof
+        ? []
+        : [
+            "const gatewayWatchdog=setTimeout(()=>{",
+            `console.error(${JSON.stringify(gatewayTimeoutMarker)});`,
+            "process.exit(124)",
+            `},${proofTimeoutMs});`
+          ]),
       "import('file:///openclaw/dist/entry.js').catch((error)=>{",
       "console.error(error?.stack??String(error));process.exit(1)",
       "});"
@@ -959,6 +1069,363 @@ async function runProbe(): Promise<void> {
     const clientLaunchElapsedMs = Math.round(
       performance.now() - startedAt
     );
+    if (onboardingProof) {
+      let rpcSequence = 0;
+      let operationQueue = Promise.resolve();
+      const runtimeSecrets: string[] = [];
+      const rpcDirectory = new Directory();
+      await rpcDirectory.createDir("/requests");
+      await rpcDirectory.createDir("/responses");
+      const gatewayClientModulePath =
+        resolveGatewayClientModulePath(packageFiles);
+      status.textContent =
+        "Starting the persistent official OpenClaw RPC client…";
+      const rpcBridgeInstance = await runWasix(moduleWithBytes, {
+        program: "edgejs",
+        args: ["-e", createOpenClawWizardRpcBridgeHarness({
+          clientModulePath: gatewayClientModulePath,
+          gatewayToken,
+          gatewayUrl,
+          openclawVersion: packageMetadata.version ?? "2026.7.1-2"
+        })],
+        cwd: "/openclaw",
+        env: {
+          CLAWSEMBLY_DIAGNOSTIC_ONLY: "1",
+          FORCE_COLOR: "0",
+          HOME: "/openclaw/.clawsembly-wizard-client-home",
+          NO_COLOR: "1",
+          OPENCLAW_GATEWAY_TOKEN: gatewayToken,
+          OPENCLAW_NO_RESPAWN: "1",
+          OPENCLAW_STATE_DIR:
+            "/openclaw/.clawsembly-wizard-client-state",
+          PATH: "/bin"
+        },
+        mount: {
+          "/control": rpcDirectory,
+          "/gateway": gatewayOpenclaw,
+          "/openclaw": clientOpenclaw
+        },
+        runtime: wasixRuntime
+      });
+      const rpcBridgeStdout = captureStream(rpcBridgeInstance.stdout);
+      const rpcBridgeStderr = captureStream(rpcBridgeInstance.stderr);
+      const rpcBridgeExit = rpcBridgeInstance.wait().then((output) => ({
+        kind: "rpc-bridge-exit" as const,
+        output: output as WasixOutput
+      }));
+      const rpcBridgeStartup = await Promise.race([
+        Promise.any([
+          rpcBridgeStdout.waitFor(wizardRpcBridgeReadyMarker, 180_000),
+          rpcBridgeStderr.waitFor(wizardRpcBridgeReadyMarker, 180_000)
+        ]).then(() => ({ kind: "rpc-bridge-ready" as const })),
+        rpcBridgeExit,
+        gatewayExit
+      ]);
+      if (rpcBridgeStartup.kind !== "rpc-bridge-ready") {
+        throw new Error(
+          rpcBridgeStartup.kind === "gateway-exit"
+            ? "OpenClaw Gateway exited before the Wizard RPC bridge"
+            : "Official OpenClaw RPC bridge exited before readiness: "
+              + redactSensitiveValues(
+                [
+                  rpcBridgeStdout.snapshot(),
+                  rpcBridgeStderr.snapshot()
+                ].join("\n"),
+                runtimeSecrets
+              )
+        );
+      }
+      const runGatewayRpc = async (
+        method: string,
+        params: unknown
+      ): Promise<unknown> => {
+        rpcSequence += 1;
+        const id = `rpc_${Date.now().toString(36)}_${
+          rpcSequence.toString(36)
+        }`;
+        await rpcDirectory.writeFile(
+          `/requests/${id}.json`,
+          JSON.stringify({
+            schemaVersion: 1,
+            id,
+            method,
+            params
+          })
+        );
+        const deadline = Date.now() + 130_000;
+        while (Date.now() < deadline) {
+          try {
+            const responseBytes = new Uint8Array(
+              await rpcDirectory.readFile(`/responses/${id}.json`)
+            );
+            await rpcDirectory.removeFile(`/responses/${id}.json`);
+            const response = JSON.parse(
+              new TextDecoder().decode(responseBytes)
+            ) as {
+              error?: unknown;
+              ok?: unknown;
+              result?: unknown;
+            };
+            if (response.ok === true) return response.result;
+            throw new Error(
+              typeof response.error === "string"
+                ? response.error
+                : "Official OpenClaw RPC failed"
+            );
+          } catch (error) {
+            if (
+              error instanceof Error
+              && (
+                error.message === "Official OpenClaw RPC failed"
+                || !/not found|no such|does not exist/iu.test(error.message)
+              )
+            ) {
+              throw error;
+            }
+          }
+          await new Promise<void>((resolve) => {
+            window.setTimeout(resolve, 20);
+          });
+        }
+        throw new Error(
+          "OpenClaw Wizard RPC timed out: "
+          + redactSensitiveValues(
+            [
+              rpcBridgeStdout.snapshot(),
+              rpcBridgeStderr.snapshot()
+            ].filter(Boolean).join("\n"),
+            runtimeSecrets
+          )
+        );
+      };
+
+      const configureOpenClawCapability = async () => {
+        const capability = byokModelCapability;
+        if (!capability || !byokHttpBridge) {
+          throw new Error("A model capability must be attached first");
+        }
+        const { patch, summary } =
+          createOpenClawCapabilityPatch(capability);
+        const before = await runGatewayRpc(
+          "clawsembly.config.inspect",
+          { providerId: summary.providerId }
+        ) as { hash?: unknown };
+        if (typeof before.hash !== "string" || !before.hash) {
+          throw new Error("OpenClaw config hash is unavailable");
+        }
+        const writeResult = await runGatewayRpc(
+          "clawsembly.config.patch",
+          {
+            raw: JSON.stringify(patch),
+            baseHash: before.hash,
+            note:
+              "Clawsembly attached a revocable model capability"
+          }
+        ) as {
+          ok?: unknown;
+          persistedHash?: unknown;
+        };
+        if (
+          writeResult.ok !== true
+          || typeof writeResult.persistedHash !== "string"
+          || !writeResult.persistedHash
+        ) {
+          throw new Error("OpenClaw rejected the capability configuration");
+        }
+        const after = await runGatewayRpc(
+          "clawsembly.config.inspect",
+          { providerId: summary.providerId }
+        ) as {
+          apiKeyConfigured?: unknown;
+          modelIds?: unknown;
+          primaryModel?: unknown;
+          providerApi?: unknown;
+          providerBaseUrl?: unknown;
+        };
+        if (
+          after.primaryModel !== summary.primaryModel
+          || after.providerApi !== summary.modelApi
+          || after.providerBaseUrl !== "http://localhost:18794/v1"
+          || after.apiKeyConfigured !== true
+          || !Array.isArray(after.modelIds)
+          || !after.modelIds.includes(summary.model)
+        ) {
+          throw new Error(
+            "OpenClaw did not persist the model capability configuration"
+          );
+        }
+        let restartFailure: unknown;
+        try {
+          await runGatewayRpc("gateway.restart.request", {
+            reason: "Clawsembly activated a revocable model capability",
+            skipDeferral: true
+          });
+        } catch (error) {
+          // The Gateway may close its socket immediately after accepting the
+          // restart. Treat that transport race as provisional and let the
+          // active-model probe below decide whether activation succeeded.
+          restartFailure = error;
+        }
+        const activeDeadline = Date.now() + 30_000;
+        while (Date.now() < activeDeadline) {
+          let active: { agents?: unknown } = {};
+          try {
+            active = await runGatewayRpc(
+              "clawsembly.config.active-model",
+              {}
+            ) as { agents?: unknown };
+          } catch {
+            await new Promise<void>((resolve) => {
+              window.setTimeout(resolve, 100);
+            });
+            continue;
+          }
+          if (
+            Array.isArray(active.agents)
+            && active.agents.some((candidate) => {
+              if (
+                !candidate
+                || typeof candidate !== "object"
+                || Array.isArray(candidate)
+              ) {
+                return false;
+              }
+              const model = (
+                candidate as { model?: unknown }
+              ).model;
+              return Boolean(model)
+                && typeof model === "object"
+                && !Array.isArray(model)
+                && (
+                  model as { primary?: unknown }
+                ).primary === summary.primaryModel;
+            })
+          ) {
+            return summary;
+          }
+          await new Promise<void>((resolve) => {
+            window.setTimeout(resolve, 50);
+          });
+        }
+        const restartDetail = restartFailure instanceof Error
+          ? ` (${restartFailure.message})`
+          : "";
+        throw new Error(
+          "OpenClaw Gateway did not activate the model capability after "
+          + `its safe restart${restartDetail}`
+        );
+      };
+
+      const respond = (
+        requestId: string,
+        ok: boolean,
+        payload: { error?: string; result?: unknown },
+        type = "clawsembly:wizard-rpc-response"
+      ) => {
+        window.parent.postMessage({
+          type,
+          requestId,
+          ok,
+          ...payload
+        }, location.origin);
+      };
+      window.addEventListener("message", (event: MessageEvent<unknown>) => {
+        if (
+          event.origin !== location.origin
+          || event.source !== window.parent
+        ) {
+          return;
+        }
+        const rpc = isOnboardingRpcRequest(event.data)
+          ? event.data
+          : undefined;
+        const capabilityRequest = consumeCapabilityRequest(event.data);
+        const capabilityConfigRequest =
+          isCapabilityConfigRequest(event.data)
+            ? event.data
+            : undefined;
+        if (!rpc && !capabilityRequest && !capabilityConfigRequest) {
+          return;
+        }
+        operationQueue = operationQueue.then(async () => {
+          if (capabilityRequest) {
+            try {
+              runtimeSecrets.push(capabilityRequest.capability.apiKey);
+              await attachByokCapability(capabilityRequest.capability);
+              respond(
+                capabilityRequest.requestId,
+                true,
+                { result: { status: "attached" } },
+                "clawsembly:wizard-capability-response"
+              );
+            } catch (error) {
+              respond(
+                capabilityRequest.requestId,
+                false,
+                {
+                  error: redactSensitiveValues(
+                    error instanceof Error ? error.message : String(error),
+                    runtimeSecrets
+                  )
+                },
+                "clawsembly:wizard-capability-response"
+              );
+            }
+            return;
+          }
+          if (capabilityConfigRequest) {
+            try {
+              const summary = await configureOpenClawCapability();
+              respond(
+                capabilityConfigRequest.requestId,
+                true,
+                { result: summary },
+                "clawsembly:wizard-capability-config-response"
+              );
+            } catch (error) {
+              respond(
+                capabilityConfigRequest.requestId,
+                false,
+                {
+                  error: redactSensitiveValues(
+                    error instanceof Error
+                      ? error.message
+                      : String(error),
+                    runtimeSecrets
+                  )
+                },
+                "clawsembly:wizard-capability-config-response"
+              );
+            }
+            return;
+          }
+          try {
+            const rpcResult = await runGatewayRpc(rpc!.method, rpc!.params);
+            respond(rpc!.requestId, true, {
+              result: JSON.parse(JSON.stringify(rpcResult))
+            });
+          } catch (error) {
+            respond(rpc!.requestId, false, {
+              error: redactSensitiveValues(
+                error instanceof Error
+                  ? `${error.message}\n${error.stack ?? ""}`
+                  : String(error),
+                runtimeSecrets
+              )
+            });
+          }
+        }).catch((error) => {
+          console.error("Clawsembly onboarding operation failed", error);
+        });
+      });
+      status.dataset.state = "pass";
+      status.textContent = "READY · Official OpenClaw Wizard connected";
+      window.parent.postMessage({
+        type: "clawsembly:wizard-gateway-ready",
+        openclawVersion: packageMetadata.version
+      }, location.origin);
+      return;
+    }
     status.textContent = agentTurnProof
       ? byokModelProof
         ? "Gateway ready; starting the user-authorized BYOK model turn…"
@@ -1482,14 +1949,16 @@ async function runProbe(): Promise<void> {
       ...(byokModelProof
         ? {
             byokModel: {
-              api: "openai-completions",
+              api: byokModelCapability?.modelApi,
               expectedMarker: agentTurnMarker,
               guestEndpoint: providerBaseUrl,
               guestReceivesProviderCredential: false,
               model: `${providerName}/${providerModel}`,
               operationCapability: {
                 authority:
-                  `POST ${byokModelCapability?.baseUrl}/chat/completions`,
+                  `POST ${byokModelCapability?.baseUrl}${
+                    byokModelCapability?.apiPath.slice("/v1".length)
+                  }`,
                 expiresAt: byokModelCapability?.expiresAt,
                 model: providerModel,
                 recorded: false,

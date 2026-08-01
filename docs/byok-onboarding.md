@@ -1,51 +1,55 @@
-# BYOK onboarding
+# Official Wizard and model credential boundary
 
-Clawsembly's public onboarding starts with a user-owned model credential and
-turns it into a narrower capability for the browser-local OpenClaw guest.
+Clawsembly runs the pinned, unmodified OpenClaw Gateway in the browser and
+renders its real `wizard.start`, `wizard.next`, `wizard.status`, and
+`wizard.cancel` steps. It does not maintain a second copy of OpenClaw's setup
+flow.
 
-The first implementation supports OpenAI and OpenRouter's OpenAI-compatible
-chat-completions endpoints. It deliberately does not accept an arbitrary
-upstream URL because doing so would turn the public Worker into an SSRF proxy.
+The one intentional interception point is model authentication. OpenAI API
+keys, OpenRouter API keys, and OpenAI ChatGPT device OAuth are converted into
+a narrower, expiring operation capability before OpenClaw receives anything.
 
 ## Boundary
 
 ```text
-browser form
-  -> HTTPS
-Cloudflare Worker
-  -> one unique Durable Object
-     - exact provider
-     - exact model
-     - 30-minute TTL
-     - 64-request budget
-     - guest-token digest
-     - separate revocation-token digest
-     - user provider credential
-  -> fixed provider HTTPS endpoint
+official OpenClaw Wizard
+  -> reaches a supported model-auth method
+Clawsembly browser host
+  -> API key, or OpenAI Device Code approval
+Cloudflare Worker + one unique Durable Object
+  -> exact provider
+  -> exact model
+  -> exact API family (Chat Completions or Responses)
+  -> 30-minute TTL
+  -> 64-request budget
+  -> separate guest, polling, and revocation token digests
+  -> API key, or OAuth access + refresh token
+fixed provider HTTPS endpoint
 
 OpenClaw guest
-  -> opaque guest token only
+  -> opaque guest capability only
+  -> browser-local 127.0.0.1:18794
+  -> capability-directory mailbox
+  -> same-origin Worker fetch by the browser host
 ```
 
-The browser clears the API-key field as soon as issuance completes. It does
-not write the provider key, guest capability, or revocation capability to a
-URL, `localStorage`, `sessionStorage`, OPFS, logs, or downloadable evidence.
-Only the opaque guest capability is staged in page memory for a one-time
-runtime handoff. The revocation capability stays in the onboarding module's
-private page memory.
+The browser never writes provider keys, OAuth tokens, device authorization
+identifiers, guest capabilities, or revocation capabilities to a URL,
+`localStorage`, `sessionStorage`, OPFS, logs, or downloadable evidence.
 
-The Durable Object stores the provider credential until the capability is
-revoked or its alarm fires at expiry. Cloudflare therefore participates in
-the secret boundary: this is not an end-to-end browser-to-provider design.
-The provider credential never enters Edge.js, WASIX, OpenClaw, its workspace,
-or its persisted auth profile.
+The Durable Object stores the provider credential until revocation or alarm
+expiry. Cloudflare therefore participates in the secret boundary; this is not
+an end-to-end browser-to-provider custody design. The provider credential
+never enters Edge.js, WASIX, OpenClaw, its workspace, or an OpenClaw auth
+profile.
 
-Revocation overwrites the stored provider credential with `null` before
-returning success. Expiry deletes the whole Durable Object session record.
+Revocation clears API keys, OAuth access tokens, OAuth refresh tokens, and any
+pending device authorization state before returning. Expiry deletes the whole
+Durable Object session record.
 
-## Public API
+## API-key capability
 
-Issue a capability from the same-origin onboarding page:
+Issue from the same-origin onboarding page:
 
 ```http
 POST /api/byok/capabilities
@@ -58,54 +62,111 @@ Content-Type: application/json
 }
 ```
 
-The response contains an opaque guest token, a separate browser-held admin
-token, the fixed OpenAI-compatible base URL, expiry, and request budget.
+Supported API-key providers are fixed to OpenAI and OpenRouter. Arbitrary
+upstream URLs are rejected so the Worker cannot become an SSRF proxy.
 
-OpenClaw is configured as a custom OpenAI-compatible provider:
+The returned capability is restricted to:
 
 ```text
-provider id: clawsembly-byok
-base URL:    https://clawsembly.yhay81.com/api/byok/v1
-API key:     <opaque guest capability>
-model:       <the exact model selected at issuance>
+POST /api/byok/v1/chat/completions
+provider: <issued provider>
+model:    <issued model>
 ```
 
-The broker rejects a different model, an invalid capability, a revoked or
-expired capability, and requests past the fixed budget before contacting the
-provider.
+OpenClaw receives the capability through a custom
+`openai-completions` provider at `http://127.0.0.1:18794/v1`.
 
-Revoke from the same browser page:
+## OpenAI ChatGPT device OAuth
+
+Start device authorization:
 
 ```http
-POST /api/byok/capabilities/revoke
-Authorization: Bearer <admin capability>
+POST /api/oauth/openai/device/start
+Content-Type: application/json
+
+{
+  "model": "gpt-5.6-sol"
+}
 ```
 
-## OpenClaw wizard integration
+The Worker calls OpenAI's device authorization endpoint and returns only the
+user code, verification URL, a polling capability, and a separate revocation
+capability. The browser opens:
 
-The pinned official OpenClaw release exposes `wizard.start`, `wizard.next`,
-`wizard.cancel`, and `wizard.status`. The product path must render those steps
-instead of copying their provider and workspace logic.
+```text
+https://auth.openai.com/codex/device
+```
 
-When the official wizard reaches a sensitive provider-key step, the
-Clawsembly host performs capability issuance and supplies the resulting
-custom-provider values to the guest. The real provider key is never submitted
-as a wizard answer. `src/byok-capability-handoff.ts` is the one-shot,
-memory-only boundary for that runtime integration.
+Poll after the user approves:
 
-The current page proves issuance, direct provider verification, non-persistence
-in browser storage, one-shot handoff, an actual unmodified OpenClaw agent turn,
-and revocation.
+```http
+POST /api/oauth/openai/device/poll
+Authorization: Bearer <poll capability>
+```
 
-The OpenClaw guest connects only to a browser-local HTTP server on
-`127.0.0.1:18794`. That tiny Edge.js process writes the bounded request to a
-shared capability directory. The browser host validates the opaque token and
-exact model, forwards the bytes to the same-origin Cloudflare broker with
-`fetch`, and writes the response back to the mailbox. The guest has no ambient
-external network capability, and the public path no longer needs the native
-virtual-net WebSocket relay.
+The Durable Object exchanges the device authorization code, derives the
+ChatGPT account ID from the access-token identity claim, and stores the access
+and refresh tokens. Neither token is returned to the browser.
 
-Rendering every remaining workspace, channel, and skill choice through the
-official Gateway wizard RPC is the next product integration. The BYOK
-provider secret step is intentionally handled before that wizard so the real
-credential never becomes a wizard answer or auth-profile value.
+The returned guest capability is restricted to:
+
+```text
+POST /api/byok/v1/responses
+provider: OpenAI ChatGPT
+model:    gpt-5.6-sol
+```
+
+OpenClaw uses its official `openai-chatgpt-responses` transport against the
+browser-local bridge. The Worker adds the real OAuth authorization and
+`ChatGPT-Account-Id` header only on the fixed
+`https://chatgpt.com/backend-api/codex/responses` hop. Expiring access tokens
+are refreshed inside the Durable Object under serialized concurrency.
+
+## Official Wizard integration
+
+The browser runtime starts:
+
+1. the exact unmodified Gateway;
+2. one persistent Edge.js guest importing the official OpenClaw
+   `GatewayClient` facade;
+3. a bounded mailbox between the page host and that client.
+
+The persistent client is important: starting a new OpenClaw CLI guest for
+every Wizard answer adds a full runtime startup to every click. One official
+client keeps the Gateway connection alive while the page renders each real
+Wizard step.
+
+At `OpenAI auth method` or `OpenRouter auth method`, Clawsembly displays its
+credential adapter. After capability issuance it answers that official Wizard
+step with `skip`, so no provider secret becomes a Wizard answer or OpenClaw
+auth-profile value. When the Wizard completes, the control guest uses the
+exact package's public `config/config.js` reader, validator, conflict guard,
+and writer against the Gateway's shared state mount. Only the fixed model
+provider fields are merged. This avoids returning OpenClaw's large, redacted
+`config.get` snapshot across the Wasm structured-clone boundary. The control
+guest then rereads and verifies the committed file before reporting success;
+only the opaque capability is selected as the model credential. It then asks
+the official Gateway for a safe restart with `gateway.restart.request`.
+`OPENCLAW_NO_RESPAWN=1` keeps that restart inside the existing browser Wasm
+process. The persistent official client reconnects, and Clawsembly reports
+success only after `agents.list` exposes the selected primary model.
+
+Any other Wizard step marked `sensitive` currently fails closed instead of
+sending a secret into the guest. Adding capability adapters for channel and
+service credentials is future work.
+
+## Verification
+
+Automated coverage includes:
+
+- API-key issue, model/path confinement, budget, revocation, and expiry;
+- OpenAI device start, poll, token exchange, serialized refresh, account
+  identity header, Responses confinement, and revocation;
+- Chat Completions and Responses browser-local mailbox paths;
+- mocked end-to-end Wizard rendering and credential interception;
+- a full Chromium proof that boots the real Edge.js Wasm, mounts the complete
+  OpenClaw image, starts the unmodified Gateway, connects the persistent
+  official GatewayClient, calls `wizard.start`, renders the returned
+  `OpenClaw setup` step, and commits a fixed-shape capability provider through
+  the exact package's public config writer, safely restarts the Gateway in
+  process, reconnects, and verifies the active model through `agents.list`.

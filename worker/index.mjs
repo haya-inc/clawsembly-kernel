@@ -16,7 +16,10 @@ let manifestPromise;
 
 const BYOK_ISSUE_PATH = "/api/byok/capabilities";
 const BYOK_COMPLETION_PATH = "/api/byok/v1/chat/completions";
+const BYOK_RESPONSES_PATH = "/api/byok/v1/responses";
 const BYOK_REVOKE_PATH = "/api/byok/capabilities/revoke";
+const OPENAI_DEVICE_START_PATH = "/api/oauth/openai/device/start";
+const OPENAI_DEVICE_POLL_PATH = "/api/oauth/openai/device/poll";
 
 function applySecurityHeaders(headers) {
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
@@ -121,6 +124,38 @@ async function issueByokCapability(request, env) {
   }, { status: response.status }));
 }
 
+async function startOpenAiDeviceAuthorization(request, env) {
+  if (request.method !== "POST") {
+    return byokError("method_not_allowed", 405);
+  }
+  if (!isSameOriginBrowserRequest(request)) {
+    return byokError("cross_origin_denied", 403);
+  }
+  if (!env.BYOK_BROKERS) {
+    return byokError("byok_broker_unavailable", 503);
+  }
+  const id = env.BYOK_BROKERS.newUniqueId();
+  const response = await env.BYOK_BROKERS.get(id).fetch(
+    new Request("https://byok.internal/oauth/openai/device/start", {
+      method: "POST",
+      headers: {
+        "Content-Type": request.headers.get("Content-Type")
+          ?? "application/octet-stream"
+      },
+      body: await request.arrayBuffer()
+    })
+  );
+  if (!response.ok) return noStoreResponse(response);
+  const body = await response.json();
+  const sessionId = id.toString();
+  return noStoreResponse(Response.json({
+    ...body,
+    pollToken: `${sessionId}.${body.pollToken}`,
+    adminToken: `${sessionId}.${body.adminToken}`,
+    pollUrl: `${new URL(request.url).origin}${OPENAI_DEVICE_POLL_PATH}`
+  }, { status: response.status }));
+}
+
 async function routeByokCapability(request, env, pathname) {
   if (request.method !== "POST") {
     return byokError("method_not_allowed", 405);
@@ -137,6 +172,7 @@ async function routeByokCapability(request, env, pathname) {
     return byokError("unauthorized", 401);
   }
   const body = pathname === "/v1/chat/completions"
+    || pathname === "/v1/responses"
     ? await request.arrayBuffer()
     : undefined;
   const response = await env.BYOK_BROKERS.get(id).fetch(
@@ -154,6 +190,24 @@ async function routeByokCapability(request, env, pathname) {
       ...(body ? { body } : {})
     })
   );
+  if (
+    pathname === "/oauth/openai/device/poll"
+    && response.ok
+    && response.status !== 202
+  ) {
+    const payload = await response.json();
+    if (payload.status === "ready" && payload.capability?.token) {
+      return noStoreResponse(Response.json({
+        ...payload,
+        capability: {
+          ...payload.capability,
+          token: `${capability.id}.${payload.capability.token}`,
+          baseUrl: `${new URL(request.url).origin}/api/byok/v1`,
+          providerId: "clawsembly-byok"
+        }
+      }, { status: response.status }));
+    }
+  }
   return noStoreResponse(response);
 }
 
@@ -400,8 +454,21 @@ async function handleRequest(request, env, context) {
       "/v1/chat/completions"
     );
   }
+  if (url.pathname === BYOK_RESPONSES_PATH) {
+    return routeByokCapability(request, env, "/v1/responses");
+  }
   if (url.pathname === BYOK_REVOKE_PATH) {
     return routeByokCapability(request, env, "/revoke");
+  }
+  if (url.pathname === OPENAI_DEVICE_START_PATH) {
+    return startOpenAiDeviceAuthorization(request, env);
+  }
+  if (url.pathname === OPENAI_DEVICE_POLL_PATH) {
+    return routeByokCapability(
+      request,
+      env,
+      "/oauth/openai/device/poll"
+    );
   }
 
   const manifest = await loadRuntimeManifest(env, request);

@@ -17,7 +17,7 @@ type BridgeRequest = {
   body: string;
   id: string;
   method: "POST";
-  path: "/v1/chat/completions";
+  path: "/v1/chat/completions" | "/v1/responses";
   schemaVersion: 1;
 };
 
@@ -73,12 +73,15 @@ function fixedLengthEqual(left: string, right: string): boolean {
   return difference === 0;
 }
 
-function parseRequest(bytes: Uint8Array, expectedModel: string): BridgeRequest {
+function parseRequest(
+  bytes: Uint8Array,
+  capability: ByokCapabilityHandoff
+): BridgeRequest {
   const value = JSON.parse(decoder.decode(bytes)) as Partial<BridgeRequest>;
   if (
     value.schemaVersion !== 1
     || value.method !== "POST"
-    || value.path !== "/v1/chat/completions"
+    || value.path !== capability.apiPath
     || typeof value.id !== "string"
     || !/^[A-Za-z0-9_-]{1,128}$/u.test(value.id)
     || typeof value.authorization !== "string"
@@ -88,10 +91,14 @@ function parseRequest(bytes: Uint8Array, expectedModel: string): BridgeRequest {
     throw new Error("invalid_bridge_request");
   }
   const body = JSON.parse(value.body) as {
+    input?: unknown;
     messages?: unknown;
     model?: unknown;
   };
-  if (body.model !== expectedModel || !Array.isArray(body.messages)) {
+  const validPayload = capability.apiPath === "/v1/responses"
+    ? Array.isArray(body.input)
+    : Array.isArray(body.messages);
+  if (body.model !== capability.model || !validPayload) {
     throw new Error("request_outside_capability");
   }
   return value as BridgeRequest;
@@ -159,7 +166,7 @@ export function startByokHttpBridge(options: {
     try {
       request = parseRequest(
         await directory.readFile(requestPath),
-        capability.model
+        capability
       );
       if (request.id !== id) throw new Error("request_id_mismatch");
       const expectedAuthorization = `Bearer ${capability.apiKey}`;
@@ -183,7 +190,7 @@ export function startByokHttpBridge(options: {
     let bridgeResponse: BridgeResponse;
     try {
       const upstream = await fetchImpl(
-        `${capability.baseUrl}/chat/completions`,
+        `${capability.baseUrl}${capability.apiPath.slice("/v1".length)}`,
         {
           method: "POST",
           headers: {

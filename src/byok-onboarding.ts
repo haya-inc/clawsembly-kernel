@@ -1,25 +1,77 @@
 import "./byok-onboarding.css";
-import {
-  clearByokCapabilityHandoff,
-  stageByokCapabilityHandoff
-} from "./byok-capability-handoff";
 
 type Capability = {
   adminToken: string;
+  apiPath: "/v1/chat/completions" | "/v1/responses";
   baseUrl: string;
   expiresAt: string;
   maxRequests: number;
   model: string;
+  modelApi: "openai-completions" | "openai-chatgpt-responses";
+  openClawProvider: "clawsembly-byok" | "openai";
   provider: string;
-  providerId: string;
+  providerId: "clawsembly-byok";
   providerLabel: string;
   token: string;
 };
 
-type CapabilityResponse = {
+type WizardOption = {
+  hint?: string;
+  label: string;
+  value: string;
+};
+
+type WizardStep = {
+  executor?: "client" | "gateway";
+  format?: "plain";
+  id: string;
+  initialValue?: unknown;
+  message?: string;
+  options?: WizardOption[];
+  placeholder?: string;
+  sensitive?: boolean;
+  title?: string;
+  type:
+    | "action"
+    | "confirm"
+    | "multiselect"
+    | "note"
+    | "progress"
+    | "select"
+    | "text";
+};
+
+type WizardResult = {
+  done: boolean;
+  error?: string;
+  sessionId?: string;
+  status?: "cancelled" | "done" | "error" | "running";
+  step?: WizardStep;
+};
+
+type DeviceStartResponse = {
+  adminToken: string;
+  authorization: {
+    expiresAt: string;
+    intervalMs: number;
+    userCode: string;
+    verificationUrl: string;
+  };
+  pollToken: string;
+  pollUrl: string;
   schemaVersion: 1;
-  status: "ready";
-  capability: Capability;
+  status: "authorization_pending";
+};
+
+type RpcResponse = {
+  error?: string;
+  ok: boolean;
+  requestId: string;
+  result?: unknown;
+  type:
+    | "clawsembly:wizard-capability-response"
+    | "clawsembly:wizard-capability-config-response"
+    | "clawsembly:wizard-rpc-response";
 };
 
 function requiredElement<T extends Element>(selector: string): T {
@@ -28,32 +80,60 @@ function requiredElement<T extends Element>(selector: string): T {
   return element;
 }
 
-const form = requiredElement<HTMLFormElement>("#byok-form");
+const status = requiredElement<HTMLOutputElement>("#byok-status");
+const steps = Array.from(
+  document.querySelectorAll<HTMLElement>("aside li")
+);
+const wizardOrigin = requiredElement<HTMLElement>("#wizard-origin");
+const wizardTitle = requiredElement<HTMLElement>("#wizard-title");
+const wizardMessage = requiredElement<HTMLElement>("#wizard-message");
+const wizardError = requiredElement<HTMLElement>("#wizard-error");
+const wizardControls = requiredElement<HTMLElement>("#wizard-controls");
+const credentialAdapter =
+  requiredElement<HTMLElement>("#credential-adapter");
+const credentialMethods =
+  requiredElement<HTMLElement>("#credential-methods");
+const oauthStart = requiredElement<HTMLButtonElement>("#oauth-start");
+const apiKeyShow = requiredElement<HTMLButtonElement>("#api-key-show");
+const oauthPanel = requiredElement<HTMLElement>("#oauth-panel");
+const oauthVerifyLink =
+  requiredElement<HTMLAnchorElement>("#oauth-verify-link");
+const oauthCode = requiredElement<HTMLElement>("#oauth-code");
+const oauthStatus = requiredElement<HTMLElement>("#oauth-status");
+const apiKeyPanel = requiredElement<HTMLFormElement>("#api-key-panel");
 const provider = requiredElement<HTMLSelectElement>("#byok-provider");
 const model = requiredElement<HTMLInputElement>("#byok-model");
 const apiKey = requiredElement<HTMLInputElement>("#byok-key");
 const connectButton =
   requiredElement<HTMLButtonElement>("#byok-connect");
-const testButton = requiredElement<HTMLButtonElement>("#byok-test");
-const launchButton = requiredElement<HTMLButtonElement>("#byok-launch");
-const revokeButton = requiredElement<HTMLButtonElement>("#byok-revoke");
-const status = requiredElement<HTMLOutputElement>("#byok-status");
-const sessionPanel = requiredElement<HTMLElement>(".byok-session");
 const expiry = requiredElement<HTMLElement>("#byok-expiry");
 const budget = requiredElement<HTMLElement>("#byok-budget");
-const testResult = requiredElement<HTMLElement>("#byok-test-result");
+const credentialResult =
+  requiredElement<HTMLElement>("#credential-result");
 const runtimePanel = requiredElement<HTMLElement>(".byok-runtime");
+const runtimeSummary = requiredElement<HTMLElement>("#runtime-summary");
 const runtimeFrame =
   requiredElement<HTMLIFrameElement>("#byok-runtime-frame");
-const steps = Array.from(document.querySelectorAll<HTMLElement>(
-  "aside li"
-));
+const revokeButton = requiredElement<HTMLButtonElement>("#byok-revoke");
 
+const pendingRequests = new Map<string, {
+  reject: (reason: Error) => void;
+  resolve: (value: unknown) => void;
+  timeout: number;
+}>();
+
+let wizardSessionId: string | undefined;
+let currentStep: WizardStep | undefined;
+let selectedProvider: "openai" | "openrouter" = "openai";
 let capability: Capability | undefined;
-let capabilityVerified = false;
+let oauthAdminToken: string | undefined;
+let capabilityAttached = false;
+let wizardStarted = false;
+let finishing = false;
+let runtimeHandshakeTimer: number | undefined;
 
 function setStatus(
-  state: "idle" | "running" | "ready" | "fail",
+  state: "fail" | "idle" | "ready" | "running",
   label: string
 ): void {
   status.dataset.state = state;
@@ -73,32 +153,345 @@ function setStep(activeIndex: number): void {
   });
 }
 
-function setBusy(busy: boolean): void {
-  connectButton.disabled = busy || capability !== undefined;
-  provider.disabled = busy || capability !== undefined;
-  model.disabled = busy || capability !== undefined;
-  apiKey.disabled = busy || capability !== undefined;
-  testButton.disabled = busy || capability === undefined;
-  launchButton.disabled =
-    busy || capability === undefined || !capabilityVerified;
-  revokeButton.disabled = busy || capability === undefined;
+function showError(message?: string): void {
+  wizardError.hidden = !message;
+  wizardError.textContent = message ?? "";
 }
 
 function errorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
-  return "接続を準備できませんでした";
+  return error instanceof Error && error.message
+    ? error.message
+    : "OpenClawのセットアップを続行できませんでした";
 }
 
-async function issueCapability(): Promise<void> {
-  setBusy(true);
-  setStatus("running", "接続を作成中");
-  testResult.textContent = "";
+function postRuntimeRequest(
+  type:
+    | "clawsembly:wizard-capability-attach"
+    | "clawsembly:wizard-capability-configure"
+    | "clawsembly:wizard-rpc-request",
+  payload: Record<string, unknown>
+): Promise<unknown> {
+  const requestId = crypto.randomUUID();
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      pendingRequests.delete(requestId);
+      reject(new Error("ブラウザ内OpenClawから応答がありません"));
+    }, 75_000);
+    pendingRequests.set(requestId, { reject, resolve, timeout });
+    runtimeFrame.contentWindow?.postMessage({
+      type,
+      requestId,
+      ...payload
+    }, location.origin);
+  });
+}
+
+async function rpc(method: string, params: unknown): Promise<unknown> {
+  return postRuntimeRequest("clawsembly:wizard-rpc-request", {
+    method,
+    params
+  });
+}
+
+function createButton(
+  label: string,
+  onClick: () => void,
+  options?: { hint?: string; primary?: boolean }
+): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = options?.primary
+    ? "wizard-choice wizard-choice-primary"
+    : "wizard-choice";
+  const title = document.createElement("span");
+  title.textContent = label;
+  button.append(title);
+  if (options?.hint) {
+    const hint = document.createElement("small");
+    hint.textContent = options.hint;
+    button.append(hint);
+  }
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function setWizardBusy(label: string): void {
+  wizardControls.replaceChildren();
+  const loader = document.createElement("span");
+  loader.className = "wizard-loader";
+  loader.setAttribute("aria-hidden", "true");
+  wizardControls.append(loader, document.createTextNode(label));
+}
+
+async function answerWizard(step: WizardStep, value?: unknown): Promise<void> {
+  if (!wizardSessionId) throw new Error("Wizard session is not available");
+  showError();
+  setWizardBusy("公式Wizardへ回答を送信中…");
+  try {
+    const result = await rpc("wizard.next", {
+      sessionId: wizardSessionId,
+      answer: {
+        stepId: step.id,
+        ...(value === undefined ? {} : { value })
+      }
+    }) as WizardResult;
+    await handleWizardResult(result);
+  } catch (error) {
+    renderWizardStep(step);
+    showError(errorMessage(error));
+  }
+}
+
+function renderSelect(step: WizardStep): void {
+  let options = step.options ?? [];
+  if (step.message === "Model/auth provider") {
+    options = options.filter((option) =>
+      option.value === "openai"
+      || option.value === "openrouter"
+      || option.value === "skip");
+  }
+  if (options.length === 0) {
+    wizardControls.append(createButton(
+      "モデル接続を後で設定",
+      () => void answerWizard(step, "skip"),
+      { primary: true }
+    ));
+    return;
+  }
+  for (const option of options) {
+    wizardControls.append(createButton(
+      option.label,
+      () => {
+        if (
+          step.message === "Model/auth provider"
+          && (option.value === "openai" || option.value === "openrouter")
+        ) {
+          selectedProvider = option.value;
+        }
+        void answerWizard(step, option.value);
+      },
+      {
+        hint: option.hint,
+        primary: option.value === step.initialValue
+      }
+    ));
+  }
+}
+
+function renderText(step: WizardStep): void {
+  if (step.sensitive) {
+    showError(
+      "この秘密入力はまだClawsembly能力境界へ接続されていないため、"
+      + "安全側に倒してWasmゲストへは送信しません。前の選択へ戻ってください。"
+    );
+    return;
+  }
+  const form = document.createElement("form");
+  form.className = "wizard-text-form";
+  const input = document.createElement("input");
+  input.value = typeof step.initialValue === "string"
+    ? step.initialValue
+    : "";
+  input.placeholder = step.placeholder ?? "";
+  input.autocomplete = "off";
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.textContent = "続ける →";
+  form.append(input, submit);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void answerWizard(step, input.value);
+  });
+  wizardControls.append(form);
+  input.focus();
+}
+
+function renderMultiselect(step: WizardStep): void {
+  const form = document.createElement("form");
+  form.className = "wizard-multiselect";
+  const initial = new Set(
+    Array.isArray(step.initialValue)
+      ? step.initialValue.filter((value): value is string =>
+          typeof value === "string")
+      : []
+  );
+  for (const option of step.options ?? []) {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.name = "wizard-option";
+    input.value = option.value;
+    input.checked = initial.has(option.value);
+    const copy = document.createElement("span");
+    copy.textContent = option.label;
+    label.append(input, copy);
+    form.append(label);
+  }
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.textContent = "選択して続ける →";
+  form.append(submit);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const values = Array.from(
+      form.querySelectorAll<HTMLInputElement>(
+        "input[name=wizard-option]:checked"
+      )
+    ).map((input) => input.value);
+    void answerWizard(step, values);
+  });
+  wizardControls.append(form);
+}
+
+function isCredentialMethodStep(step: WizardStep): boolean {
+  return step.type === "select"
+    && (
+      step.message === "OpenAI auth method"
+      || step.message === "OpenRouter auth method"
+    );
+}
+
+function showCredentialAdapter(step: WizardStep): void {
+  setStep(2);
+  wizardControls.replaceChildren();
+  wizardControls.append(document.createTextNode(
+    "Clawsemblyの秘密情報アダプターで接続を完了してください。"
+  ));
+  credentialAdapter.hidden = false;
+  credentialAdapter.scrollIntoView({ behavior: "smooth", block: "start" });
+  selectedProvider = step.message === "OpenRouter auth method"
+    ? "openrouter"
+    : "openai";
+  provider.value = selectedProvider;
+  provider.disabled = selectedProvider === "openrouter";
+  oauthStart.hidden = selectedProvider !== "openai";
+  if (capabilityAttached && capability) {
+    credentialMethods.hidden = true;
+    oauthPanel.hidden = true;
+    apiKeyPanel.hidden = true;
+    credentialResult.textContent =
+      `${capability.providerLabel} · 能力境界へ接続済み`;
+    wizardControls.replaceChildren(createButton(
+      "接続済みの能力で公式Wizardを再開 →",
+      () => void answerWizard(step, "skip"),
+      { primary: true }
+    ));
+    return;
+  }
+  credentialMethods.hidden = false;
+  oauthPanel.hidden = true;
+  apiKeyPanel.hidden = true;
+  credentialResult.textContent = "";
+}
+
+function renderWizardStep(step: WizardStep): void {
+  currentStep = step;
+  setStep(1);
+  wizardOrigin.textContent = `Official OpenClaw Wizard · ${step.type}`;
+  wizardTitle.textContent = step.title?.trim()
+    || step.message?.trim()
+    || "OpenClaw setup";
+  wizardMessage.textContent = step.title && step.message
+    ? step.message
+    : "この画面はGatewayのwizard.start / wizard.nextをそのまま描画しています。";
+  wizardControls.replaceChildren();
+  showError();
+
+  if (isCredentialMethodStep(step)) {
+    showCredentialAdapter(step);
+    return;
+  }
+  credentialAdapter.hidden = true;
+  switch (step.type) {
+    case "select":
+      renderSelect(step);
+      break;
+    case "text":
+      renderText(step);
+      break;
+    case "confirm":
+      wizardControls.append(
+        createButton(
+          "はい",
+          () => void answerWizard(step, true),
+          { primary: step.initialValue === true }
+        ),
+        createButton(
+          "いいえ",
+          () => void answerWizard(step, false),
+          { primary: step.initialValue === false }
+        )
+      );
+      break;
+    case "multiselect":
+      renderMultiselect(step);
+      break;
+    case "note":
+    case "action":
+    case "progress":
+      wizardControls.append(createButton(
+        "続ける →",
+        () => void answerWizard(step),
+        { primary: true }
+      ));
+      break;
+  }
+}
+
+async function attachCapability(nextCapability: Capability): Promise<void> {
+  await postRuntimeRequest("clawsembly:wizard-capability-attach", {
+    capability: {
+      apiKey: nextCapability.token,
+      apiPath: nextCapability.apiPath,
+      baseUrl: nextCapability.baseUrl,
+      expiresAt: nextCapability.expiresAt,
+      model: nextCapability.model,
+      modelApi: nextCapability.modelApi,
+      openClawProvider: nextCapability.openClawProvider,
+      providerId: "clawsembly-byok"
+    }
+  });
+}
+
+async function finishCredential(nextCapability: Capability): Promise<void> {
+  if (!currentStep) throw new Error("Wizard credential step is unavailable");
+  capability = nextCapability;
+  setStatus("running", "能力をOpenClawへ接続中");
+  credentialResult.textContent =
+    "短命の能力トークンをブラウザ内ループバックへ接続しています…";
+  try {
+    await attachCapability(nextCapability);
+    capabilityAttached = true;
+  } catch (error) {
+    await fetch("/api/byok/capabilities/revoke", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${nextCapability.adminToken}`
+      }
+    }).catch(() => undefined);
+    capability = undefined;
+    throw error;
+  }
+  expiry.textContent = new Intl.DateTimeFormat("ja-JP", {
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(nextCapability.expiresAt)) + "まで";
+  budget.textContent = `最大${nextCapability.maxRequests}リクエスト`;
+  credentialResult.textContent =
+    `${nextCapability.providerLabel} · 秘密情報をゲストへ渡さず接続済み`;
+  setStatus("ready", "能力境界 接続済み");
+  credentialAdapter.hidden = true;
+  await answerWizard(currentStep, "skip");
+}
+
+async function issueApiKeyCapability(): Promise<void> {
+  connectButton.disabled = true;
+  apiKey.disabled = true;
+  credentialResult.textContent = "期限付き能力を発行しています…";
   try {
     const response = await fetch("/api/byok/capabilities", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         provider: provider.value,
         model: model.value.trim(),
@@ -106,127 +499,220 @@ async function issueCapability(): Promise<void> {
       })
     });
     apiKey.value = "";
-    const body = await response.json() as CapabilityResponse & {
+    const body = await response.json() as {
+      capability?: Capability;
       error?: { code?: string };
+      status?: string;
     };
-    if (!response.ok || body.status !== "ready") {
+    if (!response.ok || body.status !== "ready" || !body.capability) {
       throw new Error(body.error?.code ?? `HTTP ${response.status}`);
     }
-    capability = body.capability;
-    capabilityVerified = false;
-    stageByokCapabilityHandoff({
-      apiKey: capability.token,
-      baseUrl: capability.baseUrl,
-      expiresAt: capability.expiresAt,
-      model: capability.model,
-      providerId: "clawsembly-byok"
-    });
-    expiry.textContent = new Intl.DateTimeFormat("ja-JP", {
-      hour: "2-digit",
-      minute: "2-digit"
-    }).format(new Date(capability.expiresAt)) + "まで";
-    budget.textContent = `最大${capability.maxRequests}リクエスト`;
-    sessionPanel.hidden = false;
-    setStep(1);
-    setStatus("ready", `${capability.providerLabel} 接続済み`);
+    await finishCredential(body.capability);
   } catch (error) {
     apiKey.value = "";
-    setStatus("fail", "接続失敗");
-    testResult.textContent = errorMessage(error);
+    credentialResult.textContent = errorMessage(error);
+    setStatus("fail", "能力発行失敗");
   } finally {
-    setBusy(false);
+    connectButton.disabled = false;
+    apiKey.disabled = false;
   }
 }
 
-async function testCapability(): Promise<void> {
-  if (!capability) return;
-  setBusy(true);
-  setStatus("running", "モデルを確認中");
-  testResult.textContent = "モデルへ最小の確認リクエストを送信しています…";
-  try {
-    const response = await fetch(`${capability.baseUrl}/chat/completions`, {
+async function pollDeviceAuthorization(
+  start: DeviceStartResponse
+): Promise<void> {
+  let retryDelayMs = start.authorization.intervalMs;
+  for (;;) {
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, retryDelayMs);
+    });
+    const response = await fetch(start.pollUrl, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${capability.token}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: capability.model,
-        messages: [{
-          role: "user",
-          content: "Reply with exactly READY"
-        }],
-        stream: false,
-        max_completion_tokens: 12
-      })
+        Authorization: `Bearer ${start.pollToken}`
+      }
     });
     const body = await response.json() as {
-      choices?: Array<{
-        message?: { content?: string };
-      }>;
-      error?: { code?: string; message?: string };
+      capability?: Omit<Capability, "adminToken">;
+      error?: { code?: string };
+      retryAfterMs?: number;
+      status?: string;
     };
-    if (!response.ok) {
-      throw new Error(
-        body.error?.message
-        ?? body.error?.code
-        ?? `HTTP ${response.status}`
-      );
+    if (response.status === 202 && body.status === "authorization_pending") {
+      retryDelayMs = typeof body.retryAfterMs === "number"
+        && Number.isFinite(body.retryAfterMs)
+        ? Math.max(1_000, Math.trunc(body.retryAfterMs))
+        : start.authorization.intervalMs;
+      oauthStatus.textContent =
+        "OpenAI側の承認を待っています。この画面は閉じないでください。";
+      continue;
     }
-    const reply = body.choices?.[0]?.message?.content?.trim();
-    if (!reply) throw new Error("モデルから応答がありませんでした");
-    capabilityVerified = true;
-    testResult.textContent = `接続確認済み · ${reply}`;
-    setStep(1);
-    setStatus("ready", "OpenClawへ接続可能");
+    if (!response.ok || body.status !== "ready" || !body.capability) {
+      throw new Error(body.error?.code ?? `HTTP ${response.status}`);
+    }
+    await finishCredential({
+      ...body.capability,
+      adminToken: start.adminToken
+    });
+    return;
+  }
+}
+
+async function startDeviceAuthorization(): Promise<void> {
+  oauthStart.disabled = true;
+  credentialMethods.hidden = true;
+  oauthPanel.hidden = false;
+  oauthStatus.textContent = "OpenAI Device Codeを発行しています…";
+  setStatus("running", "OpenAI認証を準備中");
+  try {
+    const response = await fetch("/api/oauth/openai/device/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-sol" })
+    });
+    const body = await response.json() as DeviceStartResponse & {
+      error?: { code?: string };
+    };
+    if (!response.ok || body.status !== "authorization_pending") {
+      throw new Error(body.error?.code ?? `HTTP ${response.status}`);
+    }
+    oauthAdminToken = body.adminToken;
+    oauthCode.textContent = body.authorization.userCode;
+    oauthVerifyLink.href = body.authorization.verificationUrl;
+    oauthStatus.textContent =
+      "コードをコピーしてOpenAIで承認してください。承認後、自動で戻ります。";
+    await pollDeviceAuthorization(body);
   } catch (error) {
-    testResult.textContent = errorMessage(error);
-    setStatus("fail", "モデル確認失敗");
+    const failedAdminToken = oauthAdminToken;
+    oauthAdminToken = undefined;
+    if (failedAdminToken) {
+      await fetch("/api/byok/capabilities/revoke", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${failedAdminToken}`
+        }
+      }).catch(() => undefined);
+    }
+    oauthStatus.textContent = errorMessage(error);
+    setStatus("fail", "OpenAI認証失敗");
+    credentialMethods.hidden = false;
   } finally {
-    setBusy(false);
+    oauthStart.disabled = false;
+  }
+}
+
+async function applyCapabilityConfig(): Promise<void> {
+  if (!capability) return;
+  await postRuntimeRequest(
+    "clawsembly:wizard-capability-configure",
+    {}
+  );
+}
+
+async function finishWizard(result: WizardResult): Promise<void> {
+  if (finishing) return;
+  finishing = true;
+  setWizardBusy("公式Wizardの設定を確定しています…");
+  setStatus("running", "OpenClaw設定を確定中");
+  try {
+    if (result.status === "error") {
+      throw new Error(result.error ?? "Official Wizard failed");
+    }
+    await applyCapabilityConfig();
+    setStep(3);
+    wizardOrigin.textContent = "Official OpenClaw Wizard · complete";
+    wizardTitle.textContent = "OpenClawの準備が完了しました";
+    wizardMessage.textContent = capability
+      ? "公式Wizardの設定に、秘密を含まないモデル能力を接続しました。"
+      : "公式Wizardを完了しました。モデル接続は後から追加できます。";
+    wizardControls.replaceChildren();
+    wizardControls.append(createButton(
+      "実行状態を見る",
+      () => runtimePanel.scrollIntoView({
+        behavior: "smooth",
+        block: "start"
+      }),
+      { primary: true }
+    ));
+    runtimeSummary.textContent = capability
+      ? `${capability.providerLabel} / ${capability.model} · `
+        + "不透明な短命能力で接続済み"
+      : "モデル接続なしで公式Wizardを完了";
+    runtimePanel.hidden = false;
+    revokeButton.disabled = !capability;
+    setStatus("ready", "OpenClaw ready");
+  } catch (error) {
+    finishing = false;
+    showError(errorMessage(error));
+    setStatus("fail", "設定確定失敗");
+    wizardControls.replaceChildren(createButton(
+      "設定確定を再試行",
+      () => void finishWizard(result),
+      { primary: true }
+    ));
+  }
+}
+
+async function handleWizardResult(result: WizardResult): Promise<void> {
+  if (result.sessionId) wizardSessionId = result.sessionId;
+  if (result.error) showError(result.error);
+  if (result.done) {
+    await finishWizard(result);
+    return;
+  }
+  if (!result.step) {
+    throw new Error("Official Wizard returned no next step");
+  }
+  renderWizardStep(result.step);
+}
+
+async function startWizard(): Promise<void> {
+  if (wizardStarted) return;
+  wizardStarted = true;
+  setStep(1);
+  setStatus("running", "Official Wizard接続中");
+  setWizardBusy("wizard.startを実行中…");
+  try {
+    const result = await rpc("wizard.start", {
+      mode: "local",
+      workspace: "/openclaw/.clawsembly-gateway-workspace"
+    }) as WizardResult;
+    await handleWizardResult(result);
+  } catch (error) {
+    wizardStarted = false;
+    showError(errorMessage(error));
+    setStatus("fail", "Wizard接続失敗");
   }
 }
 
 async function revokeCapability(): Promise<void> {
-  if (!capability) return;
-  const activeCapability = capability;
-  capability = undefined;
-  capabilityVerified = false;
-  clearByokCapabilityHandoff();
-  setBusy(true);
-  setStatus("running", "接続を破棄中");
+  const active = capability;
+  const adminToken = active?.adminToken ?? oauthAdminToken;
+  if (!adminToken) return;
+  revokeButton.disabled = true;
   try {
     const response = await fetch("/api/byok/capabilities/revoke", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${activeCapability.adminToken}`
+        Authorization: `Bearer ${adminToken}`
       }
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    sessionPanel.hidden = true;
-    runtimePanel.hidden = true;
-    runtimeFrame.removeAttribute("src");
-    testResult.textContent = "";
-    setStep(0);
-    setStatus("idle", "破棄済み");
+    capability = undefined;
+    oauthAdminToken = undefined;
+    runtimeSummary.textContent =
+      "モデル能力を失効しました。再読み込みして再設定できます。";
+    setStatus("idle", "モデル能力 失効済み");
   } catch (error) {
-    testResult.textContent = errorMessage(error);
-    setStatus("fail", "破棄確認失敗");
-  } finally {
-    setBusy(false);
+    setStatus("fail", errorMessage(error));
+    revokeButton.disabled = false;
   }
 }
 
-function launchOpenClaw(): void {
-  if (!capability || !capabilityVerified) return;
-  runtimePanel.hidden = false;
-  setStep(2);
-  setStatus("running", "OpenClawを起動中");
-  runtimeFrame.src = "/byok-runtime.html?proof=byok-agent-turn";
-  runtimePanel.scrollIntoView({
-    behavior: "smooth",
-    block: "start"
-  });
+function startOnboardingRuntime(): void {
+  runtimeFrame.contentWindow?.postMessage({
+    type: "clawsembly:onboarding-runtime-start"
+  }, location.origin);
 }
 
 window.addEventListener("message", (event: MessageEvent<unknown>) => {
@@ -240,66 +726,105 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
   }
   const message = event.data as {
     label?: unknown;
+    openclawVersion?: unknown;
     state?: unknown;
     type?: unknown;
   };
-  if (message.type === "clawsembly:byok-runtime-status") {
-    const state = message.state === "pass"
-      ? "ready"
-      : message.state === "fail"
-        ? "fail"
-        : "running";
-    setStatus(
-      state,
-      typeof message.label === "string"
-        ? message.label
-        : "OpenClawを起動中"
-    );
+  if (
+    message.type === "clawsembly:wizard-rpc-response"
+    || message.type === "clawsembly:wizard-capability-response"
+    || message.type === "clawsembly:wizard-capability-config-response"
+  ) {
+    const response = message as RpcResponse;
+    const pending = pendingRequests.get(response.requestId);
+    if (!pending) return;
+    pendingRequests.delete(response.requestId);
+    window.clearTimeout(pending.timeout);
+    if (response.ok) pending.resolve(response.result);
+    else pending.reject(new Error(response.error ?? "OpenClaw RPC failed"));
+    return;
+  }
+  if (message.type === "clawsembly:byok-runtime-ready") {
+    startOnboardingRuntime();
+    return;
+  }
+  if (message.type === "clawsembly:wizard-gateway-ready") {
+    if (runtimeHandshakeTimer !== undefined) {
+      window.clearInterval(runtimeHandshakeTimer);
+      runtimeHandshakeTimer = undefined;
+    }
+    wizardOrigin.textContent =
+      `Official OpenClaw Wizard · ${
+        typeof message.openclawVersion === "string"
+          ? message.openclawVersion
+          : "connected"
+      }`;
+    void startWizard();
     return;
   }
   if (
-    message.type !== "clawsembly:byok-runtime-ready"
-    || !capability
+    message.type === "clawsembly:byok-runtime-status"
+    && !wizardStarted
   ) {
-    return;
+    const label = typeof message.label === "string"
+      ? message.label
+      : "ブラウザカーネルを起動中";
+    setStatus(
+      message.state === "fail" ? "fail" : "running",
+      label
+    );
+    wizardMessage.textContent = label;
   }
-  runtimeFrame.contentWindow?.postMessage({
-    type: "clawsembly:byok-runtime-start",
-    capability: {
-      apiKey: capability.token,
-      baseUrl: capability.baseUrl,
-      expiresAt: capability.expiresAt,
-      model: capability.model,
-      providerId: "clawsembly-byok"
-    }
-  }, location.origin);
 });
 
-form.addEventListener("submit", (event) => {
+runtimeFrame.addEventListener("load", startOnboardingRuntime);
+
+apiKeyShow.addEventListener("click", () => {
+  credentialMethods.hidden = true;
+  oauthPanel.hidden = true;
+  apiKeyPanel.hidden = false;
+  provider.value = selectedProvider;
+  provider.disabled = selectedProvider === "openrouter";
+  model.value = selectedProvider === "openrouter"
+    ? "openai/gpt-5.6"
+    : "gpt-5.6";
+  apiKey.focus();
+});
+oauthStart.addEventListener("click", () => {
+  void startDeviceAuthorization();
+});
+apiKeyPanel.addEventListener("submit", (event) => {
   event.preventDefault();
-  void issueCapability();
+  void issueApiKeyCapability();
 });
-testButton.addEventListener("click", () => {
-  void testCapability();
-});
-launchButton.addEventListener("click", launchOpenClaw);
 revokeButton.addEventListener("click", () => {
   void revokeCapability();
 });
 
 window.addEventListener("pagehide", () => {
-  if (!capability) return;
+  const adminToken = capability?.adminToken ?? oauthAdminToken;
+  if (!adminToken) return;
   void fetch("/api/byok/capabilities/revoke", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${capability.adminToken}`
+      Authorization: `Bearer ${adminToken}`
     },
     keepalive: true
   });
   capability = undefined;
-  capabilityVerified = false;
-  clearByokCapabilityHandoff();
+  oauthAdminToken = undefined;
 });
 
 setStep(0);
-setBusy(false);
+setStatus("running", "Kernel起動中");
+startOnboardingRuntime();
+runtimeHandshakeTimer = window.setInterval(() => {
+  if (wizardStarted) {
+    if (runtimeHandshakeTimer !== undefined) {
+      window.clearInterval(runtimeHandshakeTimer);
+      runtimeHandshakeTimer = undefined;
+    }
+    return;
+  }
+  startOnboardingRuntime();
+}, 500);

@@ -60,9 +60,12 @@ test("forwards a model-bound mailbox request with only the opaque token", async 
   }> = [];
   const capability = {
     apiKey: "opaque-guest-capability",
+    apiPath: "/v1/chat/completions" as const,
     baseUrl: "https://clawsembly.yhay81.com/api/byok/v1",
     expiresAt: "2026-07-29T01:00:00.000Z",
+    modelApi: "openai-completions" as const,
     model: "gpt-5.6",
+    openClawProvider: "clawsembly-byok" as const,
     providerId: "clawsembly-byok" as const
   };
   const bridge = startByokHttpBridge({
@@ -125,9 +128,12 @@ test("rejects model or token widening before host fetch", async () => {
   const bridge = startByokHttpBridge({
     capability: {
       apiKey: "opaque-guest-capability",
+      apiPath: "/v1/chat/completions",
       baseUrl: "https://clawsembly.yhay81.com/api/byok/v1",
       expiresAt: "2026-07-29T01:00:00.000Z",
+      modelApi: "openai-completions",
       model: "gpt-5.6",
+      openClawProvider: "clawsembly-byok",
       providerId: "clawsembly-byok"
     },
     directory,
@@ -156,6 +162,53 @@ test("rejects model or token widening before host fetch", async () => {
   const response = JSON.parse(new TextDecoder().decode(responseBytes));
   assert.equal(response.status, 400);
   assert.equal(fetches, 0);
+  await bridge.stop();
+});
+
+test("forwards an OAuth Responses capability only on its fixed path", async () => {
+  const directory = new MemoryDirectory();
+  const calls: string[] = [];
+  const bridge = startByokHttpBridge({
+    capability: {
+      apiKey: "opaque-oauth-capability",
+      apiPath: "/v1/responses",
+      baseUrl: "https://clawsembly.yhay81.com/api/byok/v1",
+      expiresAt: "2026-07-29T01:00:00.000Z",
+      modelApi: "openai-chatgpt-responses",
+      model: "gpt-5.6-sol",
+      openClawProvider: "openai",
+      providerId: "clawsembly-byok"
+    },
+    directory,
+    pollIntervalMs: 1,
+    fetchImpl: async (input) => {
+      calls.push(String(input));
+      return new Response("data: [DONE]\n\n", {
+        headers: { "Content-Type": "text/event-stream" }
+      });
+    }
+  });
+  await directory.writeFile("/requests/oauth.json", JSON.stringify({
+    schemaVersion: 1,
+    id: "oauth",
+    method: "POST",
+    path: "/v1/responses",
+    authorization: "Bearer opaque-oauth-capability",
+    body: JSON.stringify({
+      model: "gpt-5.6-sol",
+      input: [{ role: "user", content: "hello" }],
+      stream: true
+    })
+  }));
+  const responseBytes = await waitForFile(
+    directory,
+    "/responses/oauth.json"
+  );
+  const response = JSON.parse(new TextDecoder().decode(responseBytes));
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, [
+    "https://clawsembly.yhay81.com/api/byok/v1/responses"
+  ]);
   await bridge.stop();
 });
 

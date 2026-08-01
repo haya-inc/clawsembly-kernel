@@ -8,6 +8,8 @@ import {
 type RuntimeStartMessage = {
   capability: ByokCapabilityHandoff;
   type: "clawsembly:byok-runtime-start";
+} | {
+  type: "clawsembly:onboarding-runtime-start";
 };
 
 function isRuntimeStartMessage(value: unknown): value is RuntimeStartMessage {
@@ -15,17 +17,32 @@ function isRuntimeStartMessage(value: unknown): value is RuntimeStartMessage {
     return false;
   }
   const message = value as Partial<RuntimeStartMessage>;
+  if (message.type === "clawsembly:onboarding-runtime-start") {
+    return true;
+  }
+  if (message.type !== "clawsembly:byok-runtime-start") return false;
   const capability = message.capability;
-  return message.type === "clawsembly:byok-runtime-start"
-    && Boolean(capability)
+  return Boolean(capability)
     && capability?.providerId === "clawsembly-byok"
     && typeof capability.apiKey === "string"
     && capability.apiKey.length > 0
+    && (
+      capability.apiPath === "/v1/chat/completions"
+      || capability.apiPath === "/v1/responses"
+    )
     && typeof capability.baseUrl === "string"
     && isSecureByokBaseUrl(capability.baseUrl)
     && typeof capability.expiresAt === "string"
+    && (
+      capability.modelApi === "openai-completions"
+      || capability.modelApi === "openai-chatgpt-responses"
+    )
     && typeof capability.model === "string"
-    && capability.model.length > 0;
+    && capability.model.length > 0
+    && (
+      capability.openClawProvider === "clawsembly-byok"
+      || capability.openClawProvider === "openai"
+    );
 }
 
 let started = false;
@@ -53,7 +70,9 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
     return;
   }
   started = true;
-  stageByokCapabilityHandoff(event.data.capability);
+  if (event.data.type === "clawsembly:byok-runtime-start") {
+    stageByokCapabilityHandoff(event.data.capability);
+  }
   void import("./openclaw-gateway-health-probe");
 });
 

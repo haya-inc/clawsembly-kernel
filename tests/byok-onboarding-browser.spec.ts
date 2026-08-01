@@ -1,14 +1,131 @@
 import { expect, test } from "@playwright/test";
 
-test("keeps BYOK secrets out of browser storage and advances the setup", async ({
+const runtimeStub = `<!doctype html>
+<html><body>
+<output id="status">stub runtime</output>
+<script>
+const reply=(request,type,result,ok=true)=>parent.postMessage({
+  type,requestId:request.requestId,ok,
+  ...(ok?{result}:{error:String(result)})
+},location.origin);
+let credentialAttempts=0;
+parent.postMessage({type:"clawsembly:byok-runtime-ready"},location.origin);
+addEventListener("message",(event)=>{
+  const message=event.data;
+  if(message.type==="clawsembly:onboarding-runtime-start"){
+    parent.postMessage({
+      type:"clawsembly:wizard-gateway-ready",
+      openclawVersion:"2026.7.1-2"
+    },location.origin);
+    return;
+  }
+  if(message.type==="clawsembly:wizard-capability-attach"){
+    reply(message,"clawsembly:wizard-capability-response",{status:"attached"});
+    return;
+  }
+  if(message.type==="clawsembly:wizard-capability-configure"){
+    document.body.dataset.capabilityConfigured="true";
+    reply(message,"clawsembly:wizard-capability-config-response",{
+      primaryModel:"clawsembly-byok/gpt-5.6",
+      providerId:"clawsembly-byok"
+    });
+    return;
+  }
+  if(message.type!=="clawsembly:wizard-rpc-request")return;
+  if(message.method==="wizard.start"){
+    reply(message,"clawsembly:wizard-rpc-response",{
+      sessionId:"wizard-session",
+      done:false,
+      status:"running",
+      step:{
+        id:"intro",
+        type:"note",
+        title:"OpenClaw onboarding",
+        message:"Welcome to OpenClaw"
+      }
+    });
+    return;
+  }
+  if(message.method==="wizard.next"){
+    const stepId=message.params.answer.stepId;
+    if(stepId==="intro"){
+      reply(message,"clawsembly:wizard-rpc-response",{
+        done:false,
+        status:"running",
+        step:{
+          id:"provider",
+          type:"select",
+          message:"Model/auth provider",
+          options:[
+            {value:"openai",label:"OpenAI"},
+            {value:"openrouter",label:"OpenRouter"},
+            {value:"__more",label:"More…"},
+            {value:"skip",label:"Skip for now"}
+          ]
+        }
+      });
+      return;
+    }
+    if(stepId==="provider"){
+      reply(message,"clawsembly:wizard-rpc-response",{
+        done:false,
+        status:"running",
+        step:{
+          id:"openai-method",
+          type:"select",
+          message:"OpenAI auth method",
+          options:[
+            {value:"openai-device-code",label:"OpenAI Device Code"},
+            {value:"openai-api-key",label:"OpenAI API key"},
+            {value:"__back",label:"Back"}
+          ]
+        }
+      });
+      return;
+    }
+    if(stepId==="openai-method"&&++credentialAttempts===1){
+      reply(
+        message,
+        "clawsembly:wizard-rpc-response",
+        "temporary Wizard transport failure",
+        false
+      );
+      return;
+    }
+    reply(message,"clawsembly:wizard-rpc-response",{
+      done:true,
+      status:"done"
+    });
+    return;
+  }
+});
+</script>
+</body></html>`;
+
+test("runs the official Wizard and adapts only its credential step", async ({
   page
 }, testInfo) => {
   const apiKey = "sk-user-owned-browser-test-key";
   const sessionId = "a".repeat(64);
   const guestToken = `${sessionId}.guest_capability_for_browser_test_123456`;
   const adminToken = `${sessionId}.admin_capability_for_browser_test_123456`;
-  const requests: Array<{ apiKey?: string; authorization?: string }> = [];
+  const requests: Array<{
+    apiKey?: string;
+    authorization?: string;
+  }> = [];
 
+  await page.route("**/byok-runtime.html*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      headers: {
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Resource-Policy": "same-origin"
+      },
+      body: runtimeStub
+    });
+  });
   await page.route("**/api/byok/capabilities", async (route) => {
     const request = route.request();
     requests.push(JSON.parse(request.postData() ?? "{}") as {
@@ -26,28 +143,14 @@ test("keeps BYOK secrets out of browser storage and advances the setup", async (
           provider: "openai",
           providerLabel: "OpenAI",
           model: "gpt-5.6",
+          modelApi: "openai-completions",
+          apiPath: "/v1/chat/completions",
+          openClawProvider: "clawsembly-byok",
           providerId: "clawsembly-byok",
           baseUrl: "http://127.0.0.1:4173/api/byok/v1",
           expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
           maxRequests: 64
         }
-      })
-    });
-  });
-  await page.route("**/api/byok/v1/chat/completions", async (route) => {
-    requests.push({
-      authorization: route.request().headers().authorization
-    });
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        choices: [{
-          message: {
-            role: "assistant",
-            content: "READY"
-          }
-        }]
       })
     });
   });
@@ -68,21 +171,54 @@ test("keeps BYOK secrets out of browser storage and advances the setup", async (
 
   await page.goto("/onboard.html");
   await expect(page.getByRole("heading", {
-    name: "自分のキーで OpenClawを動かす。"
+    name: "OpenClawそのものを、 ブラウザでセットアップ。"
   })).toBeVisible();
+  await expect(page.getByRole("heading", {
+    name: "OpenClaw onboarding"
+  })).toBeVisible();
+  await page.getByRole("button", { name: "続ける →" }).click();
+  await expect(page.getByRole("heading", {
+    name: "Model/auth provider"
+  })).toBeVisible();
+  await page.getByRole("button", { name: "OpenAI", exact: true }).click();
+
+  await expect(page.locator("#credential-adapter")).toBeVisible();
+  await expect(page.getByRole("heading", {
+    name: "秘密をOpenClawへ渡さず接続"
+  })).toBeVisible();
+  await page.getByRole("button", { name: "API key OpenAI / OpenRouter" })
+    .click();
   const keyInput = page.locator("#byok-key");
   await expect(keyInput).toHaveAttribute("type", "password");
   await expect(keyInput).toHaveAttribute("autocomplete", "off");
   await keyInput.fill(apiKey);
-  await page.getByRole("button", { name: "安全な接続を作る" }).click();
+  await page.getByRole("button", { name: "能力トークンへ変換" }).click();
 
-  await expect(page.locator("#byok-status")).toContainText("OpenAI 接続済み");
+  await expect(page.getByRole("button", {
+    name: "接続済みの能力で公式Wizardを再開 →"
+  })).toBeVisible();
+  await expect(page.locator("#wizard-error")).toContainText(
+    "temporary Wizard transport failure"
+  );
+  await page.getByRole("button", {
+    name: "接続済みの能力で公式Wizardを再開 →"
+  }).click();
+
+  await expect(page.locator("#byok-status")).toContainText("OpenClaw ready");
+  await expect(page.getByRole("heading", {
+    name: "OpenClawの準備が完了しました"
+  })).toBeVisible();
+  await expect(page.locator(".byok-runtime")).toBeVisible();
+  await expect(
+    page.frameLocator("#byok-runtime-frame").locator("body")
+  ).toHaveAttribute("data-capability-configured", "true");
   await expect(keyInput).toHaveValue("");
-  await expect(page.locator(".byok-session")).toBeVisible();
-  await expect(page.getByRole("button", { name: "OpenClawを起動" }))
-    .toBeDisabled();
   await expect(page.locator("body")).not.toContainText(apiKey);
-  expect(requests[0]).toEqual({ apiKey, provider: "openai", model: "gpt-5.6" });
+  expect(requests[0]).toEqual({
+    apiKey,
+    provider: "openai",
+    model: "gpt-5.6"
+  });
 
   const browserStorage = await page.evaluate(() => ({
     local: { ...localStorage },
@@ -90,26 +226,135 @@ test("keeps BYOK secrets out of browser storage and advances the setup", async (
   }));
   expect(browserStorage).toEqual({ local: {}, session: {} });
 
-  await page.getByRole("button", { name: "接続を確認" }).click();
-  await expect(page.locator("#byok-test-result"))
-    .toContainText("接続確認済み · READY");
-  await expect(page.locator("#byok-status"))
-    .toContainText("OpenClawへ接続可能");
-  await expect(page.getByRole("button", { name: "OpenClawを起動" }))
-    .toBeEnabled();
-  expect(requests[1]).toEqual({
-    authorization: `Bearer ${guestToken}`
-  });
-
   await page.screenshot({
-    path: testInfo.outputPath("byok-onboarding.png"),
+    path: testInfo.outputPath("official-wizard-onboarding.png"),
     fullPage: true
   });
 
   await page.getByRole("button", { name: "接続を破棄" }).click();
-  await expect(page.locator("#byok-status")).toContainText("破棄済み");
-  await expect(page.locator(".byok-session")).toBeHidden();
-  expect(requests[2]).toEqual({
+  await expect(page.locator("#byok-status")).toContainText("失効済み");
+  expect(requests[1]).toEqual({
     authorization: `Bearer ${adminToken}`
   });
+});
+
+test("completes OpenAI Device Code without exposing OAuth tokens", async ({
+  page
+}) => {
+  const sessionId = "b".repeat(64);
+  const pollToken = `${sessionId}.poll_capability_for_browser_test_123456`;
+  const guestToken = `${sessionId}.guest_capability_for_oauth_test_123456`;
+  const adminToken = `${sessionId}.admin_capability_for_oauth_test_123456`;
+  const authorizations: string[] = [];
+  let polls = 0;
+
+  await page.route("**/byok-runtime.html*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      headers: {
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Resource-Policy": "same-origin"
+      },
+      body: runtimeStub
+    });
+  });
+  await page.route("**/api/oauth/openai/device/start", async (route) => {
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        schemaVersion: 1,
+        status: "authorization_pending",
+        authorization: {
+          verificationUrl: "https://auth.openai.com/codex/device",
+          userCode: "ABCD-EFGH",
+          intervalMs: 1,
+          expiresAt: new Date(Date.now() + 15 * 60_000).toISOString()
+        },
+        pollToken,
+        adminToken,
+        pollUrl: "http://127.0.0.1:4173/api/oauth/openai/device/poll"
+      })
+    });
+  });
+  await page.route("**/api/oauth/openai/device/poll", async (route) => {
+    authorizations.push(route.request().headers().authorization ?? "");
+    polls += 1;
+    if (polls === 1) {
+      await route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        body: JSON.stringify({
+          schemaVersion: 1,
+          status: "authorization_pending",
+          retryAfterMs: 10
+        })
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        schemaVersion: 1,
+        status: "ready",
+        capability: {
+          token: guestToken,
+          provider: "openai",
+          providerLabel: "OpenAI ChatGPT",
+          model: "gpt-5.6-sol",
+          modelApi: "openai-chatgpt-responses",
+          apiPath: "/v1/responses",
+          openClawProvider: "openai",
+          providerId: "clawsembly-byok",
+          baseUrl: "http://127.0.0.1:4173/api/byok/v1",
+          expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+          maxRequests: 64
+        }
+      })
+    });
+  });
+  await page.route("**/api/byok/capabilities/revoke", async (route) => {
+    authorizations.push(route.request().headers().authorization ?? "");
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        schemaVersion: 1,
+        status: "revoked",
+        alreadyRevoked: false
+      })
+    });
+  });
+
+  await page.goto("/onboard.html");
+  await page.getByRole("button", { name: "続ける →" }).click();
+  await page.getByRole("button", { name: "OpenAI", exact: true }).click();
+  await page.getByRole("button", {
+    name: "OpenAI Device Code ChatGPTで認証 · 推奨"
+  }).click();
+  await expect(page.locator("#oauth-code")).toHaveText("ABCD-EFGH");
+  await expect(page.getByRole("button", {
+    name: "接続済みの能力で公式Wizardを再開 →"
+  })).toBeVisible();
+  await page.getByRole("button", {
+    name: "接続済みの能力で公式Wizardを再開 →"
+  }).click();
+
+  await expect(page.locator("#byok-status")).toContainText("OpenClaw ready");
+  await expect(page.locator("body")).not.toContainText(guestToken);
+  await expect(page.locator("body")).not.toContainText(adminToken);
+  expect(authorizations.slice(0, 2)).toEqual([
+    `Bearer ${pollToken}`,
+    `Bearer ${pollToken}`
+  ]);
+  expect(await page.evaluate(() => ({
+    local: { ...localStorage },
+    session: { ...sessionStorage }
+  }))).toEqual({ local: {}, session: {} });
+
+  await page.getByRole("button", { name: "接続を破棄" }).click();
+  expect(authorizations.at(-1)).toBe(`Bearer ${adminToken}`);
 });
