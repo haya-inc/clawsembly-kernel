@@ -33,11 +33,11 @@
         <ol>
           <li data-step-state="active">
             <span>01</span>
-            <strong>起動準備</strong>
+            <strong>起動</strong>
           </li>
           <li>
             <span>02</span>
-            <strong>基本設定</strong>
+            <strong>初期設定</strong>
           </li>
           <li>
             <span>03</span>
@@ -50,7 +50,7 @@
         </ol>
         <p class="byok-boundary">
           <span aria-hidden="true">✓</span>
-          OAuthトークンとAPIキーをブラウザストレージへ保存しません
+          認証情報はブラウザに保存されません
         </p>
       </aside>
 
@@ -58,9 +58,9 @@
         <div class="byok-heading">
           <div>
             <p class="byok-kicker">OpenClaw 2026.7.1-2</p>
-            <h1 id="byok-title">OpenClawをブラウザで始める</h1>
+            <h1 id="byok-title">OpenClawのセットアップ</h1>
             <p class="byok-lead">
-              公式Wizardに沿って、モデル接続まで順番にご案内します。
+              ブラウザ内で起動し、公式Wizardとモデル接続を順番に進めます。
             </p>
           </div>
           <output id="byok-status" data-state="idle" aria-live="polite">
@@ -119,7 +119,7 @@
           </button>
         </section>
 
-        <section class="wizard-stage" aria-labelledby="wizard-title">
+        <section class="wizard-stage" aria-labelledby="wizard-title" hidden>
           <div class="wizard-stage-head">
             <div>
               <p class="byok-kicker" id="wizard-origin">
@@ -148,35 +148,84 @@
           <p class="byok-kicker">モデル接続 · Clawsembly保護</p>
           <div class="byok-session-heading">
             <h2 id="credential-title">安全にモデルを接続</h2>
-            <strong id="byok-expiry">未接続</strong>
+            <strong id="byok-expiry" data-state="idle">未接続</strong>
           </div>
           <p class="credential-intro">
-            認証情報をOpenClawへ直接渡さない、安全な接続方法を選べます。
-            完了後は自動で公式Wizardへ戻ります。
+            接続方法を選んでください。完了すると公式Wizardへ自動で戻ります。
           </p>
           <div id="credential-methods" class="credential-methods">
             <button id="oauth-start" class="credential-choice" type="button">
-              <span>OpenAI Device Code</span>
-              <small>ChatGPTアカウントで認証 · おすすめ</small>
+              <span>ChatGPTで続ける</span>
+              <small>OpenAI Device Code · APIキー入力なし</small>
             </button>
             <button id="api-key-show" class="credential-choice" type="button">
-              <span>API key</span>
+              <span>API keyで接続</span>
               <small>OpenAI / OpenRouter</small>
             </button>
           </div>
           <section id="oauth-panel" class="credential-panel" hidden>
-            <p class="credential-label">OpenAI Device Code</p>
+            <div class="oauth-panel-heading">
+              <div>
+                <p class="credential-label">OpenAI Device Code</p>
+                <h3>ChatGPTアカウントで認証</h3>
+              </div>
+              <span id="oauth-expires">コードを準備中</span>
+            </div>
+            <p class="oauth-intro">
+              コードをコピーしてOpenAIを開き、表示された入力欄へ貼り付けます。
+            </p>
+            <div class="oauth-code-row">
+              <div class="oauth-code-value">
+                <span>認証コード</span>
+                <code id="oauth-code">—</code>
+              </div>
+              <button
+                id="oauth-copy"
+                type="button"
+                aria-label="認証コードをコピー"
+                disabled
+              >
+                <span id="oauth-copy-label">コピー</span>
+              </button>
+            </div>
+            <p
+              id="oauth-copy-feedback"
+              class="oauth-copy-feedback"
+              aria-live="polite"
+            ></p>
             <a
               id="oauth-verify-link"
-              class="oauth-code-link"
+              class="oauth-open-link"
               href="https://auth.openai.com/codex/device"
               target="_blank"
               rel="noreferrer"
             >
-              <code id="oauth-code">—</code>
-              <span>OpenAIを開く ↗</span>
+              <span>コードをコピーしてOpenAIを開く</span>
+              <span aria-hidden="true">↗</span>
             </a>
-            <p id="oauth-status">認証コードを発行しています…</p>
+            <ol class="oauth-steps" aria-label="OpenAI認証の手順">
+              <li data-oauth-step="copy" data-state="active">
+                <span>1</span>
+                <p>
+                  <strong>コードをコピー</strong>
+                  <small>上のボタンからコピーできます</small>
+                </p>
+              </li>
+              <li data-oauth-step="approve" data-state="pending">
+                <span>2</span>
+                <p>
+                  <strong>OpenAIで承認</strong>
+                  <small>完了するとこの画面が自動で進みます</small>
+                </p>
+              </li>
+            </ol>
+            <div class="oauth-waiting" role="status">
+              <span class="wizard-loader" aria-hidden="true"></span>
+              <p id="oauth-status">認証コードを発行しています…</p>
+            </div>
+            <button id="oauth-back" class="credential-back" type="button">
+              別の方法を選ぶ
+            </button>
           </section>
           <form id="api-key-panel" class="credential-panel" hidden>
             <label>
@@ -215,29 +264,46 @@
                 <span>APIキーを安全に接続</span>
                 <span aria-hidden="true">→</span>
               </button>
+              <button id="api-key-back" class="credential-back" type="button">
+                別の方法を選ぶ
+              </button>
             </div>
           </form>
-          <dl>
-            <div>
-              <dt>OpenClawが受け取るもの</dt>
-              <dd>期限付きの接続権限</dd>
-            </div>
-            <div>
-              <dt>APIキーの保存先</dt>
-              <dd>期限付きブローカーのみ</dd>
-            </div>
-            <div>
-              <dt>利用上限</dt>
-              <dd id="byok-budget">—</dd>
-            </div>
-          </dl>
-          <p id="credential-result" class="byok-test-result"></p>
+          <div id="credential-resume" class="credential-resume" hidden>
+            <p>モデル接続は完了しています。</p>
+            <button id="credential-resume-button" type="button">
+              公式Wizardへ戻る →
+            </button>
+          </div>
+          <p
+            id="credential-result"
+            class="byok-test-result"
+            data-state="idle"
+            aria-live="polite"
+          ></p>
+          <details class="credential-security">
+            <summary>認証情報の扱い</summary>
+            <dl>
+              <div>
+                <dt>OpenClawが受け取るもの</dt>
+                <dd>期限付きの接続権限</dd>
+              </div>
+              <div>
+                <dt>APIキーの保存先</dt>
+                <dd>期限付きブローカーのみ</dd>
+              </div>
+              <div>
+                <dt>利用上限</dt>
+                <dd id="byok-budget">—</dd>
+              </div>
+            </dl>
+          </details>
         </section>
 
         <section class="byok-runtime" aria-labelledby="runtime-title" hidden>
-          <p class="byok-kicker">セットアップ完了</p>
+          <p class="byok-kicker">OpenClaw公式Wizard · 完了</p>
           <div class="runtime-heading">
-            <h2 id="runtime-title">OpenClaw準備完了</h2>
+            <h2 id="runtime-title">OpenClawの準備が完了しました</h2>
             <button id="byok-revoke" type="button" disabled>
               接続を破棄
             </button>

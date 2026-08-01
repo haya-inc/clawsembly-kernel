@@ -100,8 +100,18 @@ const oauthPanel = requiredElement<HTMLElement>("#oauth-panel");
 const oauthVerifyLink =
   requiredElement<HTMLAnchorElement>("#oauth-verify-link");
 const oauthCode = requiredElement<HTMLElement>("#oauth-code");
+const oauthCopy = requiredElement<HTMLButtonElement>("#oauth-copy");
+const oauthCopyLabel = requiredElement<HTMLElement>("#oauth-copy-label");
+const oauthCopyFeedback =
+  requiredElement<HTMLElement>("#oauth-copy-feedback");
+const oauthExpires = requiredElement<HTMLElement>("#oauth-expires");
 const oauthStatus = requiredElement<HTMLElement>("#oauth-status");
+const oauthBack = requiredElement<HTMLButtonElement>("#oauth-back");
+const oauthSteps = Array.from(
+  document.querySelectorAll<HTMLElement>("[data-oauth-step]")
+);
 const apiKeyPanel = requiredElement<HTMLFormElement>("#api-key-panel");
+const apiKeyBack = requiredElement<HTMLButtonElement>("#api-key-back");
 const provider = requiredElement<HTMLSelectElement>("#byok-provider");
 const model = requiredElement<HTMLInputElement>("#byok-model");
 const apiKey = requiredElement<HTMLInputElement>("#byok-key");
@@ -111,7 +121,12 @@ const expiry = requiredElement<HTMLElement>("#byok-expiry");
 const budget = requiredElement<HTMLElement>("#byok-budget");
 const credentialResult =
   requiredElement<HTMLElement>("#credential-result");
+const credentialResume =
+  requiredElement<HTMLElement>("#credential-resume");
+const credentialResumeButton =
+  requiredElement<HTMLButtonElement>("#credential-resume-button");
 const runtimePanel = requiredElement<HTMLElement>(".byok-runtime");
+const runtimeTitle = requiredElement<HTMLElement>("#runtime-title");
 const runtimeSummary = requiredElement<HTMLElement>("#runtime-summary");
 const runtimeFrame =
   requiredElement<HTMLIFrameElement>("#byok-runtime-frame");
@@ -138,6 +153,8 @@ let currentStep: WizardStep | undefined;
 let selectedProvider: "openai" | "openrouter" = "openai";
 let capability: Capability | undefined;
 let oauthAdminToken: string | undefined;
+let oauthAttempt = 0;
+let oauthCopyTimer: number | undefined;
 let capabilityAttached = false;
 let wizardStarted = false;
 let finishing = false;
@@ -166,6 +183,101 @@ function setStep(activeIndex: number): void {
         ? "active"
         : "pending";
   });
+}
+
+function setOauthStep(activeStep: "approve" | "copy"): void {
+  const activeIndex = activeStep === "copy" ? 0 : 1;
+  oauthSteps.forEach((step, index) => {
+    step.dataset.state = index < activeIndex
+      ? "complete"
+      : index === activeIndex
+        ? "active"
+        : "pending";
+  });
+}
+
+function resetOauthCopy(): void {
+  if (oauthCopyTimer !== undefined) {
+    window.clearTimeout(oauthCopyTimer);
+    oauthCopyTimer = undefined;
+  }
+  oauthCode.textContent = "—";
+  oauthCopy.disabled = true;
+  oauthCopy.setAttribute("aria-label", "認証コードをコピー");
+  oauthCopyLabel.textContent = "コピー";
+  oauthCopyFeedback.textContent = "";
+  oauthExpires.textContent = "コードを準備中";
+  oauthVerifyLink.setAttribute("aria-disabled", "true");
+  setOauthStep("copy");
+}
+
+function fallbackCopy(value: string): boolean {
+  const field = document.createElement("textarea");
+  field.value = value;
+  field.setAttribute("readonly", "");
+  field.style.position = "fixed";
+  field.style.opacity = "0";
+  document.body.append(field);
+  field.select();
+  const copied = document.execCommand("copy");
+  field.remove();
+  return copied;
+}
+
+async function copyOauthCode(): Promise<void> {
+  const value = oauthCode.textContent?.trim() ?? "";
+  if (!value || value === "—") return;
+  try {
+    let copied = false;
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(value);
+        copied = true;
+      } catch {
+        copied = false;
+      }
+    }
+    if (!copied) copied = fallbackCopy(value);
+    if (!copied) {
+      throw new Error("clipboard unavailable");
+    }
+    oauthCopyLabel.textContent = "コピーしました ✓";
+    oauthCopy.setAttribute(
+      "aria-label",
+      `認証コード ${value} をもう一度コピー`
+    );
+    oauthCopyFeedback.textContent =
+      "コピーしました。OpenAIの入力欄へそのまま貼り付けられます。";
+    setOauthStep("approve");
+    if (oauthCopyTimer !== undefined) window.clearTimeout(oauthCopyTimer);
+    oauthCopyTimer = window.setTimeout(() => {
+      oauthCopyLabel.textContent = "もう一度コピー";
+      oauthCopyTimer = undefined;
+    }, 2_500);
+  } catch {
+    oauthCopyFeedback.textContent =
+      "コピーできませんでした。コードを選択してコピーしてください。";
+  }
+}
+
+function showCredentialMethods(): void {
+  oauthAttempt += 1;
+  const adminToken = oauthAdminToken;
+  oauthAdminToken = undefined;
+  credentialMethods.hidden = false;
+  oauthPanel.hidden = true;
+  apiKeyPanel.hidden = true;
+  credentialResume.hidden = true;
+  credentialResult.textContent = "";
+  credentialResult.dataset.state = "idle";
+  resetOauthCopy();
+  setStatus("ready", "接続方法を選択");
+  if (adminToken) {
+    void fetch("/api/byok/capabilities/revoke", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${adminToken}` }
+    }).catch(() => undefined);
+  }
 }
 
 const bootCopy = [
@@ -625,10 +737,8 @@ function isCredentialMethodStep(step: WizardStep): boolean {
 
 function showCredentialAdapter(step: WizardStep): void {
   setStep(2);
+  wizardStage.hidden = true;
   wizardControls.replaceChildren();
-  wizardControls.append(document.createTextNode(
-    "Clawsemblyの秘密情報アダプターで接続を完了してください。"
-  ));
   credentialAdapter.hidden = false;
   credentialAdapter.scrollIntoView({ behavior: "smooth", block: "start" });
   selectedProvider = step.message === "OpenRouter auth method"
@@ -641,24 +751,24 @@ function showCredentialAdapter(step: WizardStep): void {
     credentialMethods.hidden = true;
     oauthPanel.hidden = true;
     apiKeyPanel.hidden = true;
+    credentialResume.hidden = false;
     credentialResult.textContent =
       `${capability.providerLabel} · 安全に接続済み`;
-    wizardControls.replaceChildren(createButton(
-      "接続済みのモデルで公式Wizardを再開 →",
-      () => void answerWizard(step, "skip"),
-      { primary: true }
-    ));
+    credentialResult.dataset.state = "ready";
     return;
   }
   credentialMethods.hidden = false;
   oauthPanel.hidden = true;
   apiKeyPanel.hidden = true;
+  credentialResume.hidden = true;
   credentialResult.textContent = "";
+  credentialResult.dataset.state = "idle";
 }
 
 function renderWizardStep(step: WizardStep): void {
   currentStep = step;
   setStep(1);
+  wizardStage.hidden = false;
   const typeLabel = {
     action: "操作",
     confirm: "確認",
@@ -741,6 +851,7 @@ async function finishCredential(nextCapability: Capability): Promise<void> {
   setStatus("running", "モデルを接続中");
   credentialResult.textContent =
     "認証情報を保護したモデル接続を準備しています…";
+  credentialResult.dataset.state = "idle";
   try {
     await attachCapability(nextCapability);
     capabilityAttached = true;
@@ -758,11 +869,14 @@ async function finishCredential(nextCapability: Capability): Promise<void> {
     hour: "2-digit",
     minute: "2-digit"
   }).format(new Date(nextCapability.expiresAt)) + "まで";
+  expiry.dataset.state = "ready";
   budget.textContent = `最大${nextCapability.maxRequests}リクエスト`;
   credentialResult.textContent =
     `${nextCapability.providerLabel} · 安全に接続済み`;
+  credentialResult.dataset.state = "ready";
   setStatus("ready", "モデル 接続済み");
   credentialAdapter.hidden = true;
+  wizardStage.hidden = false;
   await answerWizard(currentStep, "skip");
 }
 
@@ -770,6 +884,7 @@ async function issueApiKeyCapability(): Promise<void> {
   connectButton.disabled = true;
   apiKey.disabled = true;
   credentialResult.textContent = "安全な接続を準備しています…";
+  credentialResult.dataset.state = "idle";
   try {
     const response = await fetch("/api/byok/capabilities", {
       method: "POST",
@@ -793,6 +908,7 @@ async function issueApiKeyCapability(): Promise<void> {
   } catch (error) {
     apiKey.value = "";
     credentialResult.textContent = errorMessage(error);
+    credentialResult.dataset.state = "fail";
     setStatus("fail", "モデル接続失敗");
   } finally {
     connectButton.disabled = false;
@@ -801,19 +917,22 @@ async function issueApiKeyCapability(): Promise<void> {
 }
 
 async function pollDeviceAuthorization(
-  start: DeviceStartResponse
+  start: DeviceStartResponse,
+  attempt: number
 ): Promise<void> {
   let retryDelayMs = start.authorization.intervalMs;
   for (;;) {
     await new Promise<void>((resolve) => {
       window.setTimeout(resolve, retryDelayMs);
     });
+    if (attempt !== oauthAttempt) return;
     const response = await fetch(start.pollUrl, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${start.pollToken}`
       }
     });
+    if (attempt !== oauthAttempt) return;
     const body = await response.json() as {
       capability?: Omit<Capability, "adminToken">;
       error?: { code?: string };
@@ -841,9 +960,12 @@ async function pollDeviceAuthorization(
 }
 
 async function startDeviceAuthorization(): Promise<void> {
+  const attempt = ++oauthAttempt;
   oauthStart.disabled = true;
   credentialMethods.hidden = true;
   oauthPanel.hidden = false;
+  credentialResume.hidden = true;
+  resetOauthCopy();
   oauthStatus.textContent = "OpenAI Device Codeを発行しています…";
   setStatus("running", "OpenAI認証を準備中");
   try {
@@ -860,11 +982,23 @@ async function startDeviceAuthorization(): Promise<void> {
     }
     oauthAdminToken = body.adminToken;
     oauthCode.textContent = body.authorization.userCode;
+    oauthCopy.disabled = false;
+    oauthCopy.setAttribute(
+      "aria-label",
+      `認証コード ${body.authorization.userCode} をコピー`
+    );
     oauthVerifyLink.href = body.authorization.verificationUrl;
+    oauthVerifyLink.setAttribute("aria-disabled", "false");
+    oauthExpires.textContent = `${new Intl.DateTimeFormat("ja-JP", {
+      hour: "2-digit",
+      minute: "2-digit"
+    }).format(new Date(body.authorization.expiresAt))}まで有効`;
     oauthStatus.textContent =
-      "コードをコピーしてOpenAIで承認してください。承認後、自動で戻ります。";
-    await pollDeviceAuthorization(body);
+      "OpenAI側の承認を待っています。この画面は自動で更新されます。";
+    setStatus("running", "OpenAIの承認待ち");
+    await pollDeviceAuthorization(body, attempt);
   } catch (error) {
+    if (attempt !== oauthAttempt) return;
     const failedAdminToken = oauthAdminToken;
     oauthAdminToken = undefined;
     if (failedAdminToken) {
@@ -878,6 +1012,7 @@ async function startDeviceAuthorization(): Promise<void> {
     oauthStatus.textContent = errorMessage(error);
     setStatus("fail", "OpenAI認証失敗");
     credentialMethods.hidden = false;
+    oauthPanel.hidden = true;
   } finally {
     oauthStart.disabled = false;
   }
@@ -902,6 +1037,7 @@ async function finishWizard(result: WizardResult): Promise<void> {
     }
     await applyCapabilityConfig();
     credentialAdapter.hidden = true;
+    wizardStage.hidden = true;
     setStep(3);
     wizardOrigin.textContent = "OpenClaw 公式Wizard · 完了";
     wizardTitle.textContent = "OpenClawの準備が完了しました";
@@ -909,14 +1045,7 @@ async function finishWizard(result: WizardResult): Promise<void> {
       ? "公式Wizardの設定に、認証情報を含まない安全なモデル接続を追加しました。"
       : "公式Wizardを完了しました。モデル接続は後から追加できます。";
     wizardControls.replaceChildren();
-    wizardControls.append(createButton(
-      "実行状態を見る",
-      () => runtimePanel.scrollIntoView({
-        behavior: "smooth",
-        block: "start"
-      }),
-      { primary: true }
-    ));
+    runtimeTitle.textContent = "OpenClawの準備が完了しました";
     runtimeSummary.textContent = capability
       ? `${capability.providerLabel} / ${capability.model} · `
         + "安全な期限付き接続を使用"
@@ -924,6 +1053,10 @@ async function finishWizard(result: WizardResult): Promise<void> {
     runtimePanel.hidden = false;
     revokeButton.disabled = !capability;
     setStatus("ready", "OpenClaw 準備完了");
+    window.setTimeout(() => runtimePanel.scrollIntoView({
+      behavior: "smooth",
+      block: "start"
+    }), 0);
   } catch (error) {
     finishing = false;
     showError(errorMessage(error));
@@ -953,6 +1086,7 @@ async function startWizard(): Promise<void> {
   if (wizardStarted) return;
   wizardStarted = true;
   setStep(1);
+  wizardStage.hidden = false;
   setStatus("running", "公式Wizardに接続中");
   setWizardBusy("wizard.startを実行中…");
   try {
@@ -1105,6 +1239,21 @@ apiKeyShow.addEventListener("click", () => {
     ? "openai/gpt-5.6"
     : "gpt-5.6-sol";
   apiKey.focus();
+});
+oauthCopy.addEventListener("click", () => {
+  void copyOauthCode();
+});
+oauthVerifyLink.addEventListener("click", (event) => {
+  if (oauthVerifyLink.getAttribute("aria-disabled") === "true") {
+    event.preventDefault();
+    return;
+  }
+  void copyOauthCode();
+});
+oauthBack.addEventListener("click", showCredentialMethods);
+apiKeyBack.addEventListener("click", showCredentialMethods);
+credentialResumeButton.addEventListener("click", () => {
+  if (currentStep) void answerWizard(currentStep, "skip");
 });
 oauthStart.addEventListener("click", () => {
   void startDeviceAuthorization();

@@ -200,7 +200,7 @@ test("runs the official Wizard and adapts only its credential step", async ({
 
   await page.goto("/onboard.html");
   await expect(page.getByRole("heading", {
-    name: "OpenClawをブラウザで始める"
+    name: "OpenClawのセットアップ"
   })).toBeVisible();
   await expect(page.locator("#boot-progress")).toHaveAttribute(
     "data-state",
@@ -232,9 +232,16 @@ test("runs the official Wizard and adapts only its credential step", async ({
   await expect(page.getByRole("heading", {
     name: "安全にモデルを接続"
   })).toBeVisible();
-  await page.getByRole("button", { name: "API key OpenAI / OpenRouter" })
+  await expect(page.locator(".wizard-stage")).toBeHidden();
+  await page.getByRole("button", { name: "API keyで接続 OpenAI / OpenRouter" })
     .click();
   await expect(page.locator("#byok-model")).toHaveValue("gpt-5.6-sol");
+  await page.locator("#api-key-back").click();
+  await expect(page.getByRole("button", {
+    name: "ChatGPTで続ける OpenAI Device Code · APIキー入力なし"
+  })).toBeVisible();
+  await page.getByRole("button", { name: "API keyで接続 OpenAI / OpenRouter" })
+    .click();
   const keyInput = page.locator("#byok-key");
   await expect(keyInput).toHaveAttribute("type", "password");
   await expect(keyInput).toHaveAttribute("autocomplete", "off");
@@ -242,13 +249,13 @@ test("runs the official Wizard and adapts only its credential step", async ({
   await page.getByRole("button", { name: "APIキーを安全に接続" }).click();
 
   await expect(page.getByRole("button", {
-    name: "接続済みのモデルで公式Wizardを再開 →"
+    name: "公式Wizardへ戻る →"
   })).toBeVisible();
   await expect(page.locator("#wizard-error")).toContainText(
     "temporary Wizard transport failure"
   );
   await page.getByRole("button", {
-    name: "接続済みのモデルで公式Wizardを再開 →"
+    name: "公式Wizardへ戻る →"
   }).click();
 
   await expect(page.locator("#byok-status")).toContainText("OpenClaw 準備完了");
@@ -288,7 +295,7 @@ test("runs the official Wizard and adapts only its credential step", async ({
 
 test("completes OpenAI Device Code without exposing OAuth tokens", async ({
   page
-}) => {
+}, testInfo) => {
   const sessionId = "b".repeat(64);
   const pollToken = `${sessionId}.poll_capability_for_browser_test_123456`;
   const guestToken = `${sessionId}.guest_capability_for_oauth_test_123456`;
@@ -377,18 +384,48 @@ test("completes OpenAI Device Code without exposing OAuth tokens", async ({
     });
   });
 
+  await page.context().grantPermissions(
+    ["clipboard-read", "clipboard-write"],
+    { origin: "http://127.0.0.1:4173" }
+  );
   await page.goto("/onboard.html");
   await page.getByRole("button", { name: "続ける →" }).click();
   await page.getByRole("button", { name: "OpenAI", exact: true }).click();
   await page.getByRole("button", {
-    name: "OpenAI Device Code ChatGPTアカウントで認証 · おすすめ"
+    name: "ChatGPTで続ける OpenAI Device Code · APIキー入力なし"
   }).click();
   await expect(page.locator("#oauth-code")).toHaveText("ABCD-EFGH");
+  await expect(page.getByRole("link", {
+    name: "コードをコピーしてOpenAIを開く"
+  })).toBeVisible();
+  await page.locator("#oauth-copy").click();
+  await expect(page.locator("#oauth-copy")).toHaveAttribute(
+    "aria-label",
+    "認証コード ABCD-EFGH をもう一度コピー"
+  );
+  await expect(page.locator("#oauth-copy-label")).toHaveText(
+    "コピーしました ✓"
+  );
+  await expect(page.locator("[data-oauth-step=copy]")).toHaveAttribute(
+    "data-state",
+    "complete"
+  );
+  expect(await page.evaluate(() => navigator.clipboard.readText()))
+    .toBe("ABCD-EFGH");
+  await page.screenshot({
+    path: testInfo.outputPath("openai-device-code-readable.png"),
+    fullPage: true
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({
+    path: testInfo.outputPath("openai-device-code-readable-mobile.png"),
+    fullPage: true
+  });
   await expect(page.getByRole("button", {
-    name: "接続済みのモデルで公式Wizardを再開 →"
+    name: "公式Wizardへ戻る →"
   })).toBeVisible();
   await page.getByRole("button", {
-    name: "接続済みのモデルで公式Wizardを再開 →"
+    name: "公式Wizardへ戻る →"
   }).click();
 
   await expect(page.locator("#byok-status")).toContainText("OpenClaw 準備完了");
@@ -429,6 +466,7 @@ test("explains a slow first boot and offers recovery on failure", async ({
   });
 
   await page.goto("/onboard.html");
+  await expect(page.locator(".wizard-stage")).toBeHidden();
   await expect(page.locator("#boot-detail")).toContainText("約385 MB");
   await expect(page.locator("#boot-elapsed")).toContainText("経過");
   await expect(page.locator('[data-boot-phase="0"]')).toHaveAttribute(
