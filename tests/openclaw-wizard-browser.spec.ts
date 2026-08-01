@@ -104,7 +104,7 @@ test("renders the first real step from the unmodified OpenClaw Wizard", async ({
     { timeout: 460_000 }
   ).toMatchObject({
     origin: expect.stringMatching(
-      /^OFFICIAL OPENCLAW WIZARD · (?:ACTION|CONFIRM|MULTISELECT|NOTE|PROGRESS|SELECT|TEXT)$/u
+      /^OpenClaw 公式Wizard · (?:action|confirm|multiselect|note|progress|select|text)$/u
     )
   });
 

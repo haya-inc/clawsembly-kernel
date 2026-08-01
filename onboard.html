@@ -11,69 +11,131 @@
   </head>
   <body>
     <header class="byok-topbar">
-      <a class="byok-wordmark" href="/">
-        <span aria-hidden="true">C/</span>
-        Clawsembly
-      </a>
-      <p>Official Wizard · Browser runtime</p>
-      <a href="https://github.com/haya-inc/clawsembly-kernel">Source ↗</a>
+      <div class="byok-topbar-inner">
+        <a class="byok-wordmark" href="/">
+          <span aria-hidden="true">C</span>
+          Clawsembly
+        </a>
+        <p class="byok-product-context">
+          <strong>OpenClaw セットアップ</strong>
+          <span>ブラウザ内で実行</span>
+        </p>
+        <a
+          class="byok-source-link"
+          href="https://github.com/haya-inc/clawsembly-kernel"
+        >GitHub <span aria-hidden="true">↗</span></a>
+      </div>
     </header>
 
     <main class="byok-shell">
       <aside aria-label="設定手順">
-        <p class="byok-kicker">OpenClaw setup flow</p>
+        <p class="byok-kicker">セットアップの流れ</p>
         <ol>
           <li data-step-state="active">
             <span>01</span>
-            Browser kernel
+            <strong>起動準備</strong>
           </li>
           <li>
             <span>02</span>
-            Official Wizard
+            <strong>基本設定</strong>
           </li>
           <li>
             <span>03</span>
-            Credential boundary
+            <strong>モデル接続</strong>
           </li>
           <li>
             <span>04</span>
-            OpenClaw ready
+            <strong>完了</strong>
           </li>
         </ol>
         <p class="byok-boundary">
-          OAuthトークンとAPIキーはWasmゲストやブラウザストレージへ保存されません。
+          <span aria-hidden="true">✓</span>
+          OAuthトークンとAPIキーをブラウザストレージへ保存しません
         </p>
       </aside>
 
       <section class="byok-workspace" aria-labelledby="byok-title">
         <div class="byok-heading">
           <div>
-            <p class="byok-kicker">OpenClaw · exact package · 2026.7.1-2</p>
-            <h1 id="byok-title">OpenClawそのものを、<br />ブラウザでセットアップ。</h1>
+            <p class="byok-kicker">OpenClaw 2026.7.1-2</p>
+            <h1 id="byok-title">OpenClawをブラウザで始める</h1>
+            <p class="byok-lead">
+              公式Wizardに沿って、モデル接続まで順番にご案内します。
+            </p>
           </div>
           <output id="byok-status" data-state="idle" aria-live="polite">
             <span aria-hidden="true"></span>
-            Kernel待機中
+            起動待ち
           </output>
         </div>
+
+        <section
+          id="boot-progress"
+          class="boot-progress"
+          data-state="running"
+          aria-labelledby="boot-title"
+        >
+          <div class="boot-progress-head">
+            <span class="boot-symbol" aria-hidden="true">
+              <span></span>
+            </span>
+            <div>
+              <p class="byok-kicker">初回起動</p>
+              <h2 id="boot-title">実行環境を読み込んでいます</h2>
+            </div>
+            <time id="boot-elapsed">経過 0:00</time>
+          </div>
+          <p id="boot-detail" class="boot-detail" aria-live="polite">
+            初回のみ約385 MBを確認・読み込みます。通常は数分で完了します。
+          </p>
+          <div
+            id="boot-bar"
+            class="boot-bar"
+            role="progressbar"
+            aria-label="OpenClawの起動状況"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="8"
+          ><span></span></div>
+          <ol class="boot-phases" aria-label="起動フェーズ">
+            <li data-boot-phase="0" data-boot-state="active">
+              <span aria-hidden="true"></span>読込
+            </li>
+            <li data-boot-phase="1" data-boot-state="pending">
+              <span aria-hidden="true"></span>検証
+            </li>
+            <li data-boot-phase="2" data-boot-state="pending">
+              <span aria-hidden="true"></span>展開
+            </li>
+            <li data-boot-phase="3" data-boot-state="pending">
+              <span aria-hidden="true"></span>起動
+            </li>
+          </ol>
+          <p id="boot-patience" class="boot-patience" hidden>
+            正常に処理中です。このタブを開いたままお待ちください。
+          </p>
+          <button id="boot-retry" class="boot-retry" type="button" hidden>
+            もう一度起動する
+          </button>
+        </section>
 
         <section class="wizard-stage" aria-labelledby="wizard-title">
           <div class="wizard-stage-head">
             <div>
               <p class="byok-kicker" id="wizard-origin">
-                Booting browser-local Gateway
+                OpenClawの公式セットアップ
               </p>
-              <h2 id="wizard-title">公式Wizardを準備しています</h2>
+              <h2 id="wizard-title">OpenClawを準備しています</h2>
             </div>
-            <span class="wizard-official">Official RPC</span>
+            <span class="wizard-official">Official Wizard</span>
           </div>
           <p id="wizard-message" class="wizard-message">
-            Edge.jsと完全なOpenClawパッケージを検証しています。
+            起動が完了すると、ここに設定内容が表示されます。
           </p>
           <p id="wizard-error" class="wizard-error" role="alert" hidden></p>
           <div id="wizard-controls" class="wizard-controls" aria-live="polite">
             <span class="wizard-loader" aria-hidden="true"></span>
-            ブラウザカーネルを起動中…
+            準備を始めています…
           </div>
         </section>
 
@@ -83,18 +145,19 @@
           aria-labelledby="credential-title"
           hidden
         >
-          <p class="byok-kicker">Clawsembly credential boundary</p>
+          <p class="byok-kicker">モデル接続 · Clawsembly保護</p>
           <div class="byok-session-heading">
-            <h2 id="credential-title">秘密をOpenClawへ渡さず接続</h2>
+            <h2 id="credential-title">安全にモデルを接続</h2>
             <strong id="byok-expiry">未接続</strong>
           </div>
           <p class="credential-intro">
-            ここだけがClawsemblyの安全アダプターです。完了後は公式Wizardへ戻ります。
+            認証情報をOpenClawへ直接渡さない、安全な接続方法を選べます。
+            完了後は自動で公式Wizardへ戻ります。
           </p>
           <div id="credential-methods" class="credential-methods">
             <button id="oauth-start" class="credential-choice" type="button">
               <span>OpenAI Device Code</span>
-              <small>ChatGPTで認証 · 推奨</small>
+              <small>ChatGPTアカウントで認証 · おすすめ</small>
             </button>
             <button id="api-key-show" class="credential-choice" type="button">
               <span>API key</span>
@@ -149,7 +212,7 @@
             </label>
             <div class="byok-actions">
               <button id="byok-connect" type="submit">
-                <span>能力トークンへ変換</span>
+                <span>APIキーを安全に接続</span>
                 <span aria-hidden="true">→</span>
               </button>
             </div>
@@ -157,7 +220,7 @@
           <dl>
             <div>
               <dt>OpenClawが受け取るもの</dt>
-              <dd>短命の不透明トークン</dd>
+              <dd>期限付きの接続権限</dd>
             </div>
             <div>
               <dt>APIキーの保存先</dt>
@@ -172,7 +235,7 @@
         </section>
 
         <section class="byok-runtime" aria-labelledby="runtime-title" hidden>
-          <p class="byok-kicker">04 / Browser-local OpenClaw</p>
+          <p class="byok-kicker">セットアップ完了</p>
           <div class="runtime-heading">
             <h2 id="runtime-title">OpenClaw準備完了</h2>
             <button id="byok-revoke" type="button" disabled>
@@ -180,12 +243,12 @@
             </button>
           </div>
           <p id="runtime-summary">
-            公式Wizardの設定と短命のモデル能力をブラウザ内Gatewayへ適用しました。
+            公式Wizardの設定と安全なモデル接続をブラウザ内Gatewayへ適用しました。
           </p>
         </section>
 
         <details class="byok-privacy">
-          <summary>秘密情報の扱い</summary>
+          <summary><span aria-hidden="true">⌁</span> 認証情報の安全について</summary>
           <p>
             OAuthアクセストークン・更新トークン・APIキーはHTTPSで
             Clawsemblyの期限付きブローカーだけが保持します。OpenClawには

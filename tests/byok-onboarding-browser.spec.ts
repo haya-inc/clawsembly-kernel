@@ -9,14 +9,32 @@ const reply=(request,type,result,ok=true)=>parent.postMessage({
   ...(ok?{result}:{error:String(result)})
 },location.origin);
 let credentialAttempts=0;
+let runtimeStarted=false;
 parent.postMessage({type:"clawsembly:byok-runtime-ready"},location.origin);
 addEventListener("message",(event)=>{
   const message=event.data;
   if(message.type==="clawsembly:onboarding-runtime-start"){
+    if(runtimeStarted)return;
+    runtimeStarted=true;
     parent.postMessage({
+      type:"clawsembly:byok-runtime-status",
+      state:"running",
+      label:"Fetching Edge.js and the official package image…"
+    },location.origin);
+    setTimeout(()=>parent.postMessage({
+      type:"clawsembly:byok-runtime-status",
+      state:"running",
+      label:"Verifying the complete package graph…"
+    },location.origin),30);
+    setTimeout(()=>parent.postMessage({
+      type:"clawsembly:byok-runtime-status",
+      state:"running",
+      label:"Starting the exact unmodified OpenClaw Gateway…"
+    },location.origin),60);
+    setTimeout(()=>parent.postMessage({
       type:"clawsembly:wizard-gateway-ready",
       openclawVersion:"2026.7.1-2"
-    },location.origin);
+    },location.origin),90);
     return;
   }
   if(message.type==="clawsembly:wizard-capability-attach"){
@@ -171,8 +189,15 @@ test("runs the official Wizard and adapts only its credential step", async ({
 
   await page.goto("/onboard.html");
   await expect(page.getByRole("heading", {
-    name: "OpenClawそのものを、 ブラウザでセットアップ。"
+    name: "OpenClawをブラウザで始める"
   })).toBeVisible();
+  await expect(page.locator("#boot-progress")).toHaveAttribute(
+    "data-state",
+    "ready"
+  );
+  await expect(page.locator("#boot-title")).toHaveText(
+    "OpenClawを起動しました"
+  );
   await expect(page.getByRole("heading", {
     name: "OpenClaw onboarding"
   })).toBeVisible();
@@ -184,7 +209,7 @@ test("runs the official Wizard and adapts only its credential step", async ({
 
   await expect(page.locator("#credential-adapter")).toBeVisible();
   await expect(page.getByRole("heading", {
-    name: "秘密をOpenClawへ渡さず接続"
+    name: "安全にモデルを接続"
   })).toBeVisible();
   await page.getByRole("button", { name: "API key OpenAI / OpenRouter" })
     .click();
@@ -192,19 +217,19 @@ test("runs the official Wizard and adapts only its credential step", async ({
   await expect(keyInput).toHaveAttribute("type", "password");
   await expect(keyInput).toHaveAttribute("autocomplete", "off");
   await keyInput.fill(apiKey);
-  await page.getByRole("button", { name: "能力トークンへ変換" }).click();
+  await page.getByRole("button", { name: "APIキーを安全に接続" }).click();
 
   await expect(page.getByRole("button", {
-    name: "接続済みの能力で公式Wizardを再開 →"
+    name: "接続済みのモデルで公式Wizardを再開 →"
   })).toBeVisible();
   await expect(page.locator("#wizard-error")).toContainText(
     "temporary Wizard transport failure"
   );
   await page.getByRole("button", {
-    name: "接続済みの能力で公式Wizardを再開 →"
+    name: "接続済みのモデルで公式Wizardを再開 →"
   }).click();
 
-  await expect(page.locator("#byok-status")).toContainText("OpenClaw ready");
+  await expect(page.locator("#byok-status")).toContainText("OpenClaw 準備完了");
   await expect(page.getByRole("heading", {
     name: "OpenClawの準備が完了しました"
   })).toBeVisible();
@@ -226,6 +251,7 @@ test("runs the official Wizard and adapts only its credential step", async ({
   }));
   expect(browserStorage).toEqual({ local: {}, session: {} });
 
+  await page.evaluate(() => window.scrollTo({ top: 0 }));
   await page.screenshot({
     path: testInfo.outputPath("official-wizard-onboarding.png"),
     fullPage: true
@@ -333,17 +359,17 @@ test("completes OpenAI Device Code without exposing OAuth tokens", async ({
   await page.getByRole("button", { name: "続ける →" }).click();
   await page.getByRole("button", { name: "OpenAI", exact: true }).click();
   await page.getByRole("button", {
-    name: "OpenAI Device Code ChatGPTで認証 · 推奨"
+    name: "OpenAI Device Code ChatGPTアカウントで認証 · おすすめ"
   }).click();
   await expect(page.locator("#oauth-code")).toHaveText("ABCD-EFGH");
   await expect(page.getByRole("button", {
-    name: "接続済みの能力で公式Wizardを再開 →"
+    name: "接続済みのモデルで公式Wizardを再開 →"
   })).toBeVisible();
   await page.getByRole("button", {
-    name: "接続済みの能力で公式Wizardを再開 →"
+    name: "接続済みのモデルで公式Wizardを再開 →"
   }).click();
 
-  await expect(page.locator("#byok-status")).toContainText("OpenClaw ready");
+  await expect(page.locator("#byok-status")).toContainText("OpenClaw 準備完了");
   await expect(page.locator("body")).not.toContainText(guestToken);
   await expect(page.locator("body")).not.toContainText(adminToken);
   expect(authorizations.slice(0, 2)).toEqual([
@@ -357,4 +383,69 @@ test("completes OpenAI Device Code without exposing OAuth tokens", async ({
 
   await page.getByRole("button", { name: "接続を破棄" }).click();
   expect(authorizations.at(-1)).toBe(`Bearer ${adminToken}`);
+});
+
+test("explains a slow first boot and offers recovery on failure", async ({
+  page
+}, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route("**/byok-runtime.html*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      headers: {
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Resource-Policy": "same-origin"
+      },
+      body: `<!doctype html><html><body><script>
+        parent.postMessage({
+          type:"clawsembly:byok-runtime-ready"
+        },location.origin);
+      </script></body></html>`
+    });
+  });
+
+  await page.goto("/onboard.html");
+  await expect(page.locator("#boot-detail")).toContainText("約385 MB");
+  await expect(page.locator("#boot-elapsed")).toContainText("経過");
+  await expect(page.locator('[data-boot-phase="0"]')).toHaveAttribute(
+    "data-boot-state",
+    "active"
+  );
+  await page.waitForTimeout(400);
+  await page.screenshot({
+    path: testInfo.outputPath("slow-first-boot-mobile.png"),
+    fullPage: true
+  });
+
+  await page.frameLocator("#byok-runtime-frame").locator("body").evaluate(
+    () => window.parent.postMessage({
+      type: "clawsembly:byok-runtime-status",
+      state: "running",
+      label: "Verifying the complete package graph…"
+    }, location.origin)
+  );
+  await expect(page.locator("#boot-title")).toHaveText(
+    "OpenClawを確認しています"
+  );
+  await expect(page.locator("#boot-bar")).toHaveAttribute(
+    "aria-valuenow",
+    "38"
+  );
+
+  await page.frameLocator("#byok-runtime-frame").locator("body").evaluate(
+    () => window.parent.postMessage({
+      type: "clawsembly:byok-runtime-status",
+      state: "fail",
+      label: "FAIL"
+    }, location.origin)
+  );
+  await expect(page.locator("#boot-progress")).toHaveAttribute(
+    "data-state",
+    "fail"
+  );
+  await expect(page.getByRole("button", {
+    name: "もう一度起動する"
+  })).toBeVisible();
 });

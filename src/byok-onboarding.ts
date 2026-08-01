@@ -115,6 +115,16 @@ const runtimeSummary = requiredElement<HTMLElement>("#runtime-summary");
 const runtimeFrame =
   requiredElement<HTMLIFrameElement>("#byok-runtime-frame");
 const revokeButton = requiredElement<HTMLButtonElement>("#byok-revoke");
+const bootProgress = requiredElement<HTMLElement>("#boot-progress");
+const bootTitle = requiredElement<HTMLElement>("#boot-title");
+const bootDetail = requiredElement<HTMLElement>("#boot-detail");
+const bootElapsed = requiredElement<HTMLTimeElement>("#boot-elapsed");
+const bootBar = requiredElement<HTMLElement>("#boot-bar");
+const bootPatience = requiredElement<HTMLElement>("#boot-patience");
+const bootRetry = requiredElement<HTMLButtonElement>("#boot-retry");
+const bootPhases = Array.from(
+  document.querySelectorAll<HTMLElement>("[data-boot-phase]")
+);
 
 const pendingRequests = new Map<string, {
   reject: (reason: Error) => void;
@@ -131,6 +141,9 @@ let capabilityAttached = false;
 let wizardStarted = false;
 let finishing = false;
 let runtimeHandshakeTimer: number | undefined;
+let bootTimer: number | undefined;
+let bootPhase = 0;
+const bootStartedAt = performance.now();
 
 function setStatus(
   state: "fail" | "idle" | "ready" | "running",
@@ -151,6 +164,132 @@ function setStep(activeIndex: number): void {
         ? "active"
         : "pending";
   });
+}
+
+const bootCopy = [
+  {
+    status: "実行環境を読込中",
+    title: "実行環境を読み込んでいます",
+    detail: "初回のみ約385 MBを確認・読み込みます。通常は数分で完了します。"
+  },
+  {
+    status: "OpenClawを検証中",
+    title: "OpenClawを確認しています",
+    detail: "ダウンロードした実行環境とパッケージが正しいことを確認しています。"
+  },
+  {
+    status: "ブラウザ内へ展開中",
+    title: "ブラウザ内へ展開しています",
+    detail: "OpenClawのファイルと必要な状態を、安全なブラウザ環境へ展開しています。"
+  },
+  {
+    status: "OpenClawを起動中",
+    title: "OpenClawを起動しています",
+    detail: "Gatewayと公式Wizardを接続しています。あと少しで設定を始められます。"
+  }
+] as const;
+
+function elapsedLabel(): string {
+  const elapsedSeconds = Math.max(
+    0,
+    Math.floor((performance.now() - bootStartedAt) / 1_000)
+  );
+  const minutes = Math.floor(elapsedSeconds / 60);
+  const seconds = String(elapsedSeconds % 60).padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
+
+function updateBootElapsed(): void {
+  const elapsedSeconds = Math.max(
+    0,
+    Math.floor((performance.now() - bootStartedAt) / 1_000)
+  );
+  bootElapsed.textContent = `経過 ${elapsedLabel()}`;
+  if (elapsedSeconds >= 20 && bootProgress.dataset.state === "running") {
+    bootPatience.hidden = false;
+  }
+  if (elapsedSeconds >= 90 && bootProgress.dataset.state === "running") {
+    bootPatience.textContent =
+      "初回起動は回線や端末によって数分かかります。処理は継続中です。";
+  }
+}
+
+function setBootPhase(nextPhase: number): void {
+  bootPhase = Math.max(bootPhase, Math.min(3, Math.max(0, nextPhase)));
+  const copy = bootCopy[bootPhase];
+  bootProgress.dataset.state = "running";
+  bootProgress.style.setProperty(
+    "--boot-progress",
+    `${[12, 38, 68, 88][bootPhase]}%`
+  );
+  bootBar.setAttribute(
+    "aria-valuenow",
+    String([12, 38, 68, 88][bootPhase])
+  );
+  bootTitle.textContent = copy.title;
+  bootDetail.textContent = copy.detail;
+  bootPhases.forEach((phase, index) => {
+    phase.dataset.bootState = index < bootPhase
+      ? "complete"
+      : index === bootPhase
+        ? "active"
+        : "pending";
+  });
+  setStatus("running", copy.status);
+}
+
+function phaseForRuntimeLabel(label: string): number {
+  const normalized = label.toLowerCase();
+  if (
+    normalized.includes("starting the exact")
+    || normalized.includes("gateway listening")
+    || normalized.includes("persistent official")
+  ) {
+    return 3;
+  }
+  if (
+    normalized.includes("installing")
+    || normalized.includes("restoring")
+    || normalized.includes("lifecycle")
+  ) {
+    return 2;
+  }
+  if (normalized.includes("verifying")) return 1;
+  return 0;
+}
+
+function finishBoot(): void {
+  if (bootTimer !== undefined) {
+    window.clearInterval(bootTimer);
+    bootTimer = undefined;
+  }
+  const completedIn = elapsedLabel();
+  bootProgress.dataset.state = "ready";
+  bootProgress.style.setProperty("--boot-progress", "100%");
+  bootBar.setAttribute("aria-valuenow", "100");
+  bootTitle.textContent = "OpenClawを起動しました";
+  bootDetail.textContent =
+    `${completedIn}で準備が完了しました。公式Wizardを開いています。`;
+  bootElapsed.textContent = `完了 ${completedIn}`;
+  bootPatience.hidden = true;
+  bootRetry.hidden = true;
+  bootPhases.forEach((phase) => {
+    phase.dataset.bootState = "complete";
+  });
+}
+
+function failBoot(): void {
+  if (bootTimer !== undefined) {
+    window.clearInterval(bootTimer);
+    bootTimer = undefined;
+  }
+  bootProgress.dataset.state = "fail";
+  bootTitle.textContent = "起動を完了できませんでした";
+  bootDetail.textContent =
+    "通信やブラウザのメモリ状態を確認して、もう一度お試しください。";
+  bootElapsed.textContent = `停止 ${elapsedLabel()}`;
+  bootPatience.hidden = true;
+  bootRetry.hidden = false;
 }
 
 function showError(message?: string): void {
@@ -281,8 +420,8 @@ function renderSelect(step: WizardStep): void {
 function renderText(step: WizardStep): void {
   if (step.sensitive) {
     showError(
-      "この秘密入力はまだClawsembly能力境界へ接続されていないため、"
-      + "安全側に倒してWasmゲストへは送信しません。前の選択へ戻ってください。"
+      "この認証方法はまだ安全な接続へ対応していないため、"
+      + "認証情報をOpenClawへ送信しません。前の選択へ戻ってください。"
     );
     return;
   }
@@ -370,9 +509,9 @@ function showCredentialAdapter(step: WizardStep): void {
     oauthPanel.hidden = true;
     apiKeyPanel.hidden = true;
     credentialResult.textContent =
-      `${capability.providerLabel} · 能力境界へ接続済み`;
+      `${capability.providerLabel} · 安全に接続済み`;
     wizardControls.replaceChildren(createButton(
-      "接続済みの能力で公式Wizardを再開 →",
+      "接続済みのモデルで公式Wizardを再開 →",
       () => void answerWizard(step, "skip"),
       { primary: true }
     ));
@@ -387,13 +526,13 @@ function showCredentialAdapter(step: WizardStep): void {
 function renderWizardStep(step: WizardStep): void {
   currentStep = step;
   setStep(1);
-  wizardOrigin.textContent = `Official OpenClaw Wizard · ${step.type}`;
+  wizardOrigin.textContent = `OpenClaw 公式Wizard · ${step.type}`;
   wizardTitle.textContent = step.title?.trim()
     || step.message?.trim()
     || "OpenClaw setup";
   wizardMessage.textContent = step.title && step.message
     ? step.message
-    : "この画面はGatewayのwizard.start / wizard.nextをそのまま描画しています。";
+    : "OpenClaw公式Wizardの案内をそのまま表示しています。";
   wizardControls.replaceChildren();
   showError();
 
@@ -456,9 +595,9 @@ async function attachCapability(nextCapability: Capability): Promise<void> {
 async function finishCredential(nextCapability: Capability): Promise<void> {
   if (!currentStep) throw new Error("Wizard credential step is unavailable");
   capability = nextCapability;
-  setStatus("running", "能力をOpenClawへ接続中");
+  setStatus("running", "モデルを接続中");
   credentialResult.textContent =
-    "短命の能力トークンをブラウザ内ループバックへ接続しています…";
+    "認証情報を保護したモデル接続を準備しています…";
   try {
     await attachCapability(nextCapability);
     capabilityAttached = true;
@@ -478,8 +617,8 @@ async function finishCredential(nextCapability: Capability): Promise<void> {
   }).format(new Date(nextCapability.expiresAt)) + "まで";
   budget.textContent = `最大${nextCapability.maxRequests}リクエスト`;
   credentialResult.textContent =
-    `${nextCapability.providerLabel} · 秘密情報をゲストへ渡さず接続済み`;
-  setStatus("ready", "能力境界 接続済み");
+    `${nextCapability.providerLabel} · 安全に接続済み`;
+  setStatus("ready", "モデル 接続済み");
   credentialAdapter.hidden = true;
   await answerWizard(currentStep, "skip");
 }
@@ -487,7 +626,7 @@ async function finishCredential(nextCapability: Capability): Promise<void> {
 async function issueApiKeyCapability(): Promise<void> {
   connectButton.disabled = true;
   apiKey.disabled = true;
-  credentialResult.textContent = "期限付き能力を発行しています…";
+  credentialResult.textContent = "安全な接続を準備しています…";
   try {
     const response = await fetch("/api/byok/capabilities", {
       method: "POST",
@@ -511,7 +650,7 @@ async function issueApiKeyCapability(): Promise<void> {
   } catch (error) {
     apiKey.value = "";
     credentialResult.textContent = errorMessage(error);
-    setStatus("fail", "能力発行失敗");
+    setStatus("fail", "モデル接続失敗");
   } finally {
     connectButton.disabled = false;
     apiKey.disabled = false;
@@ -620,10 +759,10 @@ async function finishWizard(result: WizardResult): Promise<void> {
     }
     await applyCapabilityConfig();
     setStep(3);
-    wizardOrigin.textContent = "Official OpenClaw Wizard · complete";
+    wizardOrigin.textContent = "OpenClaw 公式Wizard · 完了";
     wizardTitle.textContent = "OpenClawの準備が完了しました";
     wizardMessage.textContent = capability
-      ? "公式Wizardの設定に、秘密を含まないモデル能力を接続しました。"
+      ? "公式Wizardの設定に、認証情報を含まない安全なモデル接続を追加しました。"
       : "公式Wizardを完了しました。モデル接続は後から追加できます。";
     wizardControls.replaceChildren();
     wizardControls.append(createButton(
@@ -636,11 +775,11 @@ async function finishWizard(result: WizardResult): Promise<void> {
     ));
     runtimeSummary.textContent = capability
       ? `${capability.providerLabel} / ${capability.model} · `
-        + "不透明な短命能力で接続済み"
+        + "安全な期限付き接続を使用"
       : "モデル接続なしで公式Wizardを完了";
     runtimePanel.hidden = false;
     revokeButton.disabled = !capability;
-    setStatus("ready", "OpenClaw ready");
+    setStatus("ready", "OpenClaw 準備完了");
   } catch (error) {
     finishing = false;
     showError(errorMessage(error));
@@ -670,7 +809,7 @@ async function startWizard(): Promise<void> {
   if (wizardStarted) return;
   wizardStarted = true;
   setStep(1);
-  setStatus("running", "Official Wizard接続中");
+  setStatus("running", "公式Wizardに接続中");
   setWizardBusy("wizard.startを実行中…");
   try {
     const result = await rpc("wizard.start", {
@@ -745,6 +884,7 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
     return;
   }
   if (message.type === "clawsembly:byok-runtime-ready") {
+    setBootPhase(0);
     startOnboardingRuntime();
     return;
   }
@@ -753,8 +893,9 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
       window.clearInterval(runtimeHandshakeTimer);
       runtimeHandshakeTimer = undefined;
     }
+    finishBoot();
     wizardOrigin.textContent =
-      `Official OpenClaw Wizard · ${
+      `OpenClaw 公式Wizard · ${
         typeof message.openclawVersion === "string"
           ? message.openclawVersion
           : "connected"
@@ -769,11 +910,15 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
     const label = typeof message.label === "string"
       ? message.label
       : "ブラウザカーネルを起動中";
-    setStatus(
-      message.state === "fail" ? "fail" : "running",
-      label
-    );
-    wizardMessage.textContent = label;
+    if (message.state === "fail") {
+      failBoot();
+      setStatus("fail", "起動に失敗しました");
+      wizardMessage.textContent =
+        "OpenClawを起動できませんでした。上の再試行ボタンからやり直せます。";
+      return;
+    }
+    setBootPhase(phaseForRuntimeLabel(label));
+    wizardMessage.textContent = bootCopy[bootPhase].detail;
   }
 });
 
@@ -800,8 +945,12 @@ apiKeyPanel.addEventListener("submit", (event) => {
 revokeButton.addEventListener("click", () => {
   void revokeCapability();
 });
+bootRetry.addEventListener("click", () => {
+  location.reload();
+});
 
 window.addEventListener("pagehide", () => {
+  if (bootTimer !== undefined) window.clearInterval(bootTimer);
   const adminToken = capability?.adminToken ?? oauthAdminToken;
   if (!adminToken) return;
   void fetch("/api/byok/capabilities/revoke", {
@@ -816,7 +965,9 @@ window.addEventListener("pagehide", () => {
 });
 
 setStep(0);
-setStatus("running", "Kernel起動中");
+setBootPhase(0);
+updateBootElapsed();
+bootTimer = window.setInterval(updateBootElapsed, 1_000);
 startOnboardingRuntime();
 runtimeHandshakeTimer = window.setInterval(() => {
   if (wizardStarted) {
