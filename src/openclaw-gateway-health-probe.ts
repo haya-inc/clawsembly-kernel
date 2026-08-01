@@ -283,6 +283,44 @@ function captureStream(
   };
 }
 
+function errorDetail(error: unknown): string {
+  const reasons = error instanceof AggregateError
+    ? error.errors
+    : [error];
+  return reasons.map((reason) =>
+    reason instanceof Error ? reason.message : String(reason)
+  ).join(" | ");
+}
+
+function streamTail(value: string, maxLength = 4_000): string {
+  return value.length <= maxLength
+    ? value
+    : `…${value.slice(-maxLength)}`;
+}
+
+async function waitForEitherStreamMarker(options: {
+  label: string;
+  marker: string;
+  stderr: StreamCapture;
+  stdout: StreamCapture;
+  timeoutMs: number;
+}): Promise<void> {
+  try {
+    await Promise.any([
+      options.stdout.waitFor(options.marker, options.timeoutMs),
+      options.stderr.waitFor(options.marker, options.timeoutMs)
+    ]);
+  } catch (error) {
+    throw new Error(
+      `${options.label} did not emit its readiness marker within `
+      + `${options.timeoutMs}ms. ${errorDetail(error)}\n`
+      + `stdout tail:\n${streamTail(options.stdout.snapshot())}\n`
+      + `stderr tail:\n${streamTail(options.stderr.snapshot())}`,
+      { cause: error }
+    );
+  }
+}
+
 function parseJsonOutput(stdout: string): unknown {
   const trimmed = stdout.trim();
   if (!trimmed) throw new Error("Gateway health client emitted no JSON");
@@ -765,10 +803,13 @@ async function runProbe(): Promise<void> {
         stdout: bridgeStdout,
         stderr: bridgeStderr
       };
-      const bridgeReady = Promise.any([
-        bridgeStdout.waitFor(byokLoopbackReadyMarker, 30_000),
-        bridgeStderr.waitFor(byokLoopbackReadyMarker, 30_000)
-      ]);
+      const bridgeReady = waitForEitherStreamMarker({
+        label: "BYOK loopback broker",
+        marker: byokLoopbackReadyMarker,
+        stderr: bridgeStderr,
+        stdout: bridgeStdout,
+        timeoutMs: 30_000
+      });
       const bridgeExit = bridgeInstance.wait().then((output) => {
         throw new Error(
           "BYOK loopback broker exited before readiness: "
@@ -976,10 +1017,13 @@ async function runProbe(): Promise<void> {
       kind: "gateway-exit" as const,
       output: output as WasixOutput
     }));
-    const readiness = Promise.any([
-      gatewayStdout.waitFor(readinessMarker, proofTimeoutMs),
-      gatewayStderr.waitFor(readinessMarker, proofTimeoutMs)
-    ]).then(
+    const readiness = waitForEitherStreamMarker({
+      label: "OpenClaw Gateway",
+      marker: readinessMarker,
+      stderr: gatewayStderr,
+      stdout: gatewayStdout,
+      timeoutMs: proofTimeoutMs
+    }).then(
       () => ({ kind: "ready" as const }),
       (error) => ({
         error: error instanceof Error ? error.message : String(error),
@@ -1062,10 +1106,13 @@ async function runProbe(): Promise<void> {
     const readyElapsedMs = Math.round(performance.now() - startedAt);
     status.textContent =
       "Gateway listening; waiting for post-ready plugin prewarm…";
-    await Promise.any([
-      gatewayStdout.waitFor(clientLaunchMarker, 30_000),
-      gatewayStderr.waitFor(clientLaunchMarker, 30_000)
-    ]);
+    await waitForEitherStreamMarker({
+      label: "OpenClaw plugin prewarm",
+      marker: clientLaunchMarker,
+      stderr: gatewayStderr,
+      stdout: gatewayStdout,
+      timeoutMs: onboardingProof ? 120_000 : 30_000
+    });
     const clientLaunchElapsedMs = Math.round(
       performance.now() - startedAt
     );
@@ -1114,10 +1161,13 @@ async function runProbe(): Promise<void> {
         output: output as WasixOutput
       }));
       const rpcBridgeStartup = await Promise.race([
-        Promise.any([
-          rpcBridgeStdout.waitFor(wizardRpcBridgeReadyMarker, 180_000),
-          rpcBridgeStderr.waitFor(wizardRpcBridgeReadyMarker, 180_000)
-        ]).then(() => ({ kind: "rpc-bridge-ready" as const })),
+        waitForEitherStreamMarker({
+          label: "Official OpenClaw RPC bridge",
+          marker: wizardRpcBridgeReadyMarker,
+          stderr: rpcBridgeStderr,
+          stdout: rpcBridgeStdout,
+          timeoutMs: 180_000
+        }).then(() => ({ kind: "rpc-bridge-ready" as const })),
         rpcBridgeExit,
         gatewayExit
       ]);
