@@ -125,6 +125,9 @@ Experimental. Current execution milestones:
   capability, then the official Gateway safely restarts in-process and is
   checked for the active primary model before onboarding succeeds. See
   [the official Wizard and model credential boundary](docs/byok-onboarding.md).
+  Later same-origin tabs reuse the live Gateway and official Wizard through a
+  coordinator Worker; if the owner closes, a follower takes ownership and
+  restores the verified OPFS boot snapshot.
 - Chromium executes the artifact-derived SQLite contract against official
   SQLite Wasm with OPFS persistence.
 - Native Edge.js executes the exact unmodified OpenClaw state artifact through

@@ -47,13 +47,22 @@ SHA-256 identities, so a runtime upgrade automatically selects a new cache.
 A later browser process restores the snapshot, verifies the manifest and every
 file hash, and skips the package lifecycle scripts. A missing, corrupt, or
 incompatible snapshot falls back to a new Directory and a normal cold boot.
-Provider credentials and Wizard session state are outside this snapshot.
+Provider credentials remain outside this snapshot. Wizard session state is not
+persisted; while an owner is live, only its current public Wizard result is held
+ephemerally by the tab coordinator.
 
-An origin-wide Web Lock serializes expensive bootstrap work across tabs. A
-second tab shows an explicit wait state until the first tab reaches a terminal
-boot state, then begins from the saved snapshot. This prevents concurrent cold
-boots; sharing one already-running Gateway between tabs remains separate
-SharedWorker work.
+For onboarding, a same-origin `SharedWorker` elects one cross-origin-isolated
+runtime iframe as the live Gateway owner. Later tabs reuse that exact Gateway
+and persistent official client through routed `MessagePort` requests instead
+of booting another 385 MB runtime. The coordinator mirrors the current official
+Wizard result, so `wizard.start` in a follower joins the existing session rather
+than attempting a second session that OpenClaw rejects. It never runs Wasmer or
+holds provider credentials.
+
+When the owner tab closes, the coordinator promotes a follower, which restores
+the verified OPFS snapshot and starts a replacement Gateway. An origin-wide Web
+Lock remains the fallback for browsers without `SharedWorker` and for proof
+pages that intentionally run an independent runtime.
 
 The Durable Object stores the provider credential until revocation or alarm
 expiry. Cloudflare therefore participates in the secret boundary; this is not
@@ -182,9 +191,13 @@ Automated coverage includes:
   identity header, Responses confinement, and revocation;
 - Chat Completions and Responses browser-local mailbox paths;
 - mocked end-to-end Wizard rendering and credential interception;
+- same-origin owner election, current-Wizard mirroring, request routing, and
+  follower promotion after the owner closes;
 - a full Chromium proof that boots the real Edge.js Wasm, mounts the complete
   OpenClaw image, starts the unmodified Gateway, connects the persistent
   official GatewayClient, calls `wizard.start`, renders the returned
   `OpenClaw setup` step, and commits a fixed-shape capability provider through
   the exact package's public config writer, safely restarts the Gateway in
-  process, reconnects, and verifies the active model through `agents.list`.
+  process, reconnects, and verifies the active model through `agents.list`;
+- a full Chromium multi-tab proof that boots one real Gateway and connects a
+  later onboarding tab to its official Wizard without loading a second runtime.

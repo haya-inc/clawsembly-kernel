@@ -4,12 +4,23 @@ import {
   stageByokCapabilityHandoff,
   type ByokCapabilityHandoff
 } from "./byok-capability-handoff";
+import type {
+  OpenClawRuntimeHost
+} from "./openclaw-runtime-host";
 
 type RuntimeStartMessage = {
   capability: ByokCapabilityHandoff;
   type: "clawsembly:byok-runtime-start";
 } | {
   type: "clawsembly:onboarding-runtime-start";
+};
+
+type RuntimeOperationMessage = {
+  requestId: string;
+  type:
+    | "clawsembly:wizard-capability-attach"
+    | "clawsembly:wizard-capability-configure"
+    | "clawsembly:wizard-rpc-request";
 };
 
 function isRuntimeStartMessage(value: unknown): value is RuntimeStartMessage {
@@ -45,9 +56,35 @@ function isRuntimeStartMessage(value: unknown): value is RuntimeStartMessage {
     );
 }
 
+function isRuntimeOperationMessage(
+  value: unknown
+): value is RuntimeOperationMessage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const message = value as Partial<RuntimeOperationMessage>;
+  return typeof message.requestId === "string"
+    && /^[A-Za-z0-9_-]{1,128}$/u.test(message.requestId)
+    && (
+      message.type === "clawsembly:wizard-capability-attach"
+      || message.type === "clawsembly:wizard-capability-configure"
+      || message.type === "clawsembly:wizard-rpc-request"
+    );
+}
+
 let started = false;
 const runtimeStatus = document.querySelector<HTMLOutputElement>("#status");
-if (runtimeStatus) {
+const runtimeResult = document.querySelector<HTMLPreElement>("#result");
+const bootstrapLockName = "clawsembly-openclaw-bootstrap-v1";
+const onboardingSharedRuntime =
+  new URLSearchParams(location.search).get("proof") === "onboarding"
+  && typeof SharedWorker === "function";
+let sharedRuntimePort: MessagePort | undefined;
+let sharedRuntimeOwner = false;
+let sharedOwnerStarted = false;
+let sharedOwnerMessageListener: ((data: unknown) => void) | undefined;
+
+if (runtimeStatus && !onboardingSharedRuntime) {
   new MutationObserver(() => {
     window.parent.postMessage({
       type: "clawsembly:byok-runtime-status",
@@ -60,7 +97,130 @@ if (runtimeStatus) {
     subtree: true
   });
 }
-const bootstrapLockName = "clawsembly-openclaw-bootstrap-v1";
+
+function sendSharedOwnerOutput(message: unknown): void {
+  sharedRuntimePort?.postMessage({
+    type: "clawsembly:shared-runtime-owner-output",
+    message
+  });
+}
+
+function installSharedOwnerHost(): void {
+  if (!runtimeStatus || !runtimeResult) return;
+  const runtimeHost: OpenClawRuntimeHost = {
+    origin: location.origin,
+    search: "?proof=onboarding",
+    status: {
+      dataset: runtimeStatus.dataset,
+      get textContent() {
+        return runtimeStatus.textContent;
+      },
+      set textContent(value: string | null) {
+        runtimeStatus.textContent = value;
+        sendSharedOwnerOutput({
+          type: "clawsembly:byok-runtime-status",
+          state: runtimeStatus.dataset.state ?? "running",
+          label: value?.trim() ?? ""
+        });
+      }
+    },
+    result: {
+      get textContent() {
+        return runtimeResult.textContent;
+      },
+      set textContent(value: string | null) {
+        runtimeResult.textContent = value;
+        sendSharedOwnerOutput({
+          type: "clawsembly:shared-runtime-result",
+          text: value ?? ""
+        });
+      }
+    },
+    addMessageListener(listener) {
+      sharedOwnerMessageListener = listener;
+    },
+    postMessage(message) {
+      sendSharedOwnerOutput(message);
+    }
+  };
+  globalThis.__clawsemblyOpenClawRuntimeHost = runtimeHost;
+}
+
+function startSharedOwner(): void {
+  if (!sharedRuntimeOwner || sharedOwnerStarted) return;
+  sharedOwnerStarted = true;
+  installSharedOwnerHost();
+  void startRuntimeProbe();
+}
+
+if (onboardingSharedRuntime) {
+  try {
+    const sharedRuntime = new SharedWorker(
+      new URL("./openclaw-shared-worker.ts", import.meta.url),
+      {
+        name: "clawsembly-openclaw-runtime-v1",
+        type: "module"
+      }
+    );
+    sharedRuntimePort = sharedRuntime.port;
+    sharedRuntimePort.onmessage = (event: MessageEvent<unknown>) => {
+      const message = event.data as {
+        label?: unknown;
+        message?: unknown;
+        state?: unknown;
+        text?: unknown;
+        type?: unknown;
+      };
+      if (message.type === "clawsembly:shared-runtime-owner") {
+        sharedRuntimeOwner = true;
+        installSharedOwnerHost();
+        return;
+      }
+      if (message.type === "clawsembly:shared-runtime-follower") {
+        sharedRuntimeOwner = false;
+        return;
+      }
+      if (message.type === "clawsembly:shared-runtime-owner-start") {
+        startSharedOwner();
+        return;
+      }
+      if (message.type === "clawsembly:shared-runtime-owner-input") {
+        sharedOwnerMessageListener?.(message.message);
+        return;
+      }
+      if (message.type === "clawsembly:byok-runtime-status") {
+        if (runtimeStatus) {
+          runtimeStatus.dataset.state = typeof message.state === "string"
+            ? message.state
+            : "running";
+          runtimeStatus.textContent = typeof message.label === "string"
+            ? message.label
+            : "Shared OpenClaw runtime is starting…";
+        }
+        window.parent.postMessage(event.data, location.origin);
+        return;
+      }
+      if (message.type === "clawsembly:shared-runtime-result") {
+        if (runtimeResult) {
+          runtimeResult.textContent = typeof message.text === "string"
+            ? message.text
+            : "";
+        }
+        return;
+      }
+      window.parent.postMessage(event.data, location.origin);
+    };
+    sharedRuntimePort.start();
+    window.addEventListener("pagehide", () => {
+      sharedRuntimePort?.postMessage({
+        type: "clawsembly:shared-runtime-disconnect"
+      });
+    }, { once: true });
+  } catch (error) {
+    sharedRuntimePort = undefined;
+    console.warn("Shared OpenClaw runtime is unavailable", error);
+  }
+}
 
 function waitForBootTerminal(): Promise<void> {
   if (
@@ -137,14 +297,21 @@ async function startRuntimeWithBootstrapLock(): Promise<void> {
 
 window.addEventListener("message", (event: MessageEvent<unknown>) => {
   if (
-    started
-    || event.origin !== location.origin
+    event.origin !== location.origin
     || event.source !== window.parent
-    || !isRuntimeStartMessage(event.data)
   ) {
     return;
   }
+  if (sharedRuntimePort && isRuntimeOperationMessage(event.data)) {
+    sharedRuntimePort.postMessage(event.data);
+    return;
+  }
+  if (started || !isRuntimeStartMessage(event.data)) return;
   started = true;
+  if (sharedRuntimePort) {
+    sharedRuntimePort.postMessage(event.data);
+    return;
+  }
   if (event.data.type === "clawsembly:byok-runtime-start") {
     stageByokCapabilityHandoff(event.data.capability);
   }

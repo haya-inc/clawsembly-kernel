@@ -47,7 +47,8 @@ Deliberately unavailable:
 - native extension loading
 - `sqlite-vec`
 - complete OpenClaw backup archive and restore orchestration
-- multi-tab ownership handoff
+- simultaneous multi-writer synchronization across independent OpenClaw
+  runtimes
 - full error-code normalization
 
 ## Edge.js personality slice
@@ -107,6 +108,25 @@ self-contained provider as the primary browser path. This avoids making a
 browser-specific reimplementation of Wasmer's native V8 bridge part of the
 kernel. A future browser-engine N-API bridge can remain an optimization without
 defining the correctness boundary.
+
+### Cross-tab runtime ownership
+
+The onboarding path keeps one live OpenClaw Gateway per browser origin and
+shares it with later tabs. The WASIX runtime itself remains in the
+cross-origin-isolated `byok-runtime.html` iframe. A same-origin `SharedWorker`
+acts only as a coordinator: it elects one iframe as owner, forwards official
+Wizard RPC requests to that owner, and replays runtime status, readiness, and
+the current Wizard result to followers. Keeping Wasmer in the iframe avoids
+depending on a browser treating the `SharedWorker` global as concretely
+cross-origin isolated.
+
+The owner is not a remote service and does not receive extra authority. Every
+tab still communicates through a same-origin `MessagePort`, and only the owner
+holds the live Wasmer `Runtime`, Gateway, and persistent official
+`GatewayClient`. If the owner page closes, the coordinator promotes a follower.
+That follower restores the verified OPFS boot snapshot and starts a replacement
+Gateway. Browsers without `SharedWorker` use the origin-wide Web Lock path,
+which serializes boot and then restores the same snapshot.
 
 ### Compiled SQLite personality
 

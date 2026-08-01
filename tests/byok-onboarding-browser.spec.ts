@@ -510,3 +510,45 @@ test("shows when OpenClaw was restored from its boot snapshot", async ({
     "保存済みの起動状態から復元"
   );
 });
+
+test("shows when an already-running OpenClaw Gateway was shared", async ({
+  page
+}) => {
+  await page.route("**/byok-runtime.html*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      headers: {
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Resource-Policy": "same-origin"
+      },
+      body: `<!doctype html><html><body><script>
+        parent.postMessage({
+          type:"clawsembly:byok-runtime-ready"
+        },location.origin);
+        addEventListener("message",(event)=>{
+          if(event.data.type!=="clawsembly:onboarding-runtime-start")return;
+          parent.postMessage({
+            type:"clawsembly:wizard-gateway-ready",
+            bootMode:"shared",
+            ownerBootMode:"warm",
+            openclawVersion:"2026.7.1-2"
+          },location.origin);
+        });
+      </script></body></html>`
+    });
+  });
+
+  await page.goto("/onboard.html");
+  await expect(page.locator("#boot-progress")).toHaveAttribute(
+    "data-boot-mode",
+    "shared"
+  );
+  await expect(page.locator("#boot-title")).toHaveText(
+    "実行中のOpenClawに接続しました"
+  );
+  await expect(page.locator("#boot-detail")).toContainText(
+    "別タブの実行環境を再利用"
+  );
+});

@@ -258,7 +258,10 @@ function phaseForRuntimeLabel(label: string): number {
   return 0;
 }
 
-function finishBoot(mode: "cold" | "warm"): void {
+function finishBoot(
+  mode: "cold" | "shared" | "warm",
+  timings?: Record<string, number>
+): void {
   if (bootTimer !== undefined) {
     window.clearInterval(bootTimer);
     bootTimer = undefined;
@@ -266,14 +269,21 @@ function finishBoot(mode: "cold" | "warm"): void {
   const completedIn = elapsedLabel();
   bootProgress.dataset.state = "ready";
   bootProgress.dataset.bootMode = mode;
+  if (timings) {
+    bootProgress.dataset.bootTimings = JSON.stringify(timings);
+  }
   bootProgress.style.setProperty("--boot-progress", "100%");
   bootBar.setAttribute("aria-valuenow", "100");
-  bootTitle.textContent = mode === "warm"
-    ? "OpenClawを復元しました"
-    : "OpenClawを起動しました";
-  bootDetail.textContent = mode === "warm"
-    ? `${completedIn}で保存済みの起動状態から復元しました。公式Wizardを開いています。`
-    : `${completedIn}で準備が完了しました。公式Wizardを開いています。`;
+  bootTitle.textContent = mode === "shared"
+    ? "実行中のOpenClawに接続しました"
+    : mode === "warm"
+      ? "OpenClawを復元しました"
+      : "OpenClawを起動しました";
+  bootDetail.textContent = mode === "shared"
+    ? `${completedIn}で別タブの実行環境を再利用しました。公式Wizardを開いています。`
+    : mode === "warm"
+      ? `${completedIn}で保存済みの起動状態から復元しました。公式Wizardを開いています。`
+      : `${completedIn}で準備が完了しました。公式Wizardを開いています。`;
   bootElapsed.textContent = `完了 ${completedIn}`;
   bootPatience.hidden = true;
   bootRetry.hidden = true;
@@ -869,6 +879,7 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
   }
   const message = event.data as {
     bootMode?: unknown;
+    bootTimings?: unknown;
     label?: unknown;
     openclawVersion?: unknown;
     state?: unknown;
@@ -898,7 +909,23 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
       window.clearInterval(runtimeHandshakeTimer);
       runtimeHandshakeTimer = undefined;
     }
-    finishBoot(message.bootMode === "warm" ? "warm" : "cold");
+    const bootTimings = message.bootTimings
+      && typeof message.bootTimings === "object"
+      && !Array.isArray(message.bootTimings)
+      ? Object.fromEntries(Object.entries(message.bootTimings).filter(
+          (entry): entry is [string, number] => (
+            typeof entry[1] === "number" && Number.isFinite(entry[1])
+          )
+        ))
+      : undefined;
+    finishBoot(
+      message.bootMode === "shared"
+        ? "shared"
+        : message.bootMode === "warm"
+          ? "warm"
+          : "cold",
+      bootTimings
+    );
     wizardOrigin.textContent =
       `OpenClaw 公式Wizard · ${
         typeof message.openclawVersion === "string"

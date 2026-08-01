@@ -13,6 +13,8 @@
     "src/openclaw-gateway-health-probe.ts",
     "src/openclaw-install-lifecycle-probe.ts",
     "src/openclaw-install-lifecycle.ts",
+    "src/openclaw-runtime-host.ts",
+    "src/openclaw-shared-worker.ts",
     "src/openclaw-opfs-persistence-probe.ts",
     "src/openclaw-package-runtime-probe.ts",
     "src/opfs-directory-store.ts",

@@ -1,4 +1,3 @@
-import "./style.css";
 import { parseClawsemblyFs } from "./clawsemblyfs";
 import {
   inspectOpenClawInstallState,
@@ -39,6 +38,9 @@ import {
   createOpenClawBootStoreId,
   restoreOrCreateOpenClawBootState
 } from "./openclaw-boot-cache";
+import {
+  currentOpenClawRuntimeHost
+} from "./openclaw-runtime-host";
 
 type OpenClawPackage = {
   engines?: {
@@ -228,7 +230,7 @@ function captureStream(
     waitFor: (expectedMarker, timeoutMs) => {
       if (captured.includes(expectedMarker)) return Promise.resolve();
       return new Promise<void>((resolve, reject) => {
-        const timeout = window.setTimeout(() => {
+        const timeout = globalThis.setTimeout(() => {
           cleanup();
           reject(
             new Error(
@@ -251,7 +253,7 @@ function captureStream(
           }
         };
         const cleanup = () => {
-          window.clearTimeout(timeout);
+          globalThis.clearTimeout(timeout);
           waiters.delete(check);
         };
         waiters.add(check);
@@ -260,7 +262,7 @@ function captureStream(
     waitUntil: (predicate, description, timeoutMs) => {
       if (predicate(captured)) return Promise.resolve();
       return new Promise<void>((resolve, reject) => {
-        const timeout = window.setTimeout(() => {
+        const timeout = globalThis.setTimeout(() => {
           cleanup();
           reject(
             new Error(`Timed out waiting for ${description}`)
@@ -279,7 +281,7 @@ function captureStream(
           }
         };
         const cleanup = () => {
-          window.clearTimeout(timeout);
+          globalThis.clearTimeout(timeout);
           waiters.delete(check);
         };
         waiters.add(check);
@@ -428,9 +430,38 @@ function redactSensitiveValues<T>(value: T, sensitive: string[]): T {
   return value;
 }
 
-const status = requiredElement<HTMLOutputElement>("#status");
-const result = requiredElement<HTMLPreElement>("#result");
-const searchParams = new URLSearchParams(location.search);
+const runtimeHost = currentOpenClawRuntimeHost();
+const status = runtimeHost?.status
+  ?? requiredElement<HTMLOutputElement>("#status");
+const result = runtimeHost?.result
+  ?? requiredElement<HTMLPreElement>("#result");
+const runtimeOrigin = runtimeHost?.origin ?? location.origin;
+const searchParams = new URLSearchParams(
+  runtimeHost?.search ?? location.search
+);
+const postRuntimeMessage = (message: unknown): void => {
+  if (runtimeHost) {
+    runtimeHost.postMessage(message);
+    return;
+  }
+  window.parent.postMessage(message, runtimeOrigin);
+};
+const addRuntimeMessageListener = (
+  listener: (data: unknown) => void
+): void => {
+  if (runtimeHost) {
+    runtimeHost.addMessageListener(listener);
+    return;
+  }
+  window.addEventListener("message", (event: MessageEvent<unknown>) => {
+    if (
+      event.origin === runtimeOrigin
+      && event.source === window.parent
+    ) {
+      listener(event.data);
+    }
+  });
+};
 const artifactUrl = searchParams.get("artifact") ?? "/edgejs.wasm";
 const imageUrl = searchParams.get("image") ?? "/openclaw.clawfs";
 const requestedProofKind = searchParams.get("proof");
@@ -531,6 +562,11 @@ const readinessMarker = "http server listening";
 const clientLaunchMarker = "agent runtime plugins pre-warmed";
 
 async function runProbe(): Promise<void> {
+  const bootTimingStartedAt = performance.now();
+  const bootTimings: Record<string, number> = {};
+  const markBootTiming = (name: string): void => {
+    bootTimings[name] = Math.round(performance.now() - bootTimingStartedAt);
+  };
   try {
     if (!crossOriginIsolated) {
       throw new Error(
@@ -540,6 +576,7 @@ async function runProbe(): Promise<void> {
     const { Directory, init, initializeLogger, Runtime, runWasix } =
       await import("@wasmer/sdk");
     await init();
+    markBootTiming("sdkReadyMs");
     const runtimeLogLevel = searchParams.get("debug");
     if (runtimeLogLevel === "debug" || runtimeLogLevel === "trace") {
       initializeLogger(runtimeLogLevel);
@@ -578,12 +615,14 @@ async function runProbe(): Promise<void> {
       fetchBytes(artifactUrl, "Edge.js WASIX"),
       fetchBytes(imageUrl, "OpenClaw package image")
     ]);
+    markBootTiming("artifactsFetchedMs");
     if (!WebAssembly.validate(edgeBytes)) {
       throw new Error("Chromium rejected the Edge.js WASIX module");
     }
 
     status.textContent = "Verifying the complete package graph…";
     const parsed = parseClawsemblyFs(imageBytes);
+    markBootTiming("packageParsedMs");
     const packageBytes = parsed.files["/package.json"];
     const launcherBytes = parsed.files["/openclaw.mjs"];
     const entryBytes = parsed.files["/dist/entry.js"];
@@ -613,6 +652,7 @@ async function runProbe(): Promise<void> {
       sha256(launcherBytes),
       sha256(entryBytes)
     ]);
+    markBootTiming("artifactsVerifiedMs");
     const artifactEvidence = {
       bytes: edgeBytes.byteLength,
       sha256: artifactSha256
@@ -765,6 +805,7 @@ async function runProbe(): Promise<void> {
       await gatewayOpenclaw.createDir(workspaceMountedRoot);
     };
     const module = await WebAssembly.compile(edgeBytes);
+    markBootTiming("edgeCompiledMs");
     const moduleWithBytes = {
       module,
       bytes: edgeBytes
@@ -1060,6 +1101,7 @@ async function runProbe(): Promise<void> {
         );
       }
     }
+    markBootTiming("statePreparedMs");
     const gatewayArgs = [
       "gateway",
       "run",
@@ -1144,7 +1186,7 @@ async function runProbe(): Promise<void> {
     const startupHostTimeout = new Promise<{
       kind: "startup-host-timeout";
     }>((resolve) => {
-      window.setTimeout(
+      globalThis.setTimeout(
         () => resolve({ kind: "startup-host-timeout" }),
         proofTimeoutMs + 5_000
       );
@@ -1215,6 +1257,7 @@ async function runProbe(): Promise<void> {
     }
 
     const readyElapsedMs = Math.round(performance.now() - startedAt);
+    markBootTiming("gatewayListeningMs");
     status.textContent =
       "Gateway listening; waiting for post-ready plugin prewarm…";
     await waitForEitherStreamMarker({
@@ -1227,6 +1270,7 @@ async function runProbe(): Promise<void> {
     const clientLaunchElapsedMs = Math.round(
       performance.now() - startedAt
     );
+    markBootTiming("pluginsPrewarmedMs");
     if (onboardingProof) {
       let rpcSequence = 0;
       let operationQueue = Promise.resolve();
@@ -1345,7 +1389,7 @@ async function runProbe(): Promise<void> {
             }
           }
           await new Promise<void>((resolve) => {
-            window.setTimeout(resolve, 20);
+            globalThis.setTimeout(resolve, 20);
           });
         }
         throw new Error(
@@ -1437,7 +1481,7 @@ async function runProbe(): Promise<void> {
             ) as { agents?: unknown };
           } catch {
             await new Promise<void>((resolve) => {
-              window.setTimeout(resolve, 100);
+              globalThis.setTimeout(resolve, 100);
             });
             continue;
           }
@@ -1465,7 +1509,7 @@ async function runProbe(): Promise<void> {
             return summary;
           }
           await new Promise<void>((resolve) => {
-            window.setTimeout(resolve, 50);
+            globalThis.setTimeout(resolve, 50);
           });
         }
         const restartDetail = restartFailure instanceof Error
@@ -1483,27 +1527,21 @@ async function runProbe(): Promise<void> {
         payload: { error?: string; result?: unknown },
         type = "clawsembly:wizard-rpc-response"
       ) => {
-        window.parent.postMessage({
+        postRuntimeMessage({
           type,
           requestId,
           ok,
           ...payload
-        }, location.origin);
+        });
       };
-      window.addEventListener("message", (event: MessageEvent<unknown>) => {
-        if (
-          event.origin !== location.origin
-          || event.source !== window.parent
-        ) {
-          return;
-        }
-        const rpc = isOnboardingRpcRequest(event.data)
-          ? event.data
+      addRuntimeMessageListener((message) => {
+        const rpc = isOnboardingRpcRequest(message)
+          ? message
           : undefined;
-        const capabilityRequest = consumeCapabilityRequest(event.data);
+        const capabilityRequest = consumeCapabilityRequest(message);
         const capabilityConfigRequest =
-          isCapabilityConfigRequest(event.data)
-            ? event.data
+          isCapabilityConfigRequest(message)
+            ? message
             : undefined;
         if (!rpc && !capabilityRequest && !capabilityConfigRequest) {
           return;
@@ -1581,7 +1619,8 @@ async function runProbe(): Promise<void> {
       });
       status.dataset.state = "pass";
       status.textContent = "READY · Official OpenClaw Wizard connected";
-      window.parent.postMessage({
+      markBootTiming("wizardRpcReadyMs");
+      postRuntimeMessage({
         type: "clawsembly:wizard-gateway-ready",
         openclawVersion: packageMetadata.version,
         bootMode,
@@ -1591,8 +1630,9 @@ async function runProbe(): Promise<void> {
             ? "saved"
             : "unavailable",
         bootCacheFallback: warmBootFallback !== undefined,
-        bootCacheWriteFailed: bootSnapshotError !== undefined
-      }, location.origin);
+        bootCacheWriteFailed: bootSnapshotError !== undefined,
+        bootTimings
+      });
       return;
     }
     status.textContent = agentTurnProof
@@ -1699,7 +1739,7 @@ async function runProbe(): Promise<void> {
         ),
         gatewayExit,
         new Promise<{ kind: "client-host-timeout" }>((resolve) => {
-          window.setTimeout(
+          globalThis.setTimeout(
             () => resolve({ kind: "client-host-timeout" }),
             remainingMs
           );
@@ -1716,7 +1756,7 @@ async function runProbe(): Promise<void> {
         await Promise.all([gatewayStdout.done, gatewayStderr.done]);
       }
       await new Promise<void>((resolve) => {
-        window.setTimeout(resolve, 1_000);
+        globalThis.setTimeout(resolve, 1_000);
       });
       const attemptResult = outcome.kind === "client-exit"
         ? {

@@ -11,7 +11,11 @@ async function runPersistentOnboardingBoot(options: {
   artifactPath: string;
   baseURL: string;
   profileDirectory: string;
-}): Promise<{ elapsedMs: number; mode: "cold" | "warm" }> {
+}): Promise<{
+  elapsedMs: number;
+  mode: "cold" | "warm";
+  timings: Record<string, number>;
+}> {
   const context = await chromium.launchPersistentContext(
     options.profileDirectory,
     { headless: true }
@@ -69,12 +73,34 @@ async function runPersistentOnboardingBoot(options: {
     if (mode !== "cold" && mode !== "warm") {
       throw new Error(`Unexpected OpenClaw boot mode: ${String(mode)}`);
     }
+    const timings = JSON.parse(
+      await bootProgress.getAttribute("data-boot-timings") ?? "{}"
+    ) as Record<string, number>;
     return {
       elapsedMs: Date.now() - startedAt,
-      mode
+      mode,
+      timings
     };
   } finally {
     await context.close();
+  }
+}
+
+async function waitForOnboardingReady(
+  page: import("@playwright/test").Page,
+  timeout: number
+): Promise<void> {
+  const bootProgress = page.locator("#boot-progress");
+  await expect.poll(
+    () => bootProgress.getAttribute("data-state"),
+    { timeout }
+  ).toMatch(/^(?:ready|fail)$/u);
+  if (await bootProgress.getAttribute("data-state") === "fail") {
+    throw new Error(
+      await page.frameLocator("#byok-runtime-frame")
+        .locator("#result")
+        .innerText()
+    );
   }
 }
 
@@ -260,7 +286,7 @@ test("restores the verified OpenClaw boot state after a browser restart", async 
     expect(cold.mode).toBe("cold");
     expect(warm.mode).toBe("warm");
     console.log(
-      `OpenClaw boot timing: cold=${cold.elapsedMs}ms warm=${warm.elapsedMs}ms`
+      `OpenClaw boot timing: ${JSON.stringify({ cold, warm })}`
     );
     await testInfo.attach("openclaw-boot-timing.json", {
       body: Buffer.from(JSON.stringify({ cold, warm }, null, 2)),
@@ -269,4 +295,47 @@ test("restores the verified OpenClaw boot state after a browser restart", async 
   } finally {
     await rm(profileDirectory, { recursive: true, force: true });
   }
+});
+
+test("connects a later tab to the already-running OpenClaw Gateway", async ({
+  context,
+  page
+}) => {
+  test.skip(
+    !edgeArtifactPath
+      || !imagePath
+      || !existsSync(edgeArtifactPath)
+      || !existsSync(imagePath),
+    "Set CLAWSEMBLY_EDGE_WASIX and CLAWSEMBLY_OPENCLAW_IMAGE"
+  );
+  test.setTimeout(540_000);
+
+  await page.route("**/edgejs.wasm", async (route) => {
+    await route.fulfill({
+      contentType: "application/wasm",
+      headers: {
+        "Cross-Origin-Resource-Policy": "same-origin"
+      },
+      path: edgeArtifactPath
+    });
+  });
+  await page.goto("/onboard.html");
+  await waitForOnboardingReady(page, 460_000);
+
+  const follower = await context.newPage();
+  const followerStartedAt = Date.now();
+  await follower.goto("/onboard.html");
+  await waitForOnboardingReady(follower, 15_000);
+  const followerElapsedMs = Date.now() - followerStartedAt;
+
+  await expect(follower.locator("#boot-progress")).toHaveAttribute(
+    "data-boot-mode",
+    "shared"
+  );
+  await expect(follower.locator("#boot-title")).toHaveText(
+    "実行中のOpenClawに接続しました"
+  );
+  await expect(follower.locator("#wizard-controls button").first())
+    .toBeVisible();
+  console.log(`Shared OpenClaw follower timing: ${followerElapsedMs}ms`);
 });
