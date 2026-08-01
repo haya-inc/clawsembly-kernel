@@ -6,11 +6,14 @@ host.status.dataset.state = "running";
 host.status.textContent = "Starting shared stub OpenClaw runtime…";
 host.addMessageListener((message) => {
   if (message.type !== "clawsembly:wizard-rpc-request") return;
+  const result = message.method === "wizard.start"
+    ? { client: message.params.client, sessionId: "shared-session" }
+    : { client: message.params.client };
   host.postMessage({
     type: "clawsembly:wizard-rpc-response",
     requestId: message.requestId,
     ok: true,
-    result: { client: message.params.client }
+    result
   });
 });
 setTimeout(() => {
@@ -151,14 +154,61 @@ test("shares one OpenClaw owner and routes RPC responses to each tab", async ({
 
   await expect.poll(() => responses(page)).toEqual([expect.objectContaining({
     requestId: "first_request",
-    result: { client: "first" }
+    result: expect.objectContaining({ client: "first" })
   })]);
   await expect.poll(() => responses(secondPage)).toEqual([
     expect.objectContaining({
       requestId: "second_request",
-      result: { client: "first" }
+      result: expect.objectContaining({ client: "first" })
     })
   ]);
+
+  await secondPage.evaluate(() => window.postMessage({
+    type: "clawsembly:wizard-rpc-request",
+    requestId: "advance_request",
+    method: "wizard.next",
+    params: { client: "advanced" }
+  }, location.origin));
+  await expect.poll(() => secondPage.evaluate(() => (
+    window as typeof window & {
+      __clawsemblyTestMessages: Array<{
+        requestId?: string;
+        result?: { client?: string };
+        type?: string;
+      }>;
+    }
+  ).__clawsemblyTestMessages.find((message) => (
+    message.type === "clawsembly:wizard-rpc-response"
+    && message.requestId === "advance_request"
+  )))).toEqual(expect.objectContaining({
+    result: { client: "advanced" }
+  }));
+
+  const thirdPage = await context.newPage();
+  await thirdPage.goto("/byok-runtime.html?proof=onboarding");
+  await thirdPage.evaluate(() => window.postMessage({
+    type: "clawsembly:wizard-rpc-request",
+    requestId: "third_start",
+    method: "wizard.start",
+    params: { client: "third" }
+  }, location.origin));
+  await expect.poll(() => thirdPage.evaluate(() => (
+    window as typeof window & {
+      __clawsemblyTestMessages: Array<{
+        requestId?: string;
+        result?: { client?: string; sessionId?: string };
+        type?: string;
+      }>;
+    }
+  ).__clawsemblyTestMessages.find((message) => (
+    message.type === "clawsembly:wizard-rpc-response"
+    && message.requestId === "third_start"
+  )))).toEqual(expect.objectContaining({
+    result: {
+      client: "advanced",
+      sessionId: "shared-session"
+    }
+  }));
 
   await page.close();
   await expect.poll(() => moduleLoads).toBe(2);

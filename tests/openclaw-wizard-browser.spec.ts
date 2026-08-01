@@ -365,5 +365,25 @@ test("connects a later tab to the already-running OpenClaw Gateway", async ({
     }
     return follower.locator(".wizard-stage").getAttribute("data-step-id");
   }, { timeout: 150_000 }).not.toBe(followerStepId);
+
+  const lateFollower = await context.newPage();
+  await lateFollower.goto("/onboard.html");
+  await waitForOnboardingReady(lateFollower, 15_000);
+  await expect(lateFollower.locator("#boot-progress")).toHaveAttribute(
+    "data-boot-mode",
+    "shared"
+  );
+  await expect(lateFollower.locator("#wizard-controls button").first())
+    .toBeVisible();
+  const lateFollowerStepId = await lateFollower.locator(".wizard-stage")
+    .getAttribute("data-step-id");
+  expect(lateFollowerStepId).toBeTruthy();
+  await lateFollower.locator("#wizard-controls button").first().click();
+  await expect.poll(async () => {
+    if (await lateFollower.locator("#wizard-error").isVisible()) {
+      throw new Error(await lateFollower.locator("#wizard-error").innerText());
+    }
+    return lateFollower.locator(".wizard-stage").getAttribute("data-step-id");
+  }, { timeout: 150_000 }).not.toBe(lateFollowerStepId);
   console.log(`Shared OpenClaw follower timing: ${followerElapsedMs}ms`);
 });

@@ -23,6 +23,7 @@ let owner: MessagePort | undefined;
 let readyMessage: unknown;
 let resultMessage: unknown;
 let runtimeRequested = false;
+let wizardSessionId: string | undefined;
 let wizardSnapshot: unknown;
 let wizardStartInFlight = false;
 let statusMessage: unknown = {
@@ -70,6 +71,7 @@ function disconnect(port: MessagePort): void {
     requestOwners.clear();
     requestMethods.clear();
     wizardSnapshot = undefined;
+    wizardSessionId = undefined;
     wizardStartInFlight = false;
     wizardStartWaiters.length = 0;
     chooseOwner();
@@ -91,6 +93,20 @@ function sharedReady(message: unknown): unknown {
     ownerBootMode: (message as { bootMode?: unknown }).bootMode,
     bootMode: "shared"
   };
+}
+
+function rememberWizardResult(result: unknown): void {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    wizardSnapshot = result;
+    return;
+  }
+  const candidate = result as { sessionId?: unknown };
+  if (typeof candidate.sessionId === "string") {
+    wizardSessionId = candidate.sessionId;
+  }
+  wizardSnapshot = wizardSessionId && candidate.sessionId === undefined
+    ? { ...candidate, sessionId: wizardSessionId }
+    : result;
 }
 
 function routeOwnerOutput(message: unknown): void {
@@ -116,9 +132,10 @@ function routeOwnerOutput(message: unknown): void {
           || method === "wizard.status"
         )
       ) {
-        wizardSnapshot = candidate.result;
+        rememberWizardResult(candidate.result);
       } else if (method === "wizard.cancel") {
         wizardSnapshot = undefined;
+        wizardSessionId = undefined;
       }
       if (requester) send(requester, message);
       if (method === "wizard.start") {
