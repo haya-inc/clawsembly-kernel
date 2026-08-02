@@ -165,7 +165,10 @@ let bootPhase = 0;
 let bootStartedAt = performance.now();
 let runtimeRecoveryAttempts = 0;
 let runtimeRecoveryInProgress = false;
+let initialChannelSkipInProgress = false;
 const gatewayReconnectWindowMs = 30_000;
+const initialChannelSkipTimeoutMs = 35_000;
+const runtimeRequestTimeoutMs = 135_000;
 const maximumAutomaticRuntimeRecoveries = 2;
 
 function setStatus(
@@ -456,9 +459,10 @@ function errorMessage(error: unknown): string {
     || "OpenClawのセットアップを続行できませんでした";
 }
 
-function isGatewayDisconnect(error: unknown): boolean {
+function isRuntimeUnavailable(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? "");
-  return /gateway (?:not connected|closed)|reconnect timed out/iu.test(message);
+  return /gateway (?:not connected|closed)|reconnect timed out|OpenClaw Wizard RPC timed out|ブラウザ内OpenClawから応答がありません/iu
+    .test(message);
 }
 
 function recoverDisconnectedRuntime(): boolean {
@@ -470,6 +474,7 @@ function recoverDisconnectedRuntime(): boolean {
   }
   runtimeRecoveryAttempts += 1;
   runtimeRecoveryInProgress = true;
+  initialChannelSkipInProgress = false;
   wizardStarted = false;
   wizardSessionId = undefined;
   currentStep = undefined;
@@ -494,14 +499,15 @@ function postRuntimeRequest(
     | "clawsembly:wizard-capability-attach"
     | "clawsembly:wizard-capability-configure"
     | "clawsembly:wizard-rpc-request",
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  timeoutMs = runtimeRequestTimeoutMs
 ): Promise<unknown> {
   const requestId = crypto.randomUUID();
   return new Promise((resolve, reject) => {
     const timeout = window.setTimeout(() => {
       pendingRequests.delete(requestId);
       reject(new Error("ブラウザ内OpenClawから応答がありません"));
-    }, 135_000);
+    }, timeoutMs);
     pendingRequests.set(requestId, { reject, resolve, timeout });
     runtimeFrame.contentWindow?.postMessage({
       type,
@@ -511,14 +517,19 @@ function postRuntimeRequest(
   });
 }
 
-async function rpc(method: string, params: unknown): Promise<unknown> {
+async function rpc(
+  method: string,
+  params: unknown,
+  timeoutMs = runtimeRequestTimeoutMs
+): Promise<unknown> {
   const reconnectDeadline = Date.now() + gatewayReconnectWindowMs;
   let retryDelayMs = 150;
   for (;;) {
     try {
       const result = await postRuntimeRequest(
         "clawsembly:wizard-rpc-request",
-        { method, params }
+        { method, params },
+        timeoutMs
       );
       return result;
     } catch (error) {
@@ -659,7 +670,11 @@ function setWizardBusy(label: string): void {
   wizardControls.append(loader, document.createTextNode(label));
 }
 
-async function answerWizard(step: WizardStep, value?: unknown): Promise<void> {
+async function answerWizard(
+  step: WizardStep,
+  value?: unknown,
+  timeoutMs = runtimeRequestTimeoutMs
+): Promise<void> {
   if (!wizardSessionId) throw new Error("Wizard session is not available");
   showError();
   setWizardBusy("公式Wizardへ回答を送信中…");
@@ -670,13 +685,46 @@ async function answerWizard(step: WizardStep, value?: unknown): Promise<void> {
         stepId: step.id,
         ...(value === undefined ? {} : { value })
       }
-    }) as WizardResult;
+    }, timeoutMs) as WizardResult;
     await handleWizardResult(result);
   } catch (error) {
-    if (isGatewayDisconnect(error) && recoverDisconnectedRuntime()) return;
+    if (isRuntimeUnavailable(error) && recoverDisconnectedRuntime()) return;
     renderWizardStep(step);
     showError(errorMessage(error));
   }
+}
+
+function isInitialChannelPrimer(step: WizardStep): boolean {
+  if (step.type !== "note") return false;
+  if (step.title?.trim() === "How channels work") return true;
+  const message = normalizeWizardCopy(step.message ?? "");
+  return message.includes("openclaw pairing approve <channel> <code>")
+    && message.includes("channels/pairing");
+}
+
+function initialChannelSkipValue(step: WizardStep): string | undefined {
+  if (!initialChannelSkipInProgress || step.type !== "select") return undefined;
+  const values = new Set((step.options ?? []).map((option) => option.value));
+  if (values.has("__skip__")) return "__skip__";
+  if (values.has("__done__")) return "__done__";
+  return undefined;
+}
+
+function showInitialChannelSkipProgress(): void {
+  currentStep = undefined;
+  setStep(1);
+  wizardStage.hidden = false;
+  credentialAdapter.hidden = true;
+  wizardOrigin.textContent = "Clawsembly · 初回セットアップ";
+  wizardTitle.textContent = "外部チャネルはあとから追加できます";
+  wizardStage.dataset.stepId = "clawsembly-skip-initial-channels";
+  wizardStage.dataset.stepType = "progress";
+  wizardMessage.classList.remove("wizard-message-note");
+  wizardMessage.textContent =
+    "まずブラウザで使える状態まで進めます。TelegramやDiscordなどは、必要になったときにOpenClawから追加できます。";
+  showError();
+  setStatus("running", "初回設定を最適化中");
+  setWizardBusy("外部チャネル設定をスキップしています…");
 }
 
 function renderSelect(step: WizardStep): void {
@@ -1132,6 +1180,27 @@ async function handleWizardResult(result: WizardResult): Promise<void> {
   if (!result.step) {
     throw new Error("Official Wizard returned no next step");
   }
+  if (!result.error && isInitialChannelPrimer(result.step)) {
+    initialChannelSkipInProgress = true;
+    showInitialChannelSkipProgress();
+    await answerWizard(
+      result.step,
+      undefined,
+      initialChannelSkipTimeoutMs
+    );
+    return;
+  }
+  const channelSkipValue = initialChannelSkipValue(result.step);
+  if (!result.error && channelSkipValue) {
+    showInitialChannelSkipProgress();
+    await answerWizard(
+      result.step,
+      channelSkipValue,
+      initialChannelSkipTimeoutMs
+    );
+    return;
+  }
+  initialChannelSkipInProgress = false;
   renderWizardStep(result.step);
 }
 

@@ -2,6 +2,7 @@ type RuntimeMessage = {
   message?: unknown;
   method?: unknown;
   ok?: unknown;
+  params?: unknown;
   requestId?: unknown;
   result?: unknown;
   type?: unknown;
@@ -15,6 +16,13 @@ const workerScope = globalThis as SharedWorkerScope;
 const ports = new Set<MessagePort>();
 const requestOwners = new Map<string, MessagePort>();
 const requestMethods = new Map<string, string>();
+const requestWizardNextKeys = new Map<string, string>();
+const wizardNextInFlight = new Set<string>();
+const wizardNextResponseCache = new Map<string, RuntimeMessage>();
+const wizardNextWaiters = new Map<string, Array<{
+  port: MessagePort;
+  requestId: string;
+}>>();
 const wizardStartWaiters: Array<{
   port: MessagePort;
   requestId: string;
@@ -31,6 +39,62 @@ let statusMessage: unknown = {
   state: "running",
   label: "Waiting for the shared OpenClaw owner…"
 };
+
+function clearWizardNextDeduplication(): void {
+  requestWizardNextKeys.clear();
+  wizardNextInFlight.clear();
+  wizardNextResponseCache.clear();
+  wizardNextWaiters.clear();
+}
+
+function wizardNextKey(message: RuntimeMessage): string | undefined {
+  if (
+    message.type !== "clawsembly:wizard-rpc-request"
+    || message.method !== "wizard.next"
+    || !message.params
+    || typeof message.params !== "object"
+    || Array.isArray(message.params)
+  ) {
+    return undefined;
+  }
+  const params = message.params as {
+    answer?: unknown;
+    sessionId?: unknown;
+  };
+  if (
+    typeof params.sessionId !== "string"
+    || !params.answer
+    || typeof params.answer !== "object"
+    || Array.isArray(params.answer)
+  ) {
+    return undefined;
+  }
+  const answer = params.answer as { stepId?: unknown; value?: unknown };
+  if (typeof answer.stepId !== "string") return undefined;
+  let value: string;
+  try {
+    value = Object.hasOwn(answer, "value")
+      ? JSON.stringify(answer.value) ?? "undefined"
+      : "<no-value>";
+  } catch {
+    return undefined;
+  }
+  return JSON.stringify([params.sessionId, answer.stepId, value]);
+}
+
+function rememberWizardNextResponse(
+  key: string,
+  response: RuntimeMessage
+): void {
+  wizardNextResponseCache.set(key, response);
+  while (wizardNextResponseCache.size > 32) {
+    const oldest = wizardNextResponseCache.keys().next().value as
+      | string
+      | undefined;
+    if (oldest === undefined) break;
+    wizardNextResponseCache.delete(oldest);
+  }
+}
 
 function send(port: MessagePort, message: unknown): void {
   try {
@@ -70,6 +134,7 @@ function disconnect(port: MessagePort): void {
     owner = undefined;
     requestOwners.clear();
     requestMethods.clear();
+    clearWizardNextDeduplication();
     wizardSnapshot = undefined;
     wizardSessionId = undefined;
     wizardStartInFlight = false;
@@ -102,6 +167,9 @@ function rememberWizardResult(result: unknown): void {
   }
   const candidate = result as { sessionId?: unknown };
   if (typeof candidate.sessionId === "string") {
+    if (wizardSessionId && candidate.sessionId !== wizardSessionId) {
+      clearWizardNextDeduplication();
+    }
     wizardSessionId = candidate.sessionId;
   }
   wizardSnapshot = wizardSessionId && candidate.sessionId === undefined
@@ -121,9 +189,11 @@ function routeOwnerOutput(message: unknown): void {
   ) {
     const requester = requestOwners.get(candidate.requestId);
     const method = requestMethods.get(candidate.requestId);
+    const nextKey = requestWizardNextKeys.get(candidate.requestId);
     if (requester || method) {
       requestOwners.delete(candidate.requestId);
       requestMethods.delete(candidate.requestId);
+      requestWizardNextKeys.delete(candidate.requestId);
       if (
         candidate.ok === true
         && (
@@ -136,8 +206,22 @@ function routeOwnerOutput(message: unknown): void {
       } else if (method === "wizard.cancel") {
         wizardSnapshot = undefined;
         wizardSessionId = undefined;
+        clearWizardNextDeduplication();
       }
       if (requester) send(requester, message);
+      if (method === "wizard.next" && nextKey) {
+        wizardNextInFlight.delete(nextKey);
+        if (candidate.ok === true) {
+          rememberWizardNextResponse(nextKey, candidate);
+        }
+        for (const waiter of wizardNextWaiters.get(nextKey) ?? []) {
+          send(waiter.port, {
+            ...candidate,
+            requestId: waiter.requestId
+          });
+        }
+        wizardNextWaiters.delete(nextKey);
+      }
       if (method === "wizard.start") {
         wizardStartInFlight = false;
         for (const waiter of wizardStartWaiters.splice(0)) {
@@ -192,6 +276,21 @@ workerScope.onconnect = (event: MessageEvent): void => {
       return;
     }
     if (!isRuntimeOperation(message) || !owner) return;
+    const nextKey = wizardNextKey(message);
+    if (nextKey && typeof message.requestId === "string") {
+      const cached = wizardNextResponseCache.get(nextKey);
+      if (cached) {
+        send(port, { ...cached, requestId: message.requestId });
+        return;
+      }
+      if (wizardNextInFlight.has(nextKey)) {
+        const waiters = wizardNextWaiters.get(nextKey) ?? [];
+        waiters.push({ port, requestId: message.requestId });
+        wizardNextWaiters.set(nextKey, waiters);
+        return;
+      }
+      wizardNextInFlight.add(nextKey);
+    }
     if (
       message.type === "clawsembly:wizard-rpc-request"
       && message.method === "wizard.start"
@@ -225,6 +324,9 @@ workerScope.onconnect = (event: MessageEvent): void => {
         && message.method === "wizard.start"
       ) {
         wizardStartInFlight = true;
+      }
+      if (nextKey) {
+        requestWizardNextKeys.set(message.requestId, nextKey);
       }
     }
     send(owner, {

@@ -2,19 +2,24 @@ import { expect, test } from "@playwright/test";
 
 const sharedProbeStub = `
 const host = globalThis.__clawsemblyOpenClawRuntimeHost;
+let wizardNextCalls=0;
 host.status.dataset.state = "running";
 host.status.textContent = "Starting shared stub OpenClaw runtime…";
 host.addMessageListener((message) => {
   if (message.type !== "clawsembly:wizard-rpc-request") return;
+  if(message.method==="wizard.next"){
+    wizardNextCalls+=1;
+    host.status.dataset.wizardNextCalls=String(wizardNextCalls);
+  }
   const result = message.method === "wizard.start"
     ? { client: message.params.client, sessionId: "shared-session" }
     : { client: message.params.client };
-  host.postMessage({
-    type: "clawsembly:wizard-rpc-response",
-    requestId: message.requestId,
-    ok: true,
-    result
-  });
+  setTimeout(()=>host.postMessage({
+      type: "clawsembly:wizard-rpc-response",
+      requestId: message.requestId,
+      ok: true,
+      result
+    }),message.method==="wizard.next"?80:0);
 });
 setTimeout(() => {
   host.status.dataset.state = "pass";
@@ -162,6 +167,49 @@ test("shares one OpenClaw owner and routes RPC responses to each tab", async ({
       result: expect.objectContaining({ client: "first" })
     })
   ]);
+
+  const duplicateParams = {
+    client: "channel-skip",
+    sessionId: "shared-session",
+    answer: { stepId: "channels", value: "__skip__" }
+  };
+  await Promise.all([
+    page.evaluate((params) => window.postMessage({
+      type: "clawsembly:wizard-rpc-request",
+      requestId: "duplicate_first",
+      method: "wizard.next",
+      params
+    }, location.origin), duplicateParams),
+    secondPage.evaluate((params) => window.postMessage({
+      type: "clawsembly:wizard-rpc-request",
+      requestId: "duplicate_second",
+      method: "wizard.next",
+      params
+    }, location.origin), duplicateParams)
+  ]);
+  for (const [candidate, requestId] of [
+    [page, "duplicate_first"],
+    [secondPage, "duplicate_second"]
+  ] as const) {
+    await expect.poll(() => candidate.evaluate((id) => (
+      window as typeof window & {
+        __clawsemblyTestMessages: Array<{
+          requestId?: string;
+          result?: { client?: string };
+          type?: string;
+        }>;
+      }
+    ).__clawsemblyTestMessages.find((message) => (
+      message.type === "clawsembly:wizard-rpc-response"
+      && message.requestId === id
+    )), requestId)).toEqual(expect.objectContaining({
+      result: { client: "channel-skip" }
+    }));
+  }
+  await expect(page.locator("#status")).toHaveAttribute(
+    "data-wizard-next-calls",
+    "1"
+  );
 
   await secondPage.evaluate(() => window.postMessage({
     type: "clawsembly:wizard-rpc-request",

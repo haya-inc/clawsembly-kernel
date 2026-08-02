@@ -5,9 +5,13 @@ renders its real `wizard.start`, `wizard.next`, `wizard.status`, and
 `wizard.cancel` steps. It does not maintain a second copy of OpenClaw's setup
 flow.
 
-The one intentional interception point is model authentication. OpenAI API
-keys, OpenRouter API keys, and OpenAI ChatGPT device OAuth are converted into
-a narrower, expiring operation capability before OpenClaw receives anything.
+Clawsembly intentionally adapts two browser-specific boundaries. During first
+launch it acknowledges OpenClaw's channel primer and selects the official
+"skip for now"/"finished" option, so an external messaging channel cannot hold
+up the browser experience. Telegram, Discord, Slack, and other channels remain
+available for later setup in OpenClaw. At model authentication, OpenAI API keys,
+OpenRouter API keys, and OpenAI ChatGPT device OAuth are converted into a
+narrower, expiring operation capability before OpenClaw receives anything.
 
 ## Boundary
 
@@ -177,6 +181,14 @@ the official Gateway for a safe restart with `gateway.restart.request`.
 `OPENCLAW_NO_RESPAWN=1` keeps that restart inside the existing browser Wasm
 process. The persistent official client reconnects, and Clawsembly reports
 success only after `agents.list` exposes the selected primary model.
+
+At the official `How channels work` primer, Clawsembly sends an acknowledgement
+without a channel value. It then selects OpenClaw's own `__skip__` QuickStart
+option, or `__done__` in the advanced flow. No channel plugin is enabled and no
+channel credential is requested during first launch. If either bounded request
+loses contact with the browser-local Gateway, Clawsembly replaces the shared
+runtime and restores from the verified boot snapshot instead of leaving the
+user on the primer indefinitely.
 
 Any other Wizard step marked `sensitive` currently fails closed instead of
 sending a secret into the guest. Adding capability adapters for channel and

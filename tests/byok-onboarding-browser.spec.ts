@@ -82,6 +82,25 @@ addEventListener("message",(event)=>{
         done:false,
         status:"running",
         step:{
+          id:"channel-select",
+          type:"select",
+          message:"Select a channel",
+          options:[
+            {value:"__skip__",label:"Skip for now"},
+            {value:"telegram",label:"Telegram"},
+            {value:"discord",label:"Discord"}
+          ],
+          initialValue:"__skip__"
+        }
+      });
+      return;
+    }
+    if(stepId==="channel-select"){
+      document.body.dataset.channelSelection=message.params.answer.value;
+      reply(message,"clawsembly:wizard-rpc-response",{
+        done:false,
+        status:"running",
+        step:{
           id:"provider",
           type:"select",
           message:"Model/auth provider",
@@ -131,7 +150,7 @@ addEventListener("message",(event)=>{
 </script>
 </body></html>`;
 
-test("runs the official Wizard and adapts only its credential step", async ({
+test("skips initial channels and adapts only the credential step", async ({
   page
 }, testInfo) => {
   const apiKey = "sk-user-owned-browser-test-key";
@@ -214,18 +233,18 @@ test("runs the official Wizard and adapts only its credential step", async ({
     "cold"
   );
   await expect(page.getByRole("heading", {
-    name: "How channels work"
-  })).toBeVisible();
-  await expect(page.getByText("対応チャンネル 6件を見る")).toBeVisible();
-  await expect(page.locator("#wizard-message")).not.toContainText("]8;;");
-  await page.screenshot({
-    path: testInfo.outputPath("official-wizard-long-note.png"),
-    fullPage: true
-  });
-  await page.getByRole("button", { name: "続ける →" }).click();
-  await expect(page.getByRole("heading", {
     name: "Model/auth provider"
   })).toBeVisible();
+  await expect(page.getByRole("heading", {
+    name: "How channels work"
+  })).toHaveCount(0);
+  await expect(
+    page.frameLocator("#byok-runtime-frame").locator("body")
+  ).toHaveAttribute("data-channel-selection", "__skip__");
+  await page.screenshot({
+    path: testInfo.outputPath("official-wizard-channel-skip.png"),
+    fullPage: true
+  });
   await page.getByRole("button", { name: "OpenAI", exact: true }).click();
 
   await expect(page.locator("#credential-adapter")).toBeVisible();
@@ -389,7 +408,9 @@ test("completes OpenAI Device Code without exposing OAuth tokens", async ({
     { origin: "http://127.0.0.1:4173" }
   );
   await page.goto("/onboard.html");
-  await page.getByRole("button", { name: "続ける →" }).click();
+  await expect(page.getByRole("heading", {
+    name: "Model/auth provider"
+  })).toBeVisible();
   await page.getByRole("button", { name: "OpenAI", exact: true }).click();
   await page.getByRole("button", {
     name: "ChatGPTで続ける OpenAI Device Code · APIキー入力なし"
@@ -582,7 +603,11 @@ test("replaces a disconnected shared Gateway and resumes the Wizard", async ({
             return;
           }
           if(message.method==="wizard.next"&&disconnected){
-            reply(message,"gateway reconnect timed out",false);
+            reply(
+              message,
+              "ブラウザ内OpenClawから応答がありません",
+              false
+            );
           }
         });
       </script></body></html>`
