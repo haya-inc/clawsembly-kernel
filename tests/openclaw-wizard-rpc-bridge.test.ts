@@ -29,6 +29,7 @@ test("builds a persistent, loopback-only official RPC bridge", () => {
   assert.match(harness, /createConfigIO/u);
   assert.match(harness, /writeConfigFile/u);
   assert.match(harness, /agents\.list/u);
+  assert.match(harness, /Date\.now\(\)\+30000/u);
   assert.match(harness, /gateway reconnect timed out/u);
   assert.match(harness, /message!==['"]gateway not connected['"]/u);
   assert.match(harness, new RegExp(wizardRpcBridgeReadyMarker, "u"));

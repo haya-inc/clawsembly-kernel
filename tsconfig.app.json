@@ -5,6 +5,8 @@
     "types": ["vite/client"]
   },
   "include": [
+    "src/byok-onboarding.ts",
+    "src/byok-runtime.ts",
     "src/clawsemblyfs.ts",
     "src/edgejs-wasix-probe.ts",
     "src/main.ts",
@@ -14,6 +16,7 @@
     "src/openclaw-install-lifecycle-probe.ts",
     "src/openclaw-install-lifecycle.ts",
     "src/openclaw-runtime-host.ts",
+    "src/openclaw-runtime-recovery.ts",
     "src/openclaw-shared-worker.ts",
     "src/openclaw-opfs-persistence-probe.ts",
     "src/openclaw-package-runtime-probe.ts",

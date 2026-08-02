@@ -82,6 +82,11 @@ type StreamCapture = {
   ) => Promise<void>;
 };
 
+// Wasmer process wrappers must stay strongly reachable for the lifetime of the
+// onboarding document. Otherwise a long-idle background tab can retain its UI
+// while its Gateway or RPC bridge is collected underneath it.
+const activeOnboardingRuntimeProcesses: unknown[] = [];
+
 const onboardingRpcMethods = new Set([
   "wizard.cancel",
   "wizard.next",
@@ -1170,6 +1175,14 @@ async function runProbe(): Promise<void> {
       kind: "gateway-exit" as const,
       output: output as WasixOutput
     }));
+    if (onboardingProof) {
+      activeOnboardingRuntimeProcesses.push(
+        gatewayInstance,
+        gatewayStdout,
+        gatewayStderr,
+        gatewayExit
+      );
+    }
     const readiness = waitForEitherStreamMarker({
       label: "OpenClaw Gateway",
       marker: readinessMarker,
@@ -1315,6 +1328,12 @@ async function runProbe(): Promise<void> {
         kind: "rpc-bridge-exit" as const,
         output: output as WasixOutput
       }));
+      activeOnboardingRuntimeProcesses.push(
+        rpcBridgeInstance,
+        rpcBridgeStdout,
+        rpcBridgeStderr,
+        rpcBridgeExit
+      );
       const rpcBridgeStartup = await Promise.race([
         waitForEitherStreamMarker({
           label: "Official OpenClaw RPC bridge",

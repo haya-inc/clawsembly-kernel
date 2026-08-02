@@ -525,6 +525,93 @@ test("explains a slow first boot and offers recovery on failure", async ({
   })).toBeVisible();
 });
 
+test("replaces a disconnected shared Gateway and resumes the Wizard", async ({
+  page
+}) => {
+  let runtimeLoads = 0;
+  await page.route("**/byok-runtime.html*", async (route) => {
+    runtimeLoads += 1;
+    const disconnected = runtimeLoads === 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      headers: {
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Resource-Policy": "same-origin"
+      },
+      body: `<!doctype html><html><body><script>
+        const disconnected=${JSON.stringify(disconnected)};
+        let started=false;
+        const reply=(request,result,ok=true)=>parent.postMessage({
+          type:"clawsembly:wizard-rpc-response",
+          requestId:request.requestId,
+          ok,
+          ...(ok?{result}:{error:String(result)})
+        },location.origin);
+        parent.postMessage({
+          type:"clawsembly:byok-runtime-ready"
+        },location.origin);
+        addEventListener("message",(event)=>{
+          const message=event.data;
+          if(message.type==="clawsembly:onboarding-runtime-start"){
+            if(started)return;
+            started=true;
+            parent.postMessage({
+              type:"clawsembly:wizard-gateway-ready",
+              bootMode:disconnected?"shared":"warm",
+              openclawVersion:"2026.7.1-2"
+            },location.origin);
+            return;
+          }
+          if(message.type!=="clawsembly:wizard-rpc-request")return;
+          if(message.method==="wizard.start"){
+            reply(message,{
+              sessionId:disconnected?"stale-session":"recovered-session",
+              done:false,
+              status:"running",
+              step:{
+                id:disconnected?"before-disconnect":"after-recovery",
+                type:"confirm",
+                title:disconnected?"Connection check":"Recovered Wizard",
+                message:disconnected
+                  ?"Continue through the shared Gateway?"
+                  :"The replacement Gateway is ready."
+              }
+            });
+            return;
+          }
+          if(message.method==="wizard.next"&&disconnected){
+            reply(message,"gateway reconnect timed out",false);
+          }
+        });
+      </script></body></html>`
+    });
+  });
+
+  await page.goto("/onboard.html");
+  await expect(page.getByRole("heading", {
+    name: "Connection check"
+  })).toBeVisible();
+  await page.getByRole("button", { name: "はい", exact: true }).click();
+
+  await expect.poll(() => runtimeLoads).toBe(2);
+  await expect(page.getByRole("heading", {
+    name: "Recovered Wizard"
+  })).toBeVisible();
+  await expect(page.locator("#wizard-error")).toBeHidden();
+  await expect(page.locator("#byok-status")).toContainText(
+    "OpenClaw 接続済み"
+  );
+  await expect(page.locator("#byok-runtime-frame")).toHaveAttribute(
+    "src",
+    /runtimeEpoch=[A-Za-z0-9_-]+/u
+  );
+  expect(await page.evaluate(() => localStorage.getItem(
+    "clawsembly-openclaw-runtime-epoch-v1"
+  ))).toMatch(/^[A-Za-z0-9_-]{1,64}$/u);
+});
+
 test("shows when OpenClaw was restored from its boot snapshot", async ({
   page
 }) => {

@@ -7,6 +7,7 @@ import {
 import type {
   OpenClawRuntimeHost
 } from "./openclaw-runtime-host";
+import { readSharedRuntimeEpoch } from "./openclaw-runtime-recovery";
 
 type RuntimeStartMessage = {
   capability: ByokCapabilityHandoff;
@@ -80,7 +81,7 @@ const bootstrapLockName = "clawsembly-openclaw-bootstrap-v1";
 // compatibility generation and this runtime chunk's content-hashed URL so a
 // newly deployed bridge never reconnects to an older in-memory owner.
 const sharedRuntimeName =
-  `clawsembly-openclaw-runtime-v2:${import.meta.url}`;
+  `clawsembly-openclaw-runtime-v3:${readSharedRuntimeEpoch()}:${import.meta.url}`;
 const onboardingSharedRuntime =
   new URLSearchParams(location.search).get("proof") === "onboarding"
   && typeof SharedWorker === "function";

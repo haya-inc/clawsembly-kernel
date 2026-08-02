@@ -1,4 +1,5 @@
 import "./byok-onboarding.css";
+import { rotateSharedRuntimeEpoch } from "./openclaw-runtime-recovery";
 
 type Capability = {
   adminToken: string;
@@ -161,8 +162,11 @@ let finishing = false;
 let runtimeHandshakeTimer: number | undefined;
 let bootTimer: number | undefined;
 let bootPhase = 0;
-const bootStartedAt = performance.now();
+let bootStartedAt = performance.now();
+let runtimeRecoveryAttempts = 0;
+let runtimeRecoveryInProgress = false;
 const gatewayReconnectWindowMs = 30_000;
+const maximumAutomaticRuntimeRecoveries = 2;
 
 function setStatus(
   state: "fail" | "idle" | "ready" | "running",
@@ -352,6 +356,21 @@ function setBootPhase(nextPhase: number): void {
   setStatus("running", copy.status);
 }
 
+function restartBootProgress(): void {
+  if (bootTimer !== undefined) window.clearInterval(bootTimer);
+  bootStartedAt = performance.now();
+  bootPhase = 0;
+  delete bootProgress.dataset.bootMode;
+  delete bootProgress.dataset.bootTimings;
+  bootPatience.hidden = true;
+  bootPatience.textContent =
+    "画面を閉じずにお待ちください。別のタブへ移動しても処理は続きます。";
+  bootRetry.hidden = true;
+  setBootPhase(0);
+  updateBootElapsed();
+  bootTimer = window.setInterval(updateBootElapsed, 1_000);
+}
+
 function phaseForRuntimeLabel(label: string): number {
   const normalized = label.toLowerCase();
   if (
@@ -435,6 +454,39 @@ function errorMessage(error: unknown): string {
   }
   return message.trim().split("\n", 1)[0]
     || "OpenClawのセットアップを続行できませんでした";
+}
+
+function isGatewayDisconnect(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /gateway (?:not connected|closed)|reconnect timed out/iu.test(message);
+}
+
+function recoverDisconnectedRuntime(): boolean {
+  if (
+    runtimeRecoveryInProgress
+    || runtimeRecoveryAttempts >= maximumAutomaticRuntimeRecoveries
+  ) {
+    return false;
+  }
+  runtimeRecoveryAttempts += 1;
+  runtimeRecoveryInProgress = true;
+  wizardStarted = false;
+  wizardSessionId = undefined;
+  currentStep = undefined;
+  finishing = false;
+  capabilityAttached = false;
+  showError();
+  setWizardBusy("OpenClawとの接続を復旧しています…");
+  restartBootProgress();
+  bootTitle.textContent = "OpenClawを再接続しています";
+  bootDetail.textContent =
+    "停止した共有実行環境を切り離し、保存済みの状態から安全に復元します。";
+  setStatus("running", "OpenClawを再接続中");
+  const epoch = rotateSharedRuntimeEpoch();
+  const runtimeUrl = new URL(runtimeFrame.src, location.href);
+  runtimeUrl.searchParams.set("runtimeEpoch", epoch);
+  runtimeFrame.src = runtimeUrl.href;
+  return true;
 }
 
 function postRuntimeRequest(
@@ -621,6 +673,7 @@ async function answerWizard(step: WizardStep, value?: unknown): Promise<void> {
     }) as WizardResult;
     await handleWizardResult(result);
   } catch (error) {
+    if (isGatewayDisconnect(error) && recoverDisconnectedRuntime()) return;
     renderWizardStep(step);
     showError(errorMessage(error));
   }
@@ -1102,6 +1155,22 @@ async function startWizard(): Promise<void> {
   }
 }
 
+async function resumeWizardAfterGatewayReady(): Promise<void> {
+  const recovered = runtimeRecoveryInProgress;
+  runtimeRecoveryInProgress = false;
+  if (recovered && capability) {
+    try {
+      await attachCapability(capability);
+      capabilityAttached = true;
+    } catch (error) {
+      showError(errorMessage(error));
+      setStatus("fail", "モデル接続の復元に失敗しました");
+      return;
+    }
+  }
+  await startWizard();
+}
+
 async function revokeCapability(): Promise<void> {
   const active = capability;
   const adminToken = active?.adminToken ?? oauthAdminToken;
@@ -1196,7 +1265,7 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
           ? message.openclawVersion
           : "connected"
       }`;
-    void startWizard();
+    void resumeWizardAfterGatewayReady();
     return;
   }
   if (

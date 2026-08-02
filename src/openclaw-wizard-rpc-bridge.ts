@@ -93,7 +93,7 @@ export function createOpenClawWizardRpcBridgeHarness(options: {
     "};",
     "const sleep=(ms)=>new Promise((resolve)=>setTimeout(resolve,ms));",
     "const requestGateway=async(method,params)=>{",
-    "const deadline=Date.now()+120000;",
+    "const deadline=Date.now()+30000;",
     "for(;;){",
     "while(!ready&&Date.now()<deadline)await sleep(50);",
     "if(Date.now()>=deadline)",

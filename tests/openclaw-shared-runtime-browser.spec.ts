@@ -104,7 +104,7 @@ test("shares one OpenClaw owner and routes RPC responses to each tab", async ({
   ).__clawsemblySharedRuntimeNames);
   expect(sharedRuntimeNames).toHaveLength(1);
   expect(sharedRuntimeNames[0]).toMatch(
-    /^clawsembly-openclaw-runtime-v2:https?:\/\//u
+    /^clawsembly-openclaw-runtime-v3:initial:https?:\/\//u
   );
   expect(secondSharedRuntimeNames).toEqual(sharedRuntimeNames);
   expect(moduleLoads).toBe(1);
