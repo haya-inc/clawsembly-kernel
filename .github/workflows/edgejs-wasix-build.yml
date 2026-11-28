@@ -73,10 +73,10 @@ jobs:
     timeout-minutes: 120
     steps:
       - name: Check out Clawsembly Kernel
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.18.0
           cache: npm
@@ -172,7 +172,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Restore source-build caches
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/ms-playwright
@@ -602,7 +602,7 @@ jobs:
             }' > artifacts/edgejs-reproducibility-evidence.json
 
       - name: Upload inspectable build candidate
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: edgejs-wasix-browser-candidate
           path: |
@@ -855,7 +855,7 @@ jobs:
 
       - name: Upload Gateway health diagnostic evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: edgejs-wasix-gateway-health-diagnostics
           path: artifacts/gateway-health-attempts/
@@ -1022,7 +1022,7 @@ jobs:
 
       - name: Upload OpenClaw agent-turn diagnostics
         if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: edgejs-wasix-agent-turn-diagnostics
           path: artifacts/agent-turn-attempt/
@@ -1260,7 +1260,7 @@ jobs:
           cat artifacts/edgejs-wasix-build-evidence.json
 
       - name: Upload browser-compatible runtime and base evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: edgejs-wasix-browser-compatible-base
           path: artifacts/
@@ -1286,7 +1286,7 @@ jobs:
           cp -R wasmer-js/dist/. "${destination}/wasmer-sdk/"
 
       - name: Upload least-privilege self-hosted-proof inputs
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: edgejs-wasix-self-hosted-proof-inputs
           path: ${{ runner.temp }}/clawsembly-self-hosted-proof-inputs/
@@ -1300,7 +1300,7 @@ jobs:
     timeout-minutes: 50
     steps:
       - name: Download self-hosted-proof inputs
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: edgejs-wasix-self-hosted-proof-inputs
           path: proof-inputs
@@ -1315,7 +1315,7 @@ jobs:
           chmod +x proof-inputs/clawsembly-provider-broker
 
       - name: Restore pinned inference inputs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: self-hosted-model
           key: clawsembly-llama-b9637-qwen2.5-0.5b-q4-k-m
@@ -1379,14 +1379,14 @@ jobs:
           test "$(stat --format='%s' "${model}")" = 491400032
 
       - name: Set up Node
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.18.0
           cache: npm
           cache-dependency-path: proof-runner/package-lock.json
 
       - name: Restore Chromium cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: clawsembly-playwright-${{ runner.os }}-${{ hashFiles('proof-runner/package-lock.json') }}
@@ -1487,7 +1487,7 @@ jobs:
 
       - name: Upload self-hosted OpenClaw diagnostics
         if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: edgejs-wasix-self-hosted-agent-turn-diagnostics
           path: self-hosted-agent-turn-diagnostics/
@@ -1495,7 +1495,7 @@ jobs:
           retention-days: 7
 
       - name: Download browser runtime and base evidence
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: edgejs-wasix-browser-compatible-base
           path: final-artifacts
@@ -1671,7 +1671,7 @@ jobs:
           ' "${base}" >/dev/null
 
       - name: Upload self-hosted-model-proven browser runtime and evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: edgejs-wasix-browser-compatible
           path: final-artifacts/
