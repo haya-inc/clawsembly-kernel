@@ -45,14 +45,7 @@ const temporaryRoot = mkdtempSync(path.join(os.tmpdir(), "clawsembly-edgejs-proo
 let keepTemporaryRoot = process.env.CLAWSEMBLY_KEEP_TEMP === "1";
 
 try {
-  const edgeArchive = await resolveArtifact({
-    algorithm: "sha256",
-    cacheName: `${edgeAsset.sha256}-${edgeAsset.filename}`,
-    expectedDigest: edgeAsset.sha256,
-    expectedSize: edgeAsset.size,
-    overridePath: process.env.CLAWSEMBLY_EDGE_ARCHIVE,
-    url: edgeAsset.url
-  });
+  const { executable: edgeExecutable, provenance: edgeProvenance } = await resolveNativeEdge();
   const openClawArchive = await resolveArtifact({
     algorithm: "sha512",
     cacheName: `${openClawContract.name}-${openClawContract.version}.tgz`,
@@ -60,12 +53,6 @@ try {
     overridePath: process.env.CLAWSEMBLY_OPENCLAW_ARCHIVE,
     url: openClawContract.tarball
   });
-
-  const edgeRoot = path.join(temporaryRoot, "edge");
-  mkdirSync(edgeRoot);
-  execFileSync("unzip", ["-q", edgeArchive, "-d", edgeRoot]);
-  const edgeExecutable = path.join(edgeRoot, edgeAsset.executable);
-  chmodSync(edgeExecutable, 0o755);
 
   const artifactRoot = path.join(temporaryRoot, "artifact");
   mkdirSync(artifactRoot);
@@ -169,8 +156,7 @@ try {
     artifacts: {
       edgejs: {
         sourceCommit: edgeContract.source.commit,
-        asset: edgeAsset.filename,
-        archiveSha256: edgeAsset.sha256,
+        ...edgeProvenance,
         runtime: edgeContract.runtime
       },
       openclaw: {
@@ -216,6 +202,46 @@ try {
   throw error;
 } finally {
   if (!keepTemporaryRoot) rmSync(temporaryRoot, { recursive: true, force: true });
+}
+
+// The upstream nightly tag replaces assets in place. Preserve the original verified
+// archives when available and otherwise build the same commit with its pinned V8.
+async function resolveNativeEdge() {
+  const filename = `${edgeAsset.sha256}-${edgeAsset.filename}`;
+  const override = process.env.CLAWSEMBLY_EDGE_ARCHIVE;
+  const archive = override ? path.resolve(override) : path.join(cacheRoot, filename);
+  const integrity = { algorithm: "sha256", expectedDigest: edgeAsset.sha256, expectedSize: edgeAsset.size };
+  if (override || existsSync(archive)) {
+    assert.ok(verifyArtifact(archive, integrity), `Invalid pinned Edge.js archive: ${archive}`);
+    const root = path.join(temporaryRoot, "edge");
+    mkdirSync(root);
+    execFileSync("unzip", ["-q", archive, "-d", root]);
+    const executable = path.join(root, edgeAsset.executable);
+    chmodSync(executable, 0o755);
+    return { executable, provenance: { asset: edgeAsset.filename, archiveSha256: edgeAsset.sha256 } };
+  }
+
+  const v8 = edgeContract.nativeBuild.v8.assets[platformKey];
+  const v8Archive = await resolveArtifact({
+    algorithm: "sha256", expectedDigest: v8.sha256, expectedSize: v8.size,
+    cacheName: `${v8.sha256}-${path.basename(v8.url)}`, url: v8.url
+  });
+  const root = path.join(temporaryRoot, "edge-source");
+  mkdirSync(root);
+  const run = (command, args) => execFileSync(command, args, { cwd: root, stdio: ["ignore", 2, 2] });
+  run("git", ["init", "--quiet"]);
+  run("git", ["remote", "add", "origin", edgeContract.source.repository]);
+  run("git", ["fetch", "--quiet", "--depth=1", "origin", edgeContract.source.commit]);
+  run("git", ["checkout", "--quiet", "--detach", "FETCH_HEAD"]);
+  assert.equal(execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(), edgeContract.source.commit);
+  run("git", ["submodule", "update", "--init", "--depth=1", "--", "napi"]);
+
+  const v8Directory = path.join(root, "pinned-v8");
+  mkdirSync(v8Directory);
+  run("tar", ["-xJf", v8Archive, "-C", v8Directory]);
+  run("make", ["build", "CMAKE_BUILD_TYPE=Release", "JOBS=2", `NAPI_V8_DIST_ROOT=${v8Directory}`]);
+  const executable = path.join(root, "build-edge", "edge");
+  return { executable, provenance: { v8ArchiveSha256: v8.sha256, executableSha256: hashFile(executable, "sha256") } };
 }
 
 function readJson(filename) {

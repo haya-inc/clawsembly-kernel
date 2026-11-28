@@ -43,5 +43,22 @@
     "artifactFeature": "exception-references",
     "error": "Unsupported ref type: exnref",
     "disposition": "Build and self-distribute the pinned Edge.js WASIX artifact without the incompatible wasm-opt --emit-exnref post-processing."
+  },
+  "nativeBuild": {
+    "v8": {
+      "version": "11.9.2",
+      "assets": {
+        "linux-x64": {
+          "url": "https://github.com/wasmerio/v8-custom-builds/releases/download/11.9.2/v8-linux-amd64.tar.xz",
+          "size": 18373120,
+          "sha256": "9d30957412adc9531bee513e0dbe110ec4a12a42db1bfd2bf7cd1e8ddf8402fa"
+        },
+        "darwin-arm64": {
+          "url": "https://github.com/wasmerio/v8-custom-builds/releases/download/11.9.2/v8-darwin-arm64.tar.xz",
+          "size": 13834148,
+          "sha256": "c401b53dc006c3c6b403d93c77bf3fc214d45e7a9d7d1641cfccab83ffa2cf43"
+        }
+      }
+    }
   }
 }
