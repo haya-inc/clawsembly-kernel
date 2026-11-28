@@ -22,9 +22,11 @@ npm run test:edgejs
 
 The proof runner:
 
-1. selects the platform-specific Edge.js archive from
-   `contracts/edgejs-artifact.json`;
-2. verifies the archive SHA-256 before extraction;
+1. uses the original, SHA-256-verified Edge.js archive when supplied through
+   `CLAWSEMBLY_EDGE_ARCHIVE` or present in the artifact cache;
+2. otherwise builds the pinned Edge.js source and its N-API submodule with the
+   size- and SHA-256-verified V8 archive. This requires Git, CMake, Make, a C++
+   toolchain and the native prerequisites listed in the upstream build workflow;
 3. downloads `openclaw@2026.7.1-2` and verifies its npm SHA-512 integrity;
 4. walks the exact state chunk's static import graph;
 5. obtains the reached external packages from OpenClaw's own
